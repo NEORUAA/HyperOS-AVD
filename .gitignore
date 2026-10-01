@@ -1,0 +1,43 @@
+# Generated images, releases, and personal AVD state.
+/images/
+/input/
+/work/
+/tools/
+/avd/
+/local/
+/logs/
+/backups/
+/downloads/
+/releases/
+
+# Source firmware, partial downloads, binary caches, and credentials.
+*.img
+*.qcow2
+*.zip
+*.tar
+*.gz
+*.xz
+*.7z
+*.crdownload
+*.part
+*.apk
+*.jar
+*.ko
+*.jks
+*.keystore
+*.pem
+*.key
+.env
+.env.*
+
+# Host and editor state.
+.DS_Store
+._*
+.idea/
+.vscode/
+.codex/
+__pycache__/
+*.py[cod]
+*.log
+*.lock
+*.swp
