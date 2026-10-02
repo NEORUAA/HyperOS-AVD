@@ -6,11 +6,11 @@ import subprocess
 from common import ROOT, tool
 
 
-def create():
-    path = ROOT / 'images/userdata.img'
+def create(path=None):
+    path = Path(path) if path is not None else ROOT / 'images/userdata.img'
     if path.exists():
         return path
-    path.parent.mkdir(exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix('.img.part')
     with temporary.open('wb') as output:
         output.truncate(6 * 1024**3)

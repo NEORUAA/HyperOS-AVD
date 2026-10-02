@@ -1,97 +1,49 @@
-# Release 命名与发布
+# Release 发布
 
-每种系统镜像使用独立 Release，避免 Android 16 / HyperOS 3 与日后的 Android 17 / HyperOS 4 分卷混在一起。当前版本建议标记为 **Pre-release**。
+OS3 / OS4 使用独立 Release。Tag 格式为 `v<工具版本>-a<Android版本>-hyperos<主版本>-<机型代号>-r<镜像修订号>`；镜像修订递增 `r1 / r2`，工具版本独立递增。
 
-## Tag 与标题
+| | OS3 已发布 | OS4 首发 |
+| --- | --- | --- |
+| Tag | `v0.1.0-a16-hyperos3-fuxi-r1` | `v0.2.0-a17-hyperos4-hongkong-r1` |
+| 标题 | HyperOS 3.0.2.0 · Android 16 · Apple Silicon · r1 | HyperOS 4.0.17.0 · Android 17 · 官方原包移植 · Apple Silicon · r1 |
+| 来源 | fuxi MysticGSI | hongkong 官方 OTA |
+| Manifest | format 1 | format 2，独立配置与公开构建信息 |
 
-Tag 格式：`v<工具版本>-a<Android版本>-hyperos<主版本>-<源机型代号>-r<镜像修订号>`。
+OS4 正文见 [os4-r1.md](releases/os4-r1.md)，可复制到 GitHub Release，建议勾选 **Pre-release**。后续版本沿用 Android / HyperOS / 机型 / 修订号命名。
 
-| 项目 | 当前推荐 |
+## 打包
+
+```sh
+python3 scripts/package_release.py --variant os4-official --version v0.2.0-a17-hyperos4-hongkong-r1
+```
+
+OS3 使用 `--variant os3`（默认）。输出位于 `releases/<tag>/`，同名目录不会覆盖；本次未发布的 OS4 旧分卷已替换为最终配置的新包。打包器只读取固件白名单、AVD 模板和两个官方 KSU 运行附件，并创建全新空白 userdata。
+
+OS4 打包前核验 packed / raw system 一致、生产版调试与安全 ADB 属性、小米桌面身份、开机引导与常亮配置、完整 hongkong.xml、AOD 服务、1120×2436 / 480 dpi，以及天气、相册、Flutter 和 ANGLE 文件哈希。打包后再次核对输入文件，发生变化时不会生成有效 manifest。
+
+## 本次附件
+
+目录：`releases/v0.2.0-a17-hyperos4-hongkong-r1/`。上传其中 **全部 7 个文件**：
+
+| 附件 | 大小 |
 | --- | --- |
-| Tag | `v0.1.0-a16-hyperos3-fuxi-r1` |
-| 标题 | `HyperOS 3.0.2.0 · Android 16 · Apple Silicon · r1` |
-| 镜像版本 | `OS3.0.2.0.WMCCNXM` |
-| 平台 | `macos-arm64` |
+| `.tar.gz.part001` — `.part004` | 每卷 1536 MiB |
+| `.tar.gz.part005` | 320.06 MiB |
+| `manifest.json` | 9988 bytes |
+| `SHA256SUMS` | 五卷及 manifest 的 SHA-256 |
 
-`v0.1.0` 表示项目工具版本；Android、HyperOS 和机型标识镜像来源；`r1` 表示该镜像的第一次发布。镜像或补丁更新时递增 `r2`、`r3`；工具更新时递增工具版本。完整 OEM 版本写在标题和正文中。
-
-A17 / OS4 的未来命名模板：
+分卷合计 **6.31 GiB**，包含 21 个安装文件；文件名前缀为 `HyperOS-AVD-v0.2.0-a17-hyperos4-hongkong-r1-macos-arm64`。系统镜像 SHA-256：
 
 ```text
-Tag:   v0.1.0-a17-hyperos4-CODENAME-r1
-Title: HyperOS 4.x · Android 17 · Apple Silicon · r1
+aac19ec5b339da3d1ee215db5adc9717a87a9b6d7995b838b210b60953d2ae30
 ```
 
-将 `CODENAME` 替换为实际源机型的小写代号，版本号按实际构建填写。这只是命名模板，当前脚本和验证仍针对 A16 / OS3；发布新镜像前需适配构建补丁、AVD 配置和 manifest 中的系统/API/KernelSU 等元数据，并重新验证。不同系统使用独立工作区、AVD 名称和 userdata。
+分卷默认 1536 MiB，符合 [GitHub 单附件小于 2 GiB 的要求](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)。保持附件名称，不跨版本混用；可以在附件目录运行 `shasum -a 256 -c SHA256SUMS` 手动核验。
 
-## 可直接使用的首发正文
+## 发布前检查
 
-复制下方内容到 GitHub Release 描述：
+28 项自动测试与 35 个镜像内签名 / 原生文件预检已通过。当前镜像已恢复出厂并完成首次启动，README 使用这次重新完成引导后截取的 8 张 OS4 图片。全部分卷与 manifest 校验、21 个文件的实际安装导入及空白 userdata 检查均已通过。
 
-````markdown
-## 镜像信息
+发布前提交对应源码、文档与截图，并在该提交上创建上述 tag，使 GitHub 自动提供的源码包含 OS4 安装器。镜像附件、个人 AVD 数据、环境与日志均被 Git 忽略。
 
-| 项目 | 版本 |
-| --- | --- |
-| HyperOS | 3.0.2.0.WMCCNXM |
-| Android | 16 / API 36 |
-| 来源 | 小米 13（fuxi）MysticGSI |
-| 宿主平台 | Apple Silicon macOS / ARM64 |
-| KernelSU | v3.3.0（32601），LKM |
-| 项目工具 / 镜像修订 | v0.1.0 / r1 |
-
-## 本次更新
-
-- 支持官方 Android Studio ARM64 Emulator 原生启动。
-- 提供安装、启动脚本及首次启动 KernelSU 自动初始化。
-- 修复圆角、挖孔比例，以及复现到的 GNSS 回调死锁。
-- 保持全局 SELinux Enforcing；KSU root 域仍为 permissive。
-
-## 安装
-
-下载本 Release 的 `manifest.json` 和全部 `.tar.gz.partNNN` 分卷，放在同一目录，按仓库 README 安装。无需手动解压；安装器会校验 SHA-256。
-
-```sh
-./Setup.command --bundle /path/to/release/manifest.json
-./Start-HyperOS.command
-```
-
-## 验证与限制
-
-已完成分卷导入、空白数据首次启动、KernelSU 初始化，以及两组坐标 / 四次 GPS 启停测试。
-
-- 网络融合定位、小米云服务、Google 登录及 Play Integrity 未验证。
-- 相机和音频默认关闭，蓝牙未验证。
-- 首次设备设置曾出现一次锁屏杂志导致的 SystemUI 崩溃，随后恢复。
-- Android Studio 内嵌窗口未验证；请先通过项目启动脚本运行。
-
-实验版本，完整兼容范围见仓库 `docs/compatibility.md`。
-````
-
-后续版本沿用“镜像信息 → 本次更新 → 安装 → 验证与限制”，每次按实际镜像和测试结果改写。
-
-## 上传文件
-
-当前已生成的包位于 `releases/v0.1.0/`，请把以下五个文件上传到同一个 Release：
-
-| 文件 | 大小 |
-| --- | --- |
-| `HyperOS-AVD-v0.1.0-macos-arm64.tar.gz.part001` | 1536 MiB |
-| `HyperOS-AVD-v0.1.0-macos-arm64.tar.gz.part002` | 1536 MiB |
-| `HyperOS-AVD-v0.1.0-macos-arm64.tar.gz.part003` | 约 471 MiB |
-| `manifest.json` | 约 4 KB |
-| `SHA256SUMS` | 小于 1 KB |
-
-Release tag 可以采用上方推荐名称，现有文件名与 manifest 中的 `v0.1.0` 无需改动；安装器按 manifest 读取分卷。不要单独改分卷文件名，否则清单校验会失败。
-
-后续生成新包时，让 `--version` 与 tag 一致，例如：
-
-```sh
-python3 scripts/package_release.py --version v0.1.0-a16-hyperos3-fuxi-r2
-```
-
-这条命令只改变包版本名称；镜像内容和元数据必须先完成更新。打包前停止本工作区的 AVD，避免镜像变动。
-
-分卷默认 1536 MiB，低于 [GitHub 单个 Release 资源的 2 GiB 限制](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)。所有分卷和 manifest 必须位于同一个下载目录，不能跨 Release 混用。
-
-Git 只保存脚本、配置、文档及 README 截图；镜像、缓存和个人 AVD 数据保持忽略。固件包包含空白 userdata 模板，不打包现有 AVD 中的账号、应用或数据。
+附件导入校验在独立临时目录中进行，不注册或启动 AVD。设备功能验收与附件校验分开记录；尚未验证的硬件、云服务和新设置界面效果见 OS4 发布正文。

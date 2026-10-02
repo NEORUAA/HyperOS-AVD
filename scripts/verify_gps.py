@@ -8,7 +8,7 @@ import subprocess
 import time
 import zipfile
 
-from common import ROOT, adb, runtime
+from common import ROOT, REPO_ROOT, adb, runtime
 from patch_gnss import java
 
 
@@ -26,12 +26,12 @@ def main():
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
     subprocess.run([str(jdk / 'bin/javac'), '-source', '8', '-target', '8', '-classpath', str(android),
-                    '-d', str(classes), str(ROOT / 'tests/gps_probe/MainActivity.java')], check=True)
+                    '-d', str(classes), str(REPO_ROOT / 'tests/gps_probe/MainActivity.java')], check=True)
     subprocess.run([str(tools / 'd8'), '--lib', str(android), '--output', str(work),
                     *map(str, classes.rglob('*.class'))], check=True)
     unsigned = work / 'unsigned.apk'
     subprocess.run([str(tools / 'aapt'), 'package', '-f', '-M',
-                    str(ROOT / 'tests/gps_probe/AndroidManifest.xml'), '-I', str(android),
+                    str(REPO_ROOT / 'tests/gps_probe/AndroidManifest.xml'), '-I', str(android),
                     '-F', str(unsigned)], check=True)
     with zipfile.ZipFile(unsigned, 'a') as archive:
         archive.write(work / 'classes.dex', 'classes.dex')

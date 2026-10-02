@@ -22,6 +22,11 @@
 *.part
 *.apk
 *.jar
+*.so
+*.dylib
+*.dex
+*.class
+*.hprof
 *.ko
 *.jks
 *.keystore

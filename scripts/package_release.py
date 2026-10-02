@@ -3,11 +3,14 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 import tarfile
 
-from common import ROOT, fetch_ksu, sha256
+import common
+from common import REPO_ROOT, ROOT, OS4_SOURCE, fetch_ksu, sha256, tool
 from init_userdata import create as create_userdata
 
 
@@ -45,35 +48,134 @@ class PartsWriter:
             self.stream.flush()
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--version', default='v0.1.0')
-    parser.add_argument('--part-mib', type=int, default=1536)
-    args = parser.parse_args()
-    if not re.fullmatch(r'v[0-9A-Za-z_.-]+', args.version):
+IMAGE_FILES = ('NOTICE.txt', 'VerifiedBootParams.textproto', 'advancedFeatures.ini',
+               'build.prop', 'encryptionkey.img', 'kernel-ranchu', 'kernel_cmdline.txt',
+               'ramdisk.img', 'source.properties', 'system.img', 'vendor.img')
+KSU_FILES = ('ksud-aarch64-linux-android', 'KernelSU_v3.3.0_32601-release.apk')
+BUILD_KEYS = ('hyperos', 'source', 'android_api', 'archive_sha256', 'kernel_page_size',
+              'hardware_base_api', 'kernel_kmi', 'surfaceflinger_backend', 'gnss_patch',
+              'mi_ext_overlays', 'mi_ext_software_identity', 'flutter_render_fix',
+              'preinstalled_apps', 'native_quickstep_identity', 'avd_defaults',
+              'adb_authentication', 'experimental')
+
+
+def verify_os4_image(root, metadata):
+    """Verify the release's actual packed image and baked compatibility files."""
+    from lp_image import read_lp
+    from os4_defaults import COMPONENT_XML, PROVIDER, MODEL_XML, DISPLAY, AOD_SCRIPT, AOD_INIT
+    from patch_flutter import PROFILES
+    from patch_weather import ANGLE
+    raw, packed = root / 'work/hyperos-system.img', root / 'images/system.img'
+    base, partitions = read_lp(packed)
+    system = next(item for item in partitions if item['name'] == 'system')
+    digest = hashlib.sha256()
+    with packed.open('rb') as source:
+        remaining = raw.stat().st_size
+        for length, kind, start, device in system['extents']:
+            if kind != 0 or device != 0:
+                raise RuntimeError('Unexpected official system extent.')
+            source.seek(base + start * 512)
+            count = min(remaining, length * 512)
+            while count:
+                block = source.read(min(count, 8 * 1024**2))
+                if not block:
+                    raise RuntimeError('Truncated packed system image.')
+                digest.update(block)
+                count -= len(block)
+                remaining -= len(block)
+        if remaining or digest.hexdigest() != sha256(raw):
+            raise RuntimeError('Packed system differs from the verified raw image.')
+    dump = tool('dump.erofs', 'erofs-utils')
+    def read(path):
+        return subprocess.check_output([dump, '--cat', '--path=' + path, str(raw)])
+    prop = read('/system/build.prop')
+    for line in (b'ro.build.version.sdk=37', b'ro.adb.secure=1', b'ro.debuggable=0',
+                 b'ro.miui.product.home=com.miui.home'):
+        if prop.splitlines().count(line) != 1:
+            raise RuntimeError('Missing or ambiguous release property: ' + line.decode())
+    if read('/system/etc/sysconfig/hyperos-avd-components.xml') != COMPONENT_XML:
+        raise RuntimeError('OOBE component override differs from the verified default.')
+    defaults = metadata['build']['avd_defaults']
+    if defaults.get('finddevice_disabled_component') != PROVIDER:
+        raise RuntimeError('Unexpected OOBE component metadata.')
+    if json.loads(read('/product/etc/hyperos-avd-defaults.json')) != defaults:
+        raise RuntimeError('Baked awake defaults do not match release metadata.')
+    if read('/product/etc/device_features/emu64a.xml') != MODEL_XML:
+        raise RuntimeError('Missing verified emulator AOD features.')
+    if read('/product/etc/device_features/hongkong.xml') != MODEL_XML:
+        raise RuntimeError('Emulator and original phone model configurations must match.')
+    if b'start console' in read('/system_ext/etc/init/init.hyperos_avd.rc'):
+        raise RuntimeError('Debug console must be disabled in the OS4 release.')
+    if (AOD_INIT not in read('/system_ext/etc/init/init.hyperos_avd.rc')
+            or read('/system_ext/bin/hyperos-avd-aod-defaults.sh') != AOD_SCRIPT):
+        raise RuntimeError('Missing first-boot AOD service.')
+    if defaults.get('display') != DISPLAY or not defaults.get('aod', {}).get('support_aod_fullscreen'):
+        raise RuntimeError('Missing official display / AOD defaults.')
+    template = dict(line.split('=', 1) for line in (root / 'config/avd.ini').read_text().splitlines() if '=' in line)
+    for key, value in DISPLAY.items():
+        if template.get('hw.lcd.' + key) != str(value):
+            raise RuntimeError('Release AVD differs from the official primary display: ' + key)
+    expected = {
+        '/product/overlay/HyperOSAVDSettingsDefaults/SettingsDefaults.apk': defaults['settings_overlay_sha256'],
+        '/product/priv-app/MIUIFindDeviceCN/MIUIFindDeviceCN.apk': defaults['finddevice_apk_sha256'],
+        '/system_ext/lib64/libhyper_os_flutter.so': PROFILES['71caea24a7fec06ae7c1b7cdb93c99f45288154a9ca21bb634d8181a97dcef62']['output'],
+        **{'/system/lib64/' + name: checksum for name, checksum in ANGLE.items()},
+    }
+    apps = metadata['build']['preinstalled_apps']
+    if json.loads(read('/product/etc/hyperos-avd-preinstalled-apps.json')) != apps:
+        raise RuntimeError('Baked app metadata does not match the release.')
+    for app in apps['apps']:
+        expected[app['apk']] = app['sha256']
+        expected.update({str(Path(app['apk']).parent / 'lib/arm64' / name): checksum
+                         for name, checksum in app['native_libraries'].items()})
+    for path, checksum in expected.items():
+        if hashlib.sha256(read(path)).hexdigest() != checksum:
+            raise RuntimeError('Baked release checksum mismatch: ' + path)
+    print(f'OS4 preflight passed: packed system, properties, defaults and {len(expected)} signed/native files.', flush=True)
+
+
+def release_metadata(root, variant):
+    metadata = {'project': 'HyperOS-AVD', 'format': 1, 'platform': 'macos-arm64',
+                'hyperos': '3.0.2.0.WMCCNXM', 'android_api': 36,
+                'kernelsu': '3.3.0 (32601)', 'gnss_patch': 'status-satellite-first-fix-async'}
+    if variant == 'os4-official':
+        build = json.loads((root / 'local/build.json').read_text())
+        if (build.get('source') != OS4_SOURCE or build.get('android_api') != 37
+                or build.get('hyperos') != '4.0.17.0.XFRCNXM'
+                or build.get('adb_authentication') is not True
+                or build.get('flutter_render_fix') != 6
+                or not build.get('native_quickstep_identity')
+                or not build.get('preinstalled_apps') or not build.get('avd_defaults')):
+            raise RuntimeError('OS4 release requires the verified official image, native fixes, defaults and secure ADB.')
+        metadata.update(format=2, variant=variant, hyperos=build['hyperos'], android_api=37,
+                        source=OS4_SOURCE, source_device='hongkong', hardware_base_api=36,
+                        build={key: build[key] for key in BUILD_KEYS if key in build})
+    elif (root / 'local/build.json').exists() and json.loads((root / 'local/build.json').read_text()).get('source') == OS4_SOURCE:
+        raise RuntimeError('Refusing to label official OS4 firmware as OS3.')
+    return metadata
+
+
+def write_bundle(directory, version, metadata, paths, part_mib=1536):
+    """Archive only explicit portable files; publish the manifest last."""
+    if not re.fullmatch(r'v[0-9A-Za-z_.-]+', version):
         raise RuntimeError('Invalid release version.')
-    if not 1 <= args.part_mib < 2048:
+    if not 1 <= part_mib < 2048:
         raise RuntimeError('Every GitHub release asset must be smaller than 2 GiB.')
-    create_userdata()
-    fetch_ksu(['ksud-aarch64-linux-android', 'KernelSU_v3.3.0_32601-release.apk'])
-    directory = ROOT / 'releases' / args.version
-    directory.mkdir(parents=True, exist_ok=False)
-    # Deliberately whitelist firmware and two official runtime assets. Never read avd/.
-    paths = sorted(path for path in (ROOT / 'images').rglob('*') if path.is_file())
-    paths += [ROOT / 'tools' / name for name in
-              ('ksud-aarch64-linux-android', 'KernelSU_v3.3.0_32601-release.apk')]
     files = {}
-    for path in paths:
-        if path.is_symlink():
+    for relative, path in paths.items():
+        if path.is_symlink() or not path.is_file():
             raise RuntimeError('Release files must not be symlinks.')
-        relative = path.relative_to(ROOT).as_posix()
+        allowed = (relative.startswith('images/') or relative in ('tools/' + name for name in KSU_FILES)
+                   or metadata['format'] == 2 and relative == 'config/avd.ini')
+        if not allowed or '..' in Path(relative).parts or Path(relative).is_absolute():
+            raise RuntimeError('Unexpected release path: ' + relative)
         files[relative] = {'size': path.stat().st_size, 'sha256': sha256(path)}
-    writer = PartsWriter(directory, 'HyperOS-AVD-' + args.version + '-macos-arm64',
-                         args.part_mib * 1024**2)
+    directory.mkdir(parents=True, exist_ok=False)
+    writer = PartsWriter(directory, 'HyperOS-AVD-' + version + '-macos-arm64', part_mib * 1024**2)
     try:
         with tarfile.open(fileobj=writer, mode='w|gz', compresslevel=6) as archive:
-            for path in paths:
-                relative = path.relative_to(ROOT).as_posix()
+            for relative, path in sorted(paths.items()):
+                print('Packaging: ' + relative, flush=True)
                 entry = archive.gettarinfo(str(path), arcname=relative)
                 entry.uid = entry.gid = 0
                 entry.uname = entry.gname = ''
@@ -86,16 +188,45 @@ def main():
                     raise RuntimeError('Firmware changed while packaging: ' + relative)
     finally:
         writer.close_part()
-    manifest = {'project': 'HyperOS-AVD', 'format': 1, 'version': args.version,
-                'platform': 'macos-arm64', 'hyperos': '3.0.2.0.WMCCNXM', 'android_api': 36,
-                'kernelsu': '3.3.0 (32601)',
-                'gnss_patch': 'status-satellite-first-fix-async',
-                'parts': writer.parts, 'files': files}
+    manifest = {**metadata, 'version': version, 'parts': writer.parts, 'files': files}
+    if manifest['format'] == 2:
+        manifest['build']['system_sha256'] = files['images/system.img']['sha256']
     (directory / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     (directory / 'SHA256SUMS').write_text(''.join(
         f'{entry["sha256"]}  {entry["name"]}\n' for entry in writer.parts)
         + sha256(directory / 'manifest.json') + '  manifest.json\n')
     print(json.dumps({'directory': str(directory), 'parts': writer.parts}, indent=2))
+    return manifest
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--version')
+    parser.add_argument('--variant', choices=('os3', 'os4-official'), default='os3')
+    parser.add_argument('--part-mib', type=int, default=1536)
+    args = parser.parse_args()
+    root = ROOT
+    if args.variant == 'os4-official' and 'HYPEROS_AVD_WORKSPACE' not in os.environ:
+        root = REPO_ROOT / 'work/os4-official'
+    common.ROOT = root
+    metadata = release_metadata(root, args.variant)
+    if args.variant == 'os4-official':
+        verify_os4_image(root, metadata)
+    version = args.version or ('v0.2.0-a17-hyperos4-hongkong-r1' if args.variant == 'os4-official' else 'v0.1.0')
+    fetch_ksu(KSU_FILES)
+    paths = {'images/' + name: root / 'images' / name for name in IMAGE_FILES}
+    for relative in ('data/misc/modem_simulator', 'data/misc/emulator'):
+        paths.update({path.relative_to(root).as_posix(): path for path in (root / 'images' / relative).rglob('*')
+                      if path.is_file() and path.name != '.DS_Store' and not path.name.startswith('._')})
+    paths.update({'tools/' + name: root / 'tools' / name for name in KSU_FILES})
+    if args.variant == 'os4-official':
+        paths['config/avd.ini'] = root / 'config/avd.ini'
+    # Always create a new blank template; never trust or read personal avd/ data.
+    temporary = root / 'work/release-templates' / version / 'userdata.img'
+    if temporary.exists():
+        raise RuntimeError('A release template already exists; choose a new revision.')
+    paths['images/userdata.img'] = create_userdata(temporary)
+    write_bundle(REPO_ROOT / 'releases' / version, version, metadata, paths, args.part_mib)
 
 
 if __name__ == '__main__':

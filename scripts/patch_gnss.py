@@ -9,8 +9,10 @@ import subprocess
 import urllib.request
 import zipfile
 
-ROOT = Path(__file__).resolve().parent.parent
+from common import ROOT
+
 SOURCE_SHA256 = '49d5d9175d398656c4db3854f72e040ffcccbbd08371dc3bf6e9a3afcb1d96a0'
+OS4_SHA256 = 'e60bfa83c50060666c9c157c558f4a88449b3697c45a2895a1069b9d59e32df0'
 ARTIFACTS = {'baksmali': ('org/smali/baksmali/2.5.2/baksmali-2.5.2.jar',
               '1ed236266d7dc4907aade0b19a34f77efac25342b63c8ace52e579039941b389'),
  'smali': ('org/smali/smali/2.5.2/smali-2.5.2.jar',
@@ -41,8 +43,9 @@ def java():
 
 def patch(source, destination):
     source, destination = Path(source), Path(destination)
-    if hashlib.sha256(source.read_bytes()).hexdigest() != SOURCE_SHA256:
-        raise RuntimeError('Unsupported services.jar. This patch is pinned to HyperOS 3.0.2.0 fuxi.')
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    if digest not in (SOURCE_SHA256, OS4_SHA256):
+        raise RuntimeError('Unsupported services.jar. Supported images: HyperOS 3.0.2.0 fuxi and official 4.0.17.0 hongkong.')
     cache = ROOT / 'tools/smali'
     cache.mkdir(parents=True, exist_ok=True)
     for name, (coordinate, expected) in ARTIFACTS.items():
@@ -66,6 +69,9 @@ def patch(source, destination):
     callbacks = {'reportStatus(I)V': 2,
                  'reportSvStatus(I[I[F[F[F[F[F)V': 8,
                  'reportLocation(ZLandroid/location/Location;)V': 3}
+    if digest == OS4_SHA256:
+        del callbacks['reportSvStatus(I[I[F[F[F[F[F)V']
+        callbacks['reportSvStatus(I[I[I[I[F[F[F[F[F[Ljava/lang/String;[J[D)V'] = 13
     original = 'invoke-static {v0}, Landroid/os/Binder;->withCleanCallingIdentity(Lcom/android/internal/util/FunctionalUtils$ThrowingRunnable;)V'
     for signature, parameter_words in callbacks.items():
         start = text.index('.method ' + signature + '\n')

@@ -8,11 +8,10 @@ import subprocess
 import zipfile
 
 from lp_image import pack, read_lp, unpack
-from common import fetch_ksu, firmware_idle, host_check, sdk_path, tool
+from common import ROOT, fetch_ksu, firmware_idle, host_check, sdk_path, tool
 from init_userdata import create as create_userdata
 from patch_gnss import patch as patch_gnss
 
-ROOT = Path(__file__).resolve().parent.parent
 BASE = sdk_path() / 'system-images/android-36/google_apis_playstore/arm64-v8a'
 DEBUGFS = tool('debugfs', 'e2fsprogs')
 DUMP_EROFS = tool('dump.erofs', 'erofs-utils')
