@@ -16,6 +16,7 @@ python3 scripts/build_os4_official.py --zip /path/to/hongkong-ota_full-OS4.0.17.
 源分区默认保存到 `work/os4-official/input/hongkong-4.0.17/`，也可用 `--partitions` 指定已提取的 `system / system_ext / product / mi_ext / mi_product`。构建器将这些分区合并为 4 KB EROFS，保留文件权限、所有者、SELinux 与 capability 标签，并合入小米覆盖层和 OS4 软件版本属性。
 
 ## 天气与相册预装
+
 | 应用 | 固定版本 | 系统路径 |
 | --- | --- | --- |
 | 天气 | 18.0.0.27-R | `/product/app/MIUIWeather/MIUIWeather.apk` |
