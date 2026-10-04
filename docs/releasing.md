@@ -33,10 +33,10 @@ shasum -a 256 -c SHA256SUMS
 
 上传 `releases/v0.2.1-a17-hyperos4-hongkong-r2/` 的 **7 个文件**：5 个镜像分卷、`manifest.json`、`SHA256SUMS`。安装器 ZIP 已拆到独立正式 Release，不随镜像上传。
 
-分卷合计 **6.315 GiB**：前 4 卷各 1536 MiB，最后一卷 338406247 bytes。manifest 为 19193 bytes，包含 format 3 固件、冻结启动代码、校验信息与数据兼容族。系统镜像 SHA-256：
+分卷合计 **6.315 GiB**：前 4 卷各 1536 MiB，最后一卷 338446746 bytes。manifest 为 20387 bytes，包含 format 3 固件、冻结启动代码、校验信息与数据兼容族。系统镜像 SHA-256：
 
 ```text
-1d15b4e4b816eaf2a8832d7384244fdfc9f4eb99e3d06ab8efab953a1de7928a
+37393a8d3a3a3702dc09a9cc8a9a433b2d2070766a947e9d3bc314ea119ecbe9
 ```
 
 保持文件名不变，勿跨版本混用。安装器核验全部分卷和解包文件；也可运行 `shasum -a 256 -c SHA256SUMS`。个人用户数据、备份、SDK、日志与 OTA 不在附件内。
@@ -52,7 +52,7 @@ HYPEROS_AVD_WORKSPACE="$PWD/work/release-os4-r2" \
   --version v0.2.1-a17-hyperos4-hongkong-r2
 ```
 
-输出目录和模板已存在时拒绝覆盖。候选更新默认配置与小爱库，保留已验证 Vendor 相机、合成和 PCM 补丁；打包器核验实际内容并创建空白 userdata。可选小米相机工具位于 `tools/xiaomi-camera/`，需要配套校验清单。未来镜像要求 Installer 1.0.0；当前已验证的 r2 保持原清单和固件，不为 TUI 改动重新打包。
+输出目录和模板已存在时拒绝覆盖。候选更新默认配置与小爱库，保留已验证 Vendor 相机、合成和 PCM 补丁；打包器核验实际内容并创建空白 userdata。可选小米相机工具位于 `tools/xiaomi-camera/`，需要配套校验清单。本次 r2 已重新打包，合入指定日志标签配置并冻结当前匹配的启动代码，要求 Installer 1.0.0。
 
 format 1 / 2 的旧 Release 仍可导入。format 3 将固件与启动代码一起版本化；兼容族不变且加密模板相同时可保数据升级，Android 或镜像族变化须新建实例。未发布的候选使用 `--bundle` 测试。
 

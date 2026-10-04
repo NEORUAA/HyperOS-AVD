@@ -93,7 +93,7 @@ adb -s emulator-5574 emu kill
 | 负一屏 | 默认 6 GiB，保留“＋”入口，背景模糊按中档设备降级；8 GiB 完整效果已冷启动验证 |
 | 首次开机引导 | 空白用户数据已复测；查找设备状态查询禁用后，用户已完成引导并进入系统；兼容处理纳入镜像默认配置 |
 | 默认常亮 | 系统默认资源与启动器均配置常亮；启动时接通虚拟 AC 电源，当前设备已确认 `mStayOn=true` |
-| 已知问题 | 部分后台缩略图仍为白色；其它桌面设置未完成回归；切换镜像首次启动曾出现一次 `goldfish_sync` 内核崩溃，重启模拟器进程后恢复；首次着色器初始化可能较慢 |
+| 已知问题 | 其它桌面设置未完成回归；切换镜像首次启动曾出现一次 `goldfish_sync` 内核崩溃，重启模拟器进程后恢复；首次着色器初始化可能较慢 |
 | GPS | 已合入 Android 17 GNSS 回调补丁；官方镜像仍需完整回归 |
 | 其它服务 | Google 登录、小米云服务与蓝牙尚未完整验证；相机为实验适配，音频输出及故障恢复已验证 |
 
@@ -134,6 +134,10 @@ HYPEROS_AVD_WORKSPACE="$PWD/work/os4-official" python3 scripts/apply_camera_fix.
 脚本核验相机 APK、原生库及 Android runtime 的 SHA-256，使用 CPU 共享内存替代缺失的 AION 分配接口，并在该应用进程内补齐外部纹理占用单元的查询。Gfxstream 对 `GL_REQUIRED_TEXTURE_IMAGE_UNITS_OES` 的实现返回 `1`，但前置参数校验遗漏此枚举，造成切换动画 GL 线程退出；兼容层采用相同返回值，保留其它查询和错误。[Gfxstream 查询实现](https://github.com/google/gfxstream/blob/main/guest/GLESv2_enc/GL2Encoder.cpp)、[参数校验](https://github.com/google/gfxstream/blob/main/guest/GLESv2_enc/GLESv2Validation.cpp)。库保留进程生命周期引用，避免切换摄像头时卸载后留下失效回调。
 
 已验证预览和连续两轮 `0 → 1 → 0` 切换，进程保持不变；独立 Camera2 测试可通过两颗摄像头保存 JPEG。Parrot 拍照尚未完整适配：HDR 自动模式曾保存明显噪点，关闭 HDR 时编码器要求色度像素步长为 `2`，而 AVD 提供 `1`。GPU 美颜与其它拍照模式未验证。兼容库不作为全局驱动或 KernelSU 模块安装；应用更新后需重新核验，未知版本会拒绝修改。
+
+### 指定日志标签
+
+v0.2.1 合入 `kill_HyperOS_Log.sh` 的 17 个日志标签设置，将对应 `log.tag.<标签>` 属性固化为 `S`，在系统进程启动前生效。原脚本保留在 `/system_ext/bin/kill_HyperOS_Log.sh`；其它标签保持原有级别。构建与打包会核验脚本、属性和清单一致。
 
 ### 应用商店更新桌面后
 

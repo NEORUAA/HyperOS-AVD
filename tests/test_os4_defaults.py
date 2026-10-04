@@ -14,10 +14,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from os4_defaults import (AOD_INIT, GRADIENT_BLUR_INIT, REFRESH_INIT, REFRESH_SCRIPT, DISPLAY, MODEL_SHA256, MODEL_XML, boot_defaults, disable_debug_console,
                           display_template, identity_properties, production_properties)
 from os4_defaults import apply_gradient_blur_runtime, apply_sensor_defaults
+from os4_defaults import LOG_SCRIPT, LOG_TAGS, log_properties
 from apply_navigation_fix import simulated_serial
 
 
 class OS4DefaultsTests(unittest.TestCase):
+    def test_supplied_log_filter_changes_only_its_selected_tags(self):
+        self.assertEqual(hashlib.sha256(LOG_SCRIPT).hexdigest(),
+                         'b3dc26dc1ace9121ff4f9e71fe6526af933148e4a0e7d9f962b42395f294d6c7')
+        self.assertEqual(len(LOG_TAGS), 17)
+        source = b'log.tag.RenderEngine=D\nlog.tag.Other=V\nro.debuggable=0\n'
+        patched = log_properties(source)
+        for tag in LOG_TAGS:
+            self.assertEqual(patched.splitlines().count(('log.tag.' + tag + '=S').encode()), 1)
+        self.assertIn(b'log.tag.Other=V\n', patched)
+        self.assertIn(b'ro.debuggable=0\n', patched)
+        self.assertEqual(log_properties(patched), patched)
+        with self.assertRaisesRegex(RuntimeError, 'Duplicate'):
+            log_properties(source + b'log.tag.RenderEngine=E\n')
+
     def test_simulated_serial_is_unique_on_creation_and_preserved_on_update(self):
         with patch('apply_navigation_fix.date') as clock, \
                 patch('apply_navigation_fix.secrets.randbelow', side_effect=[12345, 1466, 23456, 4356]) as random, \

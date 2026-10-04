@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 
@@ -31,6 +32,11 @@ on property:ro.persistent_properties.ready=true
 DISPLAY = {'width': 1120, 'height': 2436, 'density': 480}
 SENSOR_DEFAULTS = {'proximity': '5', 'light': '200'}
 CONFIG = Path(__file__).resolve().parent.parent / 'config'
+LOG_SCRIPT = (CONFIG / 'kill_HyperOS_Log.sh').read_bytes()
+LOG_TAGS = tuple(LOG_SCRIPT.split(b'tags=(\n', 1)[1].split(b'\n)', 1)[0].decode().split())
+if not LOG_TAGS or len(set(LOG_TAGS)) != len(LOG_TAGS) or any(
+        not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', tag) for tag in LOG_TAGS):
+    raise RuntimeError('Invalid HyperOS log tag list.')
 REFRESH_SCRIPT = (CONFIG / 'lock_fps.sh').read_bytes()
 REFRESH_INIT = b'\n' + (CONFIG / 'lock_refresh_rate.rc').read_bytes()
 REFRESH_SERVICE = '/data/adb/service.d/hyperos-avd-lock-fps.sh'
@@ -160,7 +166,22 @@ def production_properties(data):
         lines[matches[0]] = key + b'false'
     else:
         lines += [b'# Use the stock generic gradient blur on ranchu.', key + b'false']
-    return identity_properties(b'\n'.join(lines) + b'\n')
+    return log_properties(identity_properties(b'\n'.join(lines) + b'\n'))
+
+
+def log_properties(data):
+    """Apply the supplied script's tag levels before Android processes start."""
+    lines = data.splitlines()
+    for tag in LOG_TAGS:
+        key = ('log.tag.' + tag + '=').encode()
+        matches = [i for i, line in enumerate(lines) if line.startswith(key)]
+        if len(matches) > 1:
+            raise RuntimeError('Duplicate log tag property: ' + tag)
+        if matches:
+            lines[matches[0]] = key + b'S'
+        else:
+            lines.append(key + b'S')
+    return b'\n'.join(lines) + b'\n'
 
 
 def identity_properties(data):
@@ -254,13 +275,16 @@ def image_replacements(sdk, folder):
                     '--out', str(signed), str(unsigned)], check=True, capture_output=True, env=environment)
     subprocess.run([str(tools / 'apksigner'), 'verify', str(signed)],
                    check=True, capture_output=True, env=environment)
-    marker = {'schema': 2, 'finddevice_disabled_component': PROVIDER,
+    marker = {'schema': 3, 'finddevice_disabled_component': PROVIDER,
               'finddevice_apk_sha256': APK_SHA256, 'settings_overlay': OVERLAY,
               'settings_overlay_sha256': sha256(signed), 'screen_off_timeout': SCREEN_TIMEOUT,
               'sleep_timeout': -1, 'stay_on_while_plugged_in': 7, 'emulator_ac_online': True,
               'debuggable': False, 'serial_console': False, 'display': DISPLAY,
               'color_mode': 0, 'color_saturation': COLOR_SATURATION,
               'gradient_blur_perf': False,
+              'log_filter': {'script': '/system_ext/bin/kill_HyperOS_Log.sh',
+                             'script_sha256': hashlib.sha256(LOG_SCRIPT).hexdigest(),
+                             'tags': list(LOG_TAGS), 'level': 'S'},
               'refresh': {'physical_hz': 60, 'render_hz': 60, 'mode_id': 0,
                           'script_sha256': hashlib.sha256(REFRESH_SCRIPT).hexdigest()},
               'aod': {'doze_always_on': 1, 'aod_show_style': 2, 'aod_mode_user_set': 1,
@@ -276,6 +300,8 @@ def image_replacements(sdk, folder):
             (MODEL_XML, 0o644, 'u:object_r:system_file:s0'),
         'system_ext/bin/hyperos-avd-aod-defaults.sh':
             (AOD_SCRIPT, 0o755, 'u:object_r:system_file:s0'),
+        'system_ext/bin/kill_HyperOS_Log.sh':
+            (LOG_SCRIPT, 0o755, 'u:object_r:system_file:s0'),
         'product/etc/init/lock_fps.sh':
             (REFRESH_SCRIPT, 0o755, 'u:object_r:system_file:s0'),
     }

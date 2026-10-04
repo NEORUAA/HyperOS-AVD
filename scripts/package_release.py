@@ -63,7 +63,7 @@ BUILD_KEYS = ('hyperos', 'source', 'android_api', 'archive_sha256', 'kernel_page
 def verify_os4_image(root, metadata):
     """Verify the release's actual packed image and baked compatibility files."""
     from lp_image import read_lp
-    from os4_defaults import COMPONENT_XML, PROVIDER, MODEL_XML, DISPLAY, AOD_SCRIPT, AOD_INIT
+    from os4_defaults import COMPONENT_XML, PROVIDER, MODEL_XML, DISPLAY, AOD_SCRIPT, AOD_INIT, LOG_SCRIPT, LOG_TAGS
     from patch_flutter import PROFILES
     from patch_weather import ANGLE
     from patch_assistant import MANIFEST as ASSISTANT_FIX
@@ -141,6 +141,14 @@ def verify_os4_image(root, metadata):
         raise RuntimeError('Unexpected OOBE component metadata.')
     if json.loads(read('/product/etc/hyperos-avd-defaults.json')) != defaults:
         raise RuntimeError('Baked awake defaults do not match release metadata.')
+    logging = defaults.get('log_filter', {})
+    if (read('/system_ext/bin/kill_HyperOS_Log.sh') != LOG_SCRIPT
+            or logging.get('script_sha256') != hashlib.sha256(LOG_SCRIPT).hexdigest()
+            or logging.get('tags') != list(LOG_TAGS) or logging.get('level') != 'S'):
+        raise RuntimeError('Missing verified HyperOS log filter.')
+    for tag in LOG_TAGS:
+        if prop.splitlines().count(('log.tag.' + tag + '=S').encode()) != 1:
+            raise RuntimeError('Missing or duplicate log filter property: ' + tag)
     if read('/product/etc/device_features/emu64a.xml') != MODEL_XML:
         raise RuntimeError('Missing verified emulator AOD features.')
     if read('/product/etc/device_features/hongkong.xml') != MODEL_XML:
@@ -269,6 +277,7 @@ def write_bundle(directory, version, metadata, paths, part_mib=1536):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version')
+    parser.add_argument('--output', type=Path, help='Stage a new bundle before replacing an unpublished release')
     parser.add_argument('--variant', choices=('os3', 'os4-official'), default='os3')
     parser.add_argument('--part-mib', type=int, default=1536)
     args = parser.parse_args()
@@ -299,7 +308,7 @@ def main():
     if temporary.exists():
         raise RuntimeError('A release template already exists; choose a new revision.')
     paths['images/userdata.img'] = create_userdata(temporary)
-    directory = REPO_ROOT / 'releases' / version
+    directory = args.output or REPO_ROOT / 'releases' / version
     write_bundle(directory, version, metadata, paths, args.part_mib)
 
 
