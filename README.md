@@ -46,7 +46,13 @@
 
 需要 **Apple Silicon Mac、Python 3、Android Studio SDK 的 Emulator / Platform-Tools**。建议预留 60 GiB 加用户数据备份空间，无需 NDK 或手机 OTA。
 
-下载独立正式 Release 的 [Installer v1.0.0](https://github.com/NEORUAA/HyperOS-AVD/releases/tag/installer-v1.0.0)，解压后双击 **`Install.command`**，选择中文 / English。ASCII 菜单同时展示 OS3 / OS4，自动下载并校验镜像，可自定义 **AVD 名称、RAM、存储和 CPU**，支持保数据升级和检查更新。OS4 默认 6 GiB / 32 GiB / 4 核。
+在终端运行，选择中文 / English 和安装目录即可自动拉取正式安装器：
+
+```sh
+curl -fsSL https://github.com/NEORUAA/HyperOS-AVD/releases/latest/download/install.sh | bash
+```
+
+ASCII 菜单同时展示 OS3 / OS4，自动下载并校验镜像，可自定义 **AVD 名称、RAM、存储和 CPU**，支持保数据升级和检查更新。OS4 默认 6 GiB / 32 GiB / 4 核。也可下载 [Installer ZIP](https://github.com/NEORUAA/HyperOS-AVD/releases/tag/installer-v1.0.0) 后双击 **`Install.command`**。
 
 安装器与镜像独立发版：安装器使用 `installer-v*` 正式 Release，镜像继续使用各自的 Pre-release。也可直接从源码运行：
 

@@ -13,13 +13,14 @@
 
 ## 安装器附件
 
-上传 `releases/installer-v1.0.0/` 的 **3 个文件**：
+上传 `releases/installer-v1.0.0/` 的 **4 个文件**：
 
 - `HyperOS-AVD-Installer-v1.0.0-macos-arm64.zip`：中英 ASCII TUI、安装管理代码与指南；不含镜像或用户数据。
+- `install.sh`：`curl | bash` 入口，先选择语言与目录，再自动拉取正式安装器。
 - `installer.json`：安装器版本、平台、归档及源码校验信息。
-- `SHA256SUMS`：ZIP 与元数据校验和。
+- `SHA256SUMS`：ZIP、入口脚本与元数据校验和。
 
-本次 ZIP 为 **137259 bytes（约 134 KiB）**，包含 43 个可移植源码 / 配置 / 指南文件；已验证解压后的可执行入口。
+本次安装器已加入在线启动入口，发布目录的文件大小与哈希以 `installer.json`、`SHA256SUMS` 为准。
 
 ```sh
 python3 scripts/package_installer.py
@@ -38,6 +39,8 @@ shasum -a 256 -c SHA256SUMS
 ```text
 37393a8d3a3a3702dc09a9cc8a9a433b2d2070766a947e9d3bc314ea119ecbe9
 ```
+
+将正式安装器设为 GitHub Latest 并上传 `install.sh`，一键入口才能通过 `releases/latest/download/install.sh` 获取脚本。镜像保持 Pre-release。
 
 保持文件名不变，勿跨版本混用。安装器核验全部分卷和解包文件；也可运行 `shasum -a 256 -c SHA256SUMS`。个人用户数据、备份、SDK、日志与 OTA 不在附件内。
 

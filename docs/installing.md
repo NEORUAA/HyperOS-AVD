@@ -6,6 +6,16 @@ Requires Apple Silicon macOS, Python 3, and Android Studio SDK Emulator / Platfo
 
 ## 启动安装器 / Open the installer
 
+推荐直接运行，无需手动下载文件：
+
+```sh
+curl -fsSL https://github.com/NEORUAA/HyperOS-AVD/releases/latest/download/install.sh | bash
+```
+
+选择中文 / English，再输入安装与下载目录。正式安装器存于该目录的 `installer/`，镜像缓存存于 `downloads/`，新 AVD 默认安装到 `instances/<名称>/`；进入 TUI 后仍可单独调整每个实例的位置。通过 `curl | bash` 启动时，交互输入来自当前终端。
+
+Run the command above, choose a language and a base directory. The bootstrap fetches and verifies the latest stable installer, then opens its menu. It keeps installers in `installer/`, downloads in `downloads/`, and defaults new instances to `instances/<name>/`. Each instance's path can still be changed in the menu.
+
 克隆仓库后双击 `Install.command`，或运行：
 
 ```sh

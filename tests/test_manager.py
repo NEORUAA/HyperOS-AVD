@@ -287,6 +287,14 @@ class ManagerTests(unittest.TestCase):
         self.assertIn('RAM: 2.5 GiB', output.getvalue())
         self.assertIn('CPU: 2', output.getvalue())
 
+    def test_explicit_language_skips_duplicate_language_prompt(self):
+        with patch.object(manage, 'instances', return_value=[]), \
+                patch('builtins.input', return_value='0') as prompt, \
+                patch('sys.stdout', new_callable=io.StringIO):
+            manage.tui('en')
+        self.assertEqual(prompt.call_count, 1)
+        self.assertIn('Choose action', prompt.call_args.args[0])
+
     def test_browse_shows_both_families_without_installed_instances(self):
         rows = [{'tag_name': tag} for tag in
                 ('v0.2.0-a17-hyperos4-hongkong-r1', 'v0.1.0-a16-hyperos3-fuxi-r1')]

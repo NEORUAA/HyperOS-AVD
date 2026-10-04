@@ -22,7 +22,7 @@ def package(directory, version=VERSION):
     archive = directory / f'HyperOS-AVD-Installer-v{version}-macos-arm64.zip'
     metadata = {'project': 'HyperOS-AVD', 'type': 'installer', 'schema': 1,
                 'version': version, 'tag': 'installer-v' + version, 'platform': 'macos-arm64',
-                'prerelease': False, 'files': files}
+                'prerelease': False, 'files': files, 'bootstrap': {'name': 'install.sh', **files['install.sh']}}
     with zipfile.ZipFile(archive, 'x', compression=zipfile.ZIP_DEFLATED) as zip:
         for relative, path in paths.items():
             entry = zipfile.ZipInfo('HyperOS-AVD/' + relative)
@@ -35,7 +35,12 @@ def package(directory, version=VERSION):
     metadata['archive'] = {'name': archive.name, 'size': archive.stat().st_size, 'sha256': sha256(archive)}
     manifest = directory / 'installer.json'
     manifest.write_text(json.dumps(metadata, indent=2) + '\n')
-    (directory / 'SHA256SUMS').write_text(''.join(sha256(p) + '  ' + p.name + '\n' for p in (archive, manifest)))
+    bootstrap = directory / 'install.sh'
+    bootstrap.write_bytes((REPO_ROOT / 'install.sh').read_bytes())
+    if sha256(bootstrap) != files['install.sh']['sha256']:
+        raise RuntimeError('Bootstrap source changed during packaging.')
+    bootstrap.chmod(0o755)
+    (directory / 'SHA256SUMS').write_text(''.join(sha256(p) + '  ' + p.name + '\n' for p in (archive, manifest, bootstrap)))
     print('Prepared stable installer: ' + str(directory))
     return metadata
 

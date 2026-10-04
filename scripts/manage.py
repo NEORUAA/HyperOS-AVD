@@ -24,7 +24,7 @@ from common import REPO_ROOT, avd_home, host_check, port_free, sdk_path, sha256
 
 VERSION = '1.0.0'
 REPOSITORY = 'NEORUAA/HyperOS-AVD'
-HOME = Path.home() / 'HyperOS-AVD'
+HOME = Path(os.environ.get('HYPEROS_AVD_HOME', Path.home() / 'HyperOS-AVD')).expanduser().resolve()
 LANG = 'zh'
 
 
@@ -709,10 +709,13 @@ def installer_updates():
     panel(tr('安装器更新 / 独立正式 Release', 'Installer updates / separate stable release'), details)
 
 
-def tui():
+def tui(language=None):
     global LANG
-    panel('HyperOS-AVD / Installer ' + VERSION, ['[1] 中文', '[2] English'])
-    LANG = 'en' if ask('语言 / Language: 1 中文, 2 English', 'Language', 1) == '2' else 'zh'
+    if language is None:
+        panel('HyperOS-AVD / Installer ' + VERSION, ['[1] 中文', '[2] English'])
+        LANG = 'en' if ask('语言 / Language: 1 中文, 2 English', 'Language', 1) == '2' else 'zh'
+    else:
+        LANG = language
     while True:
         entries = instances()
         dashboard(entries)
@@ -787,7 +790,7 @@ def tui():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--language', choices=('zh', 'en'), default='zh')
+    parser.add_argument('--language', choices=('zh', 'en'))
     commands = parser.add_subparsers(dest='command')
     listing = commands.add_parser('releases')
     listing.add_argument('--variant', choices=('all', 'os3', 'os4-official'), default='all')
@@ -813,7 +816,7 @@ def main():
     starting.add_argument('--skip-oobe', action='store_true')
     args = parser.parse_args()
     global LANG
-    LANG = args.language
+    LANG = args.language or 'zh'
     host_check()
     if args.command == 'releases':
         print(json.dumps([{key: item[key] for key in ('tag_name', 'html_url', 'prerelease')}
@@ -844,7 +847,7 @@ def main():
         if args.start:
             start({'root': root})
     else:
-        tui()
+        tui(args.language)
 
 
 if __name__ == '__main__':

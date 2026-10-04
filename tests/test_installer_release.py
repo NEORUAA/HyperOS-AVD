@@ -27,6 +27,9 @@ class InstallerReleaseTests(unittest.TestCase):
                 self.assertTrue((archive.getinfo('HyperOS-AVD/Install.command').external_attr >> 16) & 0o111)
                 self.assertEqual(json.loads(archive.read('HyperOS-AVD/installer.json'))['type'], 'installer')
             self.assertTrue((out / 'SHA256SUMS').is_file())
+            self.assertTrue((out / 'install.sh').stat().st_mode & 0o111)
+            self.assertEqual(hashlib.sha256((out / 'install.sh').read_bytes()).hexdigest(),
+                             metadata['bootstrap']['sha256'])
             self.assertFalse((out / 'manifest.json').exists())
 
 

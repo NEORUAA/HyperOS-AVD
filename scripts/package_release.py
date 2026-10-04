@@ -217,7 +217,7 @@ def release_metadata(root, variant):
 
 def runtime_files():
     """Explicit portable source set; exclude logs, secrets, user state and binaries."""
-    paths = {'Install.command': REPO_ROOT / 'Install.command'}
+    paths = {'Install.command': REPO_ROOT / 'Install.command', 'install.sh': REPO_ROOT / 'install.sh'}
     for directory, patterns in {'scripts': ('*.py',), 'config': ('*.ini', '*.xml', '*.json', '*.sh', '*.rc'),
                                 'native': ('*.S', '*.c', '*.cpp', '*.m')}.items():
         for pattern in patterns:

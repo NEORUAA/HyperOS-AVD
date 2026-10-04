@@ -12,7 +12,11 @@ Tag：`v0.2.1-a17-hyperos4-hongkong-r2`，**Pre-release**。系统基包仍为�
 
 ## 安装 / 升级
 
-下载独立正式 [Installer](https://github.com/NEORUAA/HyperOS-AVD/releases/tag/installer-v1.0.0)，解压后打开 `Install.command`，安装器会自动下载镜像。
+使用独立正式 [Installer](https://github.com/NEORUAA/HyperOS-AVD/releases/tag/installer-v1.0.0)，无需手动下载镜像：
+
+```sh
+curl -fsSL https://github.com/NEORUAA/HyperOS-AVD/releases/latest/download/install.sh | bash
+```
 
 已有 v0.2.0：**关闭目标 AVD → 升级 → 选择旧实例和 v0.2.1**，自动备份并保留应用与数据。[中英安装指南](https://github.com/NEORUAA/HyperOS-AVD/blob/installer-v1.0.0/docs/installing.md)。
 
