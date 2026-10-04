@@ -78,15 +78,14 @@ class InstallerTests(unittest.TestCase):
                 setup.install_bundle(str(path))
             self.assertEqual(image.read_bytes(), b'original')
 
-    def test_os4_selects_separate_root_and_refuses_custom_port(self):
+    def test_os4_selects_separate_root_and_supports_owned_custom_instances(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary).resolve()
             with patch.object(setup, 'ROOT', repo), patch.object(setup, 'REPO_ROOT', repo), \
                     patch.object(common, 'ROOT', repo), patch.dict('os.environ', {}, clear=True):
                 self.assertEqual(setup.select_release({'variant': 'os4-official'}), (common.OS4_NAME, 5574))
                 self.assertEqual(setup.ROOT, repo / 'work/os4-official')
-                with self.assertRaisesRegex(RuntimeError, 'port 5574'):
-                    setup.select_release({'variant': 'os4-official'}, port=5554)
+                self.assertEqual(setup.select_release({'variant': 'os4-official'}, name='Custom_temp', port=5580), ('Custom_temp', 5580))
                 setup.ROOT = repo / 'work/os4-official'
                 (setup.ROOT / 'local').mkdir(parents=True)
                 (setup.ROOT / 'local/build.json').write_text(json.dumps({'source': common.OS4_SOURCE}))

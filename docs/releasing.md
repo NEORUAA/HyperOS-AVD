@@ -1,49 +1,61 @@
 # Release 发布
 
-OS3 / OS4 使用独立 Release。Tag 格式为 `v<工具版本>-a<Android版本>-hyperos<主版本>-<机型代号>-r<镜像修订号>`；镜像修订递增 `r1 / r2`，工具版本独立递增。
+安装器和镜像分别发版。本次已准备 **Installer v1.0.0 正式 Release** 与 **OS4 v0.2.1 / r2 Pre-release**，尚未打 tag 或发布。
 
-| | OS3 已发布 | OS4 首发 |
-| --- | --- | --- |
-| Tag | `v0.1.0-a16-hyperos3-fuxi-r1` | `v0.2.0-a17-hyperos4-hongkong-r1` |
-| 标题 | HyperOS 3.0.2.0 · Android 16 · Apple Silicon · r1 | HyperOS 4.0.17.0 · Android 17 · 官方原包移植 · Apple Silicon · r1 |
-| 来源 | fuxi MysticGSI | hongkong 官方 OTA |
-| Manifest | format 1 | format 2，独立配置与公开构建信息 |
+| 内容 | Tag | 状态 | 正文 |
+| --- | --- | --- | --- |
+| 安装器 | `installer-v1.0.0` | 正式 Release | [安装器正文](releases/installer-v1.md) |
+| OS3 r1 | `v0.1.0-a16-hyperos3-fuxi-r1` | Pre-release | 原首版 Release |
+| OS4 r1 | `v0.2.0-a17-hyperos4-hongkong-r1` | Pre-release | [首版正文](releases/os4-r1.md) |
+| OS4 r2 | `v0.2.1-a17-hyperos4-hongkong-r2` | Pre-release | [v0.2.1 正文](releases/os4-r2.md) |
 
-OS4 正文见 [os4-r1.md](releases/os4-r1.md)，可复制到 GitHub Release，建议勾选 **Pre-release**。后续版本沿用 Android / HyperOS / 机型 / 修订号命名。
+安装器标题：**HyperOS-AVD Installer v1.0.0**，不要勾选 Pre-release，可设为 GitHub Latest。镜像标题：**HyperOS 4 · v0.2.1 · Apple Silicon · r2**，保持 Pre-release。两个版本号独立递增；安装器查询镜像使用全部 Releases，包含 OS3 / OS4 Pre-release，不依赖 GitHub Latest。
 
-## 打包
+## 安装器附件
+
+上传 `releases/installer-v1.0.0/` 的 **3 个文件**：
+
+- `HyperOS-AVD-Installer-v1.0.0-macos-arm64.zip`：中英 ASCII TUI、安装管理代码与指南；不含镜像或用户数据。
+- `installer.json`：安装器版本、平台、归档及源码校验信息。
+- `SHA256SUMS`：ZIP 与元数据校验和。
+
+本次 ZIP 为 **137259 bytes（约 134 KiB）**，包含 43 个可移植源码 / 配置 / 指南文件；已验证解压后的可执行入口。
 
 ```sh
-python3 scripts/package_release.py --variant os4-official --version v0.2.0-a17-hyperos4-hongkong-r1
+python3 scripts/package_installer.py
+cd releases/installer-v1.0.0
+shasum -a 256 -c SHA256SUMS
 ```
 
-OS3 使用 `--variant os3`（默认）。输出位于 `releases/<tag>/`，同名目录不会覆盖；本次未发布的 OS4 旧分卷已替换为最终配置的新包。打包器只读取固件白名单、AVD 模板和两个官方 KSU 运行附件，并创建全新空白 userdata。
+安装器更新无需重发镜像。镜像 format 3 内仍保留与固件匹配的启动代码，启动时使用该冻结版本；安装器负责下载、校验和切换。
 
-OS4 打包前核验 packed / raw system 一致、生产版调试与安全 ADB 属性、小米桌面身份、开机引导与常亮配置、完整 hongkong.xml、AOD 服务、1120×2436 / 480 dpi，以及天气、相册、Flutter 和 ANGLE 文件哈希。打包后再次核对输入文件，发生变化时不会生成有效 manifest。
+## OS4 r2 镜像附件
 
-## 本次附件
+上传 `releases/v0.2.1-a17-hyperos4-hongkong-r2/` 的 **7 个文件**：5 个镜像分卷、`manifest.json`、`SHA256SUMS`。安装器 ZIP 已拆到独立正式 Release，不随镜像上传。
 
-目录：`releases/v0.2.0-a17-hyperos4-hongkong-r1/`。上传其中 **全部 7 个文件**：
-
-| 附件 | 大小 |
-| --- | --- |
-| `.tar.gz.part001` — `.part004` | 每卷 1536 MiB |
-| `.tar.gz.part005` | 320.06 MiB |
-| `manifest.json` | 9988 bytes |
-| `SHA256SUMS` | 五卷及 manifest 的 SHA-256 |
-
-分卷合计 **6.31 GiB**，包含 21 个安装文件；文件名前缀为 `HyperOS-AVD-v0.2.0-a17-hyperos4-hongkong-r1-macos-arm64`。系统镜像 SHA-256：
+分卷合计 **6.315 GiB**：前 4 卷各 1536 MiB，最后一卷 338406247 bytes。manifest 为 19193 bytes，包含 format 3 固件、冻结启动代码、校验信息与数据兼容族。系统镜像 SHA-256：
 
 ```text
-aac19ec5b339da3d1ee215db5adc9717a87a9b6d7995b838b210b60953d2ae30
+1d15b4e4b816eaf2a8832d7384244fdfc9f4eb99e3d06ab8efab953a1de7928a
 ```
 
-分卷默认 1536 MiB，符合 [GitHub 单附件小于 2 GiB 的要求](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)。保持附件名称，不跨版本混用；可以在附件目录运行 `shasum -a 256 -c SHA256SUMS` 手动核验。
+保持文件名不变，勿跨版本混用。安装器核验全部分卷和解包文件；也可运行 `shasum -a 256 -c SHA256SUMS`。个人用户数据、备份、SDK、日志与 OTA 不在附件内。
 
-## 发布前检查
+## 镜像构建
 
-28 项自动测试与 35 个镜像内签名 / 原生文件预检已通过。当前镜像已恢复出厂并完成首次启动，README 使用这次重新完成引导后截取的 8 张 OS4 图片。全部分卷与 manifest 校验、21 个文件的实际安装导入及空白 userdata 检查均已通过。
+使用独立发布候选，避免改动正在使用的 AVD：
 
-发布前提交对应源码、文档与截图，并在该提交上创建上述 tag，使 GitHub 自动提供的源码包含 OS4 安装器。镜像附件、个人 AVD 数据、环境与日志均被 Git 忽略。
+```sh
+python3 scripts/prepare_release_image.py --source work/os4-official --output work/release-os4-r2
+HYPEROS_AVD_WORKSPACE="$PWD/work/release-os4-r2" \
+  python3 scripts/package_release.py --variant os4-official \
+  --version v0.2.1-a17-hyperos4-hongkong-r2
+```
 
-附件导入校验在独立临时目录中进行，不注册或启动 AVD。设备功能验收与附件校验分开记录；尚未验证的硬件、云服务和新设置界面效果见 OS4 发布正文。
+输出目录和模板已存在时拒绝覆盖。候选更新默认配置与小爱库，保留已验证 Vendor 相机、合成和 PCM 补丁；打包器核验实际内容并创建空白 userdata。可选小米相机工具位于 `tools/xiaomi-camera/`，需要配套校验清单。未来镜像要求 Installer 1.0.0；当前已验证的 r2 保持原清单和固件，不为 TUI 改动重新打包。
+
+format 1 / 2 的旧 Release 仍可导入。format 3 将固件与启动代码一起版本化；兼容族不变且加密模板相同时可保数据升级，Android 或镜像族变化须新建实例。未发布的候选使用 `--bundle` 测试。
+
+## 发布检查
+
+审查 Git 改动与 [r2 验证记录](releases/os4-r2-validation.md)，提交对应源码后分别创建两个 tag，再上传各自目录的附件。不要只上传镜像分卷：manifest 与校验文件也必须上传。远端发布后核对安装器与镜像发现结果。README 的 4×2 OS4 截图是 r1 画面，未作为 r2 新截图。

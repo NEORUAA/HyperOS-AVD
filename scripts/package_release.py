@@ -194,12 +194,28 @@ def release_metadata(root, variant):
                 or not build.get('native_quickstep_identity')
                 or not build.get('preinstalled_apps') or not build.get('avd_defaults')):
             raise RuntimeError('OS4 release requires the verified official image, native fixes, defaults and secure ADB.')
-        metadata.update(format=2, variant=variant, hyperos=build['hyperos'], android_api=37,
+        metadata.update(format=3, variant=variant, hyperos=build['hyperos'], android_api=37,
                         source=OS4_SOURCE, source_device='hongkong', hardware_base_api=36,
                         build={key: build[key] for key in BUILD_KEYS if key in build})
     elif (root / 'local/build.json').exists() and json.loads((root / 'local/build.json').read_text()).get('source') == OS4_SOURCE:
         raise RuntimeError('Refusing to label official OS4 firmware as OS3.')
+    if variant == 'os4-official':
+        metadata['compatibility'] = {'minimum_installer': '1.0.0',
+            'userdata_family': 'os4-hongkong-api37-ranchu-4k',
+            'upgrade_from': ['v0.2.0-a17-hyperos4-hongkong-r1'],
+            'runtime_in_bundle': True}
     return metadata
+
+
+def runtime_files():
+    """Explicit portable source set; exclude logs, secrets, user state and binaries."""
+    paths = {'Install.command': REPO_ROOT / 'Install.command'}
+    for directory, patterns in {'scripts': ('*.py',), 'config': ('*.ini', '*.xml', '*.json', '*.sh', '*.rc'),
+                                'native': ('*.S', '*.c', '*.cpp', '*.m')}.items():
+        for pattern in patterns:
+            for path in sorted((REPO_ROOT / directory).glob(pattern)):
+                paths[path.relative_to(REPO_ROOT).as_posix()] = path
+    return paths
 
 
 def write_bundle(directory, version, metadata, paths, part_mib=1536):
@@ -213,8 +229,11 @@ def write_bundle(directory, version, metadata, paths, part_mib=1536):
         if path.is_symlink() or not path.is_file():
             raise RuntimeError('Release files must not be symlinks.')
         allowed = (relative.startswith('images/') or relative in ('tools/' + name for name in KSU_FILES)
-                   or metadata['format'] == 2 and relative == 'config/avd.ini'
-                   or relative in ('tools/emulator_srgb.dylib', 'tools/emulator_srgb.build.json'))
+                   or metadata['format'] in (2, 3) and relative == 'config/avd.ini'
+                   or metadata['format'] == 3 and relative.startswith('runtime/')
+                   or relative in ('tools/emulator_srgb.dylib', 'tools/emulator_srgb.build.json')
+                   or metadata['format'] == 3 and relative in ('tools/xiaomi-camera/' + name for name in
+                      ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json')))
         if not allowed or '..' in Path(relative).parts or Path(relative).is_absolute():
             raise RuntimeError('Unexpected release path: ' + relative)
         files[relative] = {'size': path.stat().st_size, 'sha256': sha256(path)}
@@ -237,7 +256,7 @@ def write_bundle(directory, version, metadata, paths, part_mib=1536):
     finally:
         writer.close_part()
     manifest = {**metadata, 'version': version, 'parts': writer.parts, 'files': files}
-    if manifest['format'] == 2:
+    if manifest['format'] in (2, 3):
         manifest['build']['system_sha256'] = files['images/system.img']['sha256']
     (directory / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     (directory / 'SHA256SUMS').write_text(''.join(
@@ -272,12 +291,16 @@ def main():
         from host_color import build as build_host_color
         for path in build_host_color(root):
             paths['tools/' + path.name] = path
+    if metadata['format'] == 3:
+        paths.update({'tools/xiaomi-camera/' + path.name: path for path in (root / 'tools/xiaomi-camera').iterdir() if path.is_file()})
+        paths.update({'runtime/' + relative: path for relative, path in runtime_files().items()})
     # Always create a new blank template; never trust or read personal avd/ data.
     temporary = root / 'work/release-templates' / version / 'userdata.img'
     if temporary.exists():
         raise RuntimeError('A release template already exists; choose a new revision.')
     paths['images/userdata.img'] = create_userdata(temporary)
-    write_bundle(REPO_ROOT / 'releases' / version, version, metadata, paths, args.part_mib)
+    directory = REPO_ROOT / 'releases' / version
+    write_bundle(directory, version, metadata, paths, args.part_mib)
 
 
 if __name__ == '__main__':

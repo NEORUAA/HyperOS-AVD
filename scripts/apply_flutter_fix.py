@@ -94,10 +94,23 @@ def root(config, command, **kwargs):
 
 
 def official(config):
+    """Require the registered owned instance and the verified OS4 profile."""
+    from common import avd_home
     build = ROOT / 'local/build.json'
-    if (config['name'] != 'HyperOS_4_Official_API_37' or config['port'] != 5574
-            or not build.is_file() or json.loads(build.read_text()).get('source') != 'official-hongkong-ota'):
-        raise RuntimeError('This patch is restricted to the official OS4 AVD (emulator-5574).')
+    saved = ROOT / 'local/runtime.json'
+    registry = avd_home() / (config['name'] + '.ini')
+    if not build.is_file() or json.loads(build.read_text()).get('source') != 'official-hongkong-ota':
+        raise RuntimeError('This patch requires the official OS4 firmware profile.')
+    expected = json.loads(saved.read_text()) if saved.is_file() else {}
+    values = dict(line.split('=', 1) for line in registry.read_text().splitlines() if '=' in line) if registry.is_file() else {}
+    if (expected.get('name') != config['name'] or expected.get('port') != config['port']
+            or Path(values.get('path', '/nonexistent')).expanduser().resolve()
+               != ROOT / 'avd' / (config['name'] + '.avd')):
+        raise RuntimeError('This patch is restricted to registered owned OS4 instances.')
+    actual = adb(config, 'shell', 'getprop ro.boot.qemu.avd_name',
+                 capture_output=True, text=True, check=True, timeout=10).stdout.strip()
+    if actual != config['name']:
+        raise RuntimeError('Refused a different running AVD.')
 
 
 def rewrite_apk(source, destination, engine):

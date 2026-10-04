@@ -132,6 +132,12 @@ def main():
     if not userdata.exists():
         print('Creating fresh userdata from the clean release template.', flush=True)
         shutil.copyfile(ROOT / 'images/userdata.img', userdata)
+    from manage import resize, validate_userdata
+    validate_userdata(Path(config['sdk']), userdata.parent)
+    hardware = config.get('hardware', {})
+    storage = hardware.get('disk.dataPartition.size')
+    if storage:
+        resize(Path(config['sdk']), userdata.parent, int(storage.rstrip('G')))
     logs = ROOT / 'logs'
     logs.mkdir(exist_ok=True)
     log = logs / 'emulator-current.log'

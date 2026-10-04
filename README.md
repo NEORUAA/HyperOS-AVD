@@ -12,8 +12,7 @@
 | 来源 | 小米 13（fuxi）MysticGSI | 小米 18 Pro（hongkong）官方 OTA 原包 |
 | 特点 | 已验证 GPS 的基础 GSI 适配 | 完整原厂系统组件；原生桌面、玻璃、天气与相册适配 |
 | 默认资源 | 2 核 / 2.5 GiB | 4 核 / 6 GiB（完整负一屏模糊建议 8 GiB） |
-| ADB | `emulator-5566` | `emulator-5574` |
-| 启动 | `Start-HyperOS.command` | `Start-HyperOS4-Official.command` |
+| 新安装入口 | 中英 TUI，自定义名称 / 端口 | 中英 TUI，自定义名称 / 端口 |
 
 两版独立保存镜像与用户数据，可同时安装。镜像在 [GitHub Releases](https://github.com/NEORUAA/HyperOS-AVD/releases) 分卷提供，勿混用不同 Release 的文件。
 
@@ -43,20 +42,24 @@
 
 </details>
 
-## 安装与启动
+## 安装与升级
 
-需要 **Apple Silicon Mac、Python 3**，以及 Android Studio SDK 中的 **Android Emulator / Platform-Tools**。首次安装建议预留 40 GiB，更新预留 60 GiB；使用预构建包无需下载手机 OTA、GSI 或编译工具。
+需要 **Apple Silicon Mac、Python 3、Android Studio SDK 的 Emulator / Platform-Tools**。建议预留 60 GiB 加用户数据备份空间，无需 NDK 或手机 OTA。
 
-1. 下载或克隆本仓库，再下载所选 Release 的 `manifest.json` 和全部 `.tar.gz.partNNN` 分卷，放在同一目录。
-2. 在仓库目录执行（无需手动解压；安装器自动校验 SHA-256 并选择 OS3 / OS4）：
+下载独立正式 Release 的 [Installer v1.0.0](https://github.com/NEORUAA/HyperOS-AVD/releases/tag/installer-v1.0.0)，解压后双击 **`Install.command`**，选择中文 / English。ASCII 菜单同时展示 OS3 / OS4，自动下载并校验镜像，可自定义 **AVD 名称、RAM、存储和 CPU**，支持保数据升级和检查更新。OS4 默认 6 GiB / 32 GiB / 4 核。
 
-   ```sh
-   chmod +x Setup.command Start-HyperOS*.command
-   ./Setup.command --bundle /path/to/release/manifest.json
-   ./Start-HyperOS4-Official.command  # OS3: ./Start-HyperOS.command
-   ```
+安装器与镜像独立发版：安装器使用 `installer-v*` 正式 Release，镜像继续使用各自的 Pre-release。也可直接从源码运行：
 
-首次启动会创建空白数据、初始化 KernelSU 并安装管理器；等待终端显示 `HyperOS is ready` 后完成系统引导。之后可双击对应启动脚本，应用和数据会保留。安装更新前关闭对应版本的 AVD；脚本会拒绝端口冲突和其它工作区的 AVD。
+```sh
+git clone https://github.com/NEORUAA/HyperOS-AVD.git
+cd HyperOS-AVD
+chmod +x Install.command
+./Install.command
+```
+
+**v0.2.0 升级：关闭目标 AVD → 安装器选“升级” → 选择旧实例和新版本。** 自动备份 userdata、QCOW2 和加密密钥后升级，保留应用与数据；失败可恢复。之后从安装器或实例目录的 `Start.command` 启动。
+
+[中英安装 / 升级 / 恢复指南](docs/installing.md) · [安装器发布说明](docs/releases/installer-v1.md) · [OS4 v0.2.1 更新日志](docs/releases/os4-r2.md)
 
 ## 兼容范围
 

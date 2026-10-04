@@ -25,13 +25,13 @@ def read_manifest(value):
         path = Path(value).expanduser().resolve()
         manifest = json.loads(path.read_text())
         base = path.parent
-    if manifest.get('project') != 'HyperOS-AVD' or manifest.get('format') not in (1, 2):
+    if manifest.get('project') != 'HyperOS-AVD' or manifest.get('format') not in (1, 2, 3):
         raise RuntimeError('Unsupported HyperOS-AVD release manifest.')
     if not re.fullmatch(r'v[0-9A-Za-z_.-]+', manifest.get('version', '')):
         raise RuntimeError('Invalid release version.')
     if manifest.get('platform') != 'macos-arm64':
         raise RuntimeError('This installer supports macos-arm64 releases only.')
-    if manifest.get('format') == 2:
+    if manifest.get('format') in (2, 3):
         build = manifest.get('build', {})
         if (manifest.get('variant') != 'os4-official'
                 or build.get('source') != OS4_SOURCE
@@ -54,13 +54,11 @@ def select_release(manifest, name=None, port=None):
            or manifest is None and saved_build.exists()
            and json.loads(saved_build.read_text()).get('source') == OS4_SOURCE)
     if os4:
-        if name not in (None, OS4_NAME) or port not in (None, OS4_PORT):
-            raise RuntimeError('Official OS4 fixes require HyperOS_4_Official_API_37 on port 5574.')
         if manifest is not None:
             ROOT = Path(os.environ.get('HYPEROS_AVD_WORKSPACE', REPO_ROOT / 'work/os4-official')).expanduser().resolve()
         if ROOT == REPO_ROOT:
             raise RuntimeError('OS4 must use a separate workspace; OS3 firmware was preserved.')
-        name, port = OS4_NAME, OS4_PORT
+        name, port = name or OS4_NAME, port if port is not None else OS4_PORT
     else:
         name, port = name or DEFAULT_NAME, port if port is not None else DEFAULT_PORT
     common.ROOT = ROOT
@@ -106,10 +104,13 @@ def install_bundle(value):
         with tarfile.open(archive, 'r:gz') as tar:
             for member in tar:
                 relative = Path(member.name)
+                if member.name in expected and member.size != expected[member.name]['size']:
+                    raise RuntimeError('Archive member size differs from manifest.')
                 if (not member.isfile() or relative.is_absolute() or '..' in relative.parts
                         or member.name not in expected
                         or not (relative.parts[0] in ('images', 'tools')
-                                or manifest['format'] == 2 and member.name == 'config/avd.ini')):
+                                or manifest['format'] in (2, 3) and member.name == 'config/avd.ini'
+                                or manifest['format'] == 3 and relative.parts[0] == 'runtime')):
                     raise RuntimeError('Unexpected release archive entry: ' + member.name)
                 if member.name in seen:
                     raise RuntimeError('Duplicate release archive entry: ' + member.name)
@@ -123,7 +124,7 @@ def install_bundle(value):
                 seen.add(member.name)
         if seen != set(expected):
             raise RuntimeError('Release archive is incomplete.')
-        if manifest['format'] == 2:
+        if manifest['format'] in (2, 3):
             template = (staging / 'config/avd.ini').read_text()
             properties = dict(line.split('=', 1) for line in template.splitlines() if '=' in line)
             if (properties.get('target') != 'android-37.0'
@@ -135,13 +136,13 @@ def install_bundle(value):
             target.parent.mkdir(parents=True, exist_ok=True)
             (staging / name).replace(target)
     (ROOT / 'local').mkdir(exist_ok=True)
-    if manifest['format'] == 2:
+    if manifest['format'] in (2, 3):
         (ROOT / 'local/build.json').write_text(json.dumps(manifest['build'], indent=2) + '\n')
     (ROOT / 'local/installed-release.json').write_text(json.dumps(manifest, indent=2) + '\n')
 
 
 def configure(sdk, name, port):
-    path = ROOT / 'avd' / (name + '.avd')
+    path = ROOT.resolve() / 'avd' / (name + '.avd')
     registry = avd_home() / (name + '.ini')
     instances_path = ROOT / 'local/instances.json'
     instances = json.loads(instances_path.read_text()) if instances_path.exists() else {}
@@ -157,13 +158,24 @@ def configure(sdk, name, port):
     template = (config_file if config_file.exists() else REPO_ROOT / 'config/avd.ini').read_text()
     properties = dict(line.split('=', 1) for line in template.splitlines() if '=' in line)
     target = properties['target']
+    # Retain per-instance hardware choices across launcher reconfiguration.
+    saved = ROOT / 'local/runtime.json'
+    previous = json.loads(saved.read_text()) if saved.exists() else {}
+    hardware = previous.get('hardware', {})
+    for key, value in hardware.items():
+        if key not in ('hw.ramSize', 'hw.cpu.ncore', 'disk.dataPartition.size'):
+            raise RuntimeError('Unexpected per-instance hardware key: ' + key)
+        properties[key] = str(value)
+    template = ''.join(key + '=' + value + '\n' for key, value in properties.items())
     template += f'image.sysdir.1={ROOT / "images"}/\n'
+    template += 'AvdId=' + name + '\navd.ini.displayname=' + name + '\n'
+
     (path / 'config.ini').write_text(template)
     registry.parent.mkdir(parents=True, exist_ok=True)
     registry.write_text(f'avd.ini.encoding=UTF-8\npath={path}\ntarget={target}\n')
     (ROOT / 'local').mkdir(exist_ok=True)
     (ROOT / 'local/runtime.json').write_text(json.dumps(
-        {'sdk': str(sdk), 'name': name, 'port': port}, indent=2) + '\n')
+        {**previous, 'sdk': str(sdk), 'name': name, 'port': port, 'hardware': hardware}, indent=2) + '\n')
     instances[name] = port
     instances_path.write_text(json.dumps(instances, indent=2) + '\n')
     print(f'Registered {name} at emulator-{port}. Existing userdata was preserved.')
@@ -182,8 +194,8 @@ def main():
         raise RuntimeError('Choose either --bundle or --manifest.')
     release = read_manifest(args.bundle or args.manifest)[0] if args.bundle or args.manifest else None
     args.name, args.port = select_release(release, args.name, args.port)
-    if not re.fullmatch(r'HyperOS_[A-Za-z0-9_]+', args.name):
-        raise RuntimeError('Use an isolated AVD name beginning with HyperOS_.')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', args.name):
+        raise RuntimeError('Use an ASCII AVD name up to 64 characters.')
     if args.port % 2 or not 5556 <= args.port <= 5682:
         raise RuntimeError('Use a free, even emulator console port between 5556 and 5682.')
     port_free(args.port)

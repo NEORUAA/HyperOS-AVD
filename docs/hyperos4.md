@@ -170,4 +170,4 @@ Flutter 模块 revision 6 为系统 v3 引擎增加三条阴影兼容指令：�
 HYPEROS_AVD_WORKSPACE="$PWD/work/os4-official" python3 scripts/apply_weather_fix.py --disable
 ```
 
-OS4 Release 使用 format 2 manifest，包含独立 AVD 模板和公开构建信息；旧 OS3 format 1 包仍可安装。运行 `python3 scripts/package_release.py --variant os4-official --version v0.2.1-a17-hyperos4-hongkong-r2` 生成分卷。打包器核验镜像内的修复、预装应用和默认配置，重新创建空白 userdata，不读取现有 `avd/`。构建结果、日志和个人数据均被 Git 忽略。
+OS4 首版使用 format 2 manifest，包含独立 AVD 模板和公开构建信息；旧 OS3 format 1 包仍可安装。v0.2.1 使用 format 3；新安装器与保数据升级见 [安装文档](installing.md)，打包见 [发布文档](releasing.md)。打包器核验镜像内的修复、预装应用和默认配置，重新创建空白 userdata，不读取现有 `avd/`。构建结果、日志和个人数据均被 Git 忽略。
