@@ -107,6 +107,26 @@ class SecurityMetadataTests(unittest.TestCase):
             finally:
                 reader.close()
 
+            preserved = root / 'patched.img'
+            build(preserved, [('', root / 'source.img')], root / 'patch-work',
+                  {'binary': (b'patched', 0o750, 'u:object_r:system_file:s0')},
+                  preserve_replacement_metadata=True)
+            reader = Reader(preserved)
+            try:
+                binary = dict(reader.walk())['binary']
+                self.assertEqual((binary['uid'], binary['gid']), (1000, 2000))
+                self.assertEqual(binary['mode'], stat.S_IFREG | 0o750)
+                self.assertEqual(binary['attrs'], attrs)
+            finally:
+                reader.close()
+            self.assertEqual(subprocess.check_output(
+                ['dump.erofs', '--cat', '--path=/binary', str(preserved)]), b'patched')
+            with self.assertRaisesRegex(RuntimeError, 'Replacement metadata differs'):
+                build(root / 'wrong-mode.img', [('', root / 'source.img')], root / 'patch-work',
+                      {'binary': (b'patched', 0o755, 'u:object_r:system_file:s0')},
+                      preserve_replacement_metadata=True)
+            self.assertFalse((root / 'wrong-mode.img').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

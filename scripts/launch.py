@@ -13,6 +13,11 @@ from common import ROOT, adb, fetch_ksu, host_check, port_free, runtime
 from setup import configure
 
 
+def is_os4():
+    build = ROOT / 'local/build.json'
+    return build.is_file() and json.loads(build.read_text()).get('source') == 'official-hongkong-ota'
+
+
 def skip_oobe(config):
     command = '\n'.join([
         'set -e',
@@ -49,6 +54,9 @@ def initialize(config, bypass_oobe=False):
         time.sleep(3)
     else:
         raise RuntimeError('ADB did not become ready within 5 minutes. Inspect logs/emulator-current.log.')
+    if is_os4():
+        from os4_defaults import apply_sensor_defaults
+        apply_sensor_defaults(config)
     root = adb(config, 'shell', "su -W -c 'id'", capture_output=True, text=True, timeout=15)
     if 'uid=0(' not in root.stdout:
         binary = ROOT / 'tools/ksud-aarch64-linux-android'
@@ -82,6 +90,14 @@ def initialize(config, bypass_oobe=False):
         install_navigation(config)
         from apply_weather_fix import install as install_weather
         install_weather(config)
+        from apply_assistant_fix import install as install_assistant
+        install_assistant(config)
+        from apply_xiaomi_camera_fix import MODULE, install as install_xiaomi_camera
+        installed = adb(config, 'shell', 'su -W -c ' + shlex.quote(
+            f'if [ -f {MODULE}/manifest.json ]; then echo yes; fi'),
+            capture_output=True, text=True, check=True, timeout=10).stdout.strip()
+        if installed == 'yes' or config.get('camera_bridge', False):
+            install_xiaomi_camera(config, rebuild=installed == 'yes')
     if bypass_oobe:
         skip_oobe(config)
     manager = adb(config, 'shell', 'pm path me.weishu.kernelsu', capture_output=True, text=True, timeout=15)
@@ -99,6 +115,8 @@ def initialize(config, bypass_oobe=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--headless', action='store_true')
+    parser.add_argument('--no-host-color-fix', action='store_true',
+                        help='Disable the OS4 macOS sRGB window tag for this launch')
     parser.add_argument('--skip-oobe', action='store_true',
                         help='Skip Xiaomi provisioning and open the native launcher')
     args = parser.parse_args()
@@ -126,13 +144,17 @@ def main():
     command = [str(Path(config['sdk']) / 'emulator/emulator'), '-avd', config['name'],
                '-sysdir', str(ROOT / 'images'), '-port', str(config['port']),
                '-no-snapshot-load', '-no-snapshot-save', '-accel', 'on', '-gpu', 'host',
-               '-memory', memory, '-cores', cores, '-no-audio', '-show-kernel', '-verbose']
-    if config['name'] == 'HyperOS_4_Official_API_37':
+               '-memory', memory, '-cores', cores, '-show-kernel', '-verbose']
+    if is_os4():
         command += ['-crash-report-mode', 'never']
     if args.headless:
         command += ['-no-window']
+    from host_color import environment
+    launch_environment = environment(ROOT, config['name'],
+                                     enabled=not (args.headless or args.no_host_color_fix))
     with log.open('wb') as output:
-        process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+        process = subprocess.Popen(command, env=launch_environment, stdout=output,
+                                   stderr=subprocess.STDOUT, start_new_session=True)
     print(f"Starting {config['name']} (PID {process.pid}). Log: {log}", flush=True)
     # The emulator stays running if setup fails; evidence and userdata are retained.
     initialize(config, bypass_oobe=args.skip_oobe)

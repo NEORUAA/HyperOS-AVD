@@ -113,7 +113,8 @@ def tar_entry(path, inode):
     return entry
 
 
-def build(destination, partitions, work, replacements, removals=()):
+def build(destination, partitions, work, replacements, removals=(),
+          preserve_replacement_metadata=False):
     """Merge trees in order; prefix:subtree selects an OTA overlay subtree.
 
     Resolve precedence before emitting the tar so duplicate members cannot
@@ -167,6 +168,12 @@ def build(destination, partitions, work, replacements, removals=()):
             safe_path(path)
             if path in expected and not stat.S_ISREG(expected[path]['mode']):
                 raise RuntimeError('Replacement is not a regular file: ' + path)
+            if preserve_replacement_metadata:
+                _, mode, label = replacements[path]
+                inode = expected.get(path)
+                if (inode is None or inode['mode'] != (stat.S_IFREG | mode) or
+                        inode['attrs'].get('security.selinux', b'').rstrip(b'\0') != label.encode()):
+                    raise RuntimeError('Replacement metadata differs for ' + path)
             parents = path.split('/')[:-1]
             for index in range(1, len(parents) + 1):
                 parent = '/'.join(parents[:index])
@@ -211,8 +218,11 @@ def build(destination, partitions, work, replacements, removals=()):
                         else:
                             raise RuntimeError('Unexpected special file: ' + path)
                     for path, (data, mode, label) in replacements.items():
-                        inode = {'uid': 0, 'gid': 0, 'mode': stat.S_IFREG | mode,
-                                 'attrs': {'security.selinux': label.encode() + b'\0'}}
+                        if preserve_replacement_metadata:
+                            inode = dict(expected[path])
+                        else:
+                            inode = {'uid': 0, 'gid': 0, 'mode': stat.S_IFREG | mode,
+                                     'attrs': {'security.selinux': label.encode() + b'\0'}}
                         entry = tar_entry(path, inode)
                         entry.size = len(data)
                         archive.addfile(entry, io.BytesIO(data))

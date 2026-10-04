@@ -1,0 +1,11 @@
+# HyperOS-AVD adaptation of the supplied lock_refresh_rate.rc.
+# Use an existing enforcing domain; this image has no u:r:su:s0 domain.
+service hyperos-lock-fps /system/bin/sh /product/etc/init/lock_fps.sh
+    user root
+    group root shell
+    seclabel u:r:shell:s0
+    disabled
+    oneshot
+
+on property:sys.boot_completed=1
+    start hyperos-lock-fps

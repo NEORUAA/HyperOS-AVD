@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Enable the original Xiaomi recents RRO before Android caches resources."""
 import argparse
+from datetime import date
 import json
 from pathlib import Path
+import re
+import secrets
 import shlex
 import subprocess
 import zipfile
@@ -10,6 +13,7 @@ import zipfile
 from common import ROOT, adb, runtime
 from apply_flutter_fix import official, root
 from patch_flutter import digest
+from os4_defaults import PHONE_IDENTITY
 
 MODULE = '/data/adb/modules/hyperos_avd_navigation'
 PROPERTY = 'ro.miui.product.home'
@@ -21,6 +25,27 @@ AOT_OFFSET = 0xe68c7c
 WATCHDOG_BEFORE = '4dc9fa82371dda8a0a8b9eff48301469d2f84752b52b71635b84e5fc0c47fa6e'
 WATCHDOG_AFTER = 'adf0bd94b88463669bebecb61ce301b614a974e28367a281ea1f81504062d3ed'
 WATCHDOG_OFFSET = 0x61f878
+
+
+def simulated_serial(previous):
+    """Match the supplied phone's SN style, not an official factory identity."""
+    value = previous.get('serial_number') if previous else None
+    pattern = r'[0-9]{5}/[A-HJ-NP-Z][0-9][NPQRSTUVWXYZ][1-9ABCDEFHJKMNPQRSTUVWXYZ][0-9]{5}'
+    if isinstance(value, str) and re.fullmatch(pattern, value):
+        return value
+    # Migrate only this project's earlier hex identifiers, once. Do not
+    # silently replace an invalid or unrelated saved identifier.
+    legacy = (isinstance(value, str) and re.fullmatch(r'[0-9A-F]{16}', value)
+              and previous.get('revision') == 8)
+    if value is not None and not legacy:
+        raise RuntimeError('Invalid saved simulated serial number.')
+    today = date.today()
+    month = 'NPQRSTUVWXYZ'[today.month - 1]
+    day = '123456789ABCDEFHJKMNPQRSTUVWXYZ'[today.day - 1]
+    prefix = secrets.randbelow(90000) + 10000
+    factory = secrets.choice('ABCDEFGHJKLMNPQRSTUVWXYZ')
+    sequence = secrets.randbelow(99999) + 1
+    return f'{prefix}/{factory}{today.year % 10}{month}{day}{sequence:05d}'
 
 
 def patch_aot(data):
@@ -105,6 +130,22 @@ case "$old" in ''|com.miui.home) ;; *) echo "Refused home identity: $old" >> "$M
 /data/adb/ksud resetprop -n ro.miui.product.home com.miui.home || exit 1
 # mi_ext build.prop is loaded by the phone vendor init, absent on ranchu.
 /data/adb/ksud resetprop -n persist.sys.pre_startup true || exit 1
+# Restore stock SF transitions after fixing the compositor's 20 Hz render rate.
+# This also migrates images carrying the earlier local-animation workaround.
+/data/adb/ksud resetprop -n persist.miui.home_sf_anim true || exit 1
+# Set public phone identity before zygote caches android.os.Build fields.
+# Emulator HAL selectors and boot hardware remain ranchu.
+while IFS='=' read -r key value; do
+    [ -n "$key" ] || continue
+    current=$(getprop "$key")
+    [ "$current" = "$value" ] && continue
+    # A short property slot cannot grow into Android's long read-only storage.
+    # Recreate long OTA fingerprints before zygote starts caching properties.
+    if [ "${#value}" -ge 91 ] && [ -n "$current" ]; then
+        /data/adb/ksud resetprop -d "$key" || exit 1
+    fi
+    /data/adb/ksud resetprop -n "$key" "$value" || exit 1
+done < "$MODDIR/identity.prop"
 echo "$(date +%s) Enabled original Xiaomi launcher resource overlay" >> "$MODDIR/navigation.log"
 # The ranchu kernel's virtual thermal nodes otherwise receive generic sysfs
 # labels. Xiaomi PowerKeeper requires the dedicated thermal label and crashes
@@ -146,11 +187,19 @@ def install(config, enable=False):
         raise RuntimeError('Refused to replace an unrelated navigation module.')
     old_text = root(config, f'if [ -f {MODULE}/manifest.json ]; then cat {MODULE}/manifest.json; fi')
     old = json.loads(old_text) if old_text else None
-    if old and old.get('revision') not in (2, 3, 4, 5):
+    if old and old.get('revision') not in (2, 3, 4, 5, 6, 7, 8, 9, 10):
         raise RuntimeError('Unknown navigation module revision.')
     folder = ROOT / 'work/navigation-fix'
     folder.mkdir(parents=True, exist_ok=True)
-    manifest = {'revision': 5, 'property': PROPERTY, 'value': 'com.miui.home', 'component': COMPONENT}
+    serial = simulated_serial(old)
+    # Xiaomi's DeviceIdentifiersPolicyService reads psno specifically for
+    # Settings and Contacts; other callers use the standard serial property.
+    phone_identity = dict(PHONE_IDENTITY, **{'ro.serialno': serial,
+                                           'ro.boot.serialno': serial,
+                                           'ro.ril.oem.psno': serial})
+    manifest = {'revision': 10, 'property': PROPERTY, 'value': 'com.miui.home', 'component': COMPONENT,
+                'animation_backend': 'stock-sf', 'sf_animation': True,
+                'phone_identity': phone_identity, 'serial_number': serial}
     apk = root(config, 'pm path com.miui.home').splitlines()[0].removeprefix('package:')
     aot_supported = apk.startswith('/data/app/') and root(config, 'sha256sum ' + shlex.quote(apk)).split()[0] == APK_SHA256
     payloads = []
@@ -183,8 +232,10 @@ def install(config, enable=False):
     (folder / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     (folder / 'post-fs-data.sh').write_text(EARLY_SCRIPT)
     (folder / 'service.sh').write_text(BOOT_SCRIPT)
-    (folder / 'system.prop').write_text('ro.miui.product.home=com.miui.home\n')
-    (folder / 'module.prop').write_text('id=hyperos_avd_navigation\nname=HyperOS AVD native Quickstep\nversion=5\nversionCode=5\nauthor=HyperOS-AVD\ndescription=Original launcher identity, thermal labels and finite AVD transition deadlines\n')
+    (folder / 'system.prop').write_text('ro.miui.product.home=com.miui.home\npersist.miui.home_sf_anim=true\n')
+    (folder / 'identity.prop').write_text(''.join(key + '=' + value + '\n'
+                                             for key, value in phone_identity.items()))
+    (folder / 'module.prop').write_text('id=hyperos_avd_navigation\nname=HyperOS AVD native Quickstep\nversion=10\nversionCode=10\nauthor=HyperOS-AVD\ndescription=Original phone and launcher identity, persistent Xiaomi-style simulated serial and stock SF transitions\n')
     if old and old['revision'] == 2:
         # Remove only this project's experimental directory bind. Original
         # overlay files remain untouched on the read-only system partition.
@@ -195,7 +246,7 @@ def install(config, enable=False):
              'nsenter -t "$pid" -m -- /data/adb/ksu/bin/busybox umount -l /product/overlay || exit 1\nfi\ndone')
         root(config, f'mv {MODULE} /data/adb/hyperos-navigation-backup-$(date +%s)')
     root(config, f'mkdir -p {MODULE}')
-    names = ['manifest.json', 'module.prop', 'system.prop', 'post-fs-data.sh', 'service.sh']
+    names = ['manifest.json', 'module.prop', 'system.prop', 'identity.prop', 'post-fs-data.sh', 'service.sh']
     names += payloads
     for name in names:
         remote = '/data/local/tmp/hyperos-nav-' + name

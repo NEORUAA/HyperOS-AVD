@@ -11,7 +11,7 @@
 | 系统 | 3.0.2.0.WMCCNXM / Android 16 | 4.0.17.0.XFRCNXM / Android 17 |
 | 来源 | 小米 13（fuxi）MysticGSI | 小米 18 Pro（hongkong）官方 OTA 原包 |
 | 特点 | 已验证 GPS 的基础 GSI 适配 | 完整原厂系统组件；原生桌面、玻璃、天气与相册适配 |
-| 默认资源 | 2 核 / 2.5 GiB | 4 核 / 4 GiB |
+| 默认资源 | 2 核 / 2.5 GiB | 4 核 / 6 GiB（完整负一屏模糊建议 8 GiB） |
 | ADB | `emulator-5566` | `emulator-5574` |
 | 启动 | `Start-HyperOS.command` | `Start-HyperOS4-Official.command` |
 
@@ -62,7 +62,7 @@
 
 OS4 的桌面手势、近期任务入口、Flutter 文字与玻璃、天气、相册及完整开机引导已验证；默认使用原厂 1120×2436 / 480 dpi，接通虚拟电源保持常亮，息屏显示默认开启并设为始终显示。应用商店更新后若再次缺少元素，按 [OS4 文档](docs/hyperos4.md#应用商店更新桌面后)刷新补丁。
 
-完整原厂软件不代表手机硬件全兼容：相机、音频默认关闭，蓝牙及云服务未完整验证；查找设备状态查询已禁用以解除引导黑屏。部分后台缩略图仍可能空白。两版均为实验镜像，KSU root 域仍为 permissive，Google 登录与 Play Integrity 未验证。
+v0.2.1 修复 60 Hz 合成、macOS 色彩、渐进式模糊、小爱光效、返回压暗和连续播放无声。音频默认开启，后摄支持编辑虚拟场景；小米相机桥接可选，基础拍照可用，后摄录像仍掉帧。蓝牙及云服务未完整验证；查找设备状态查询已禁用以解除引导黑屏。部分后台缩略图仍可能空白。两版均为实验镜像，KSU root 域仍为 permissive，Google 登录与 Play Integrity 未验证。
 
 [OS3 兼容说明](docs/compatibility.md) · [OS3 重建](docs/rebuilding.md) · [OS4 适配与重建](docs/hyperos4.md) · [发布说明](docs/releasing.md)
 

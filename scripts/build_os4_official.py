@@ -67,8 +67,12 @@ def main():
     from lp_image import pack, unpack
     from patch_gnss import patch
     from patch_flutter import patch as patch_flutter
+    from patch_assistant import APK as ASSISTANT_APK, image_replacements as assistant_replacements
+    from patch_composer import build_vendor
+    from patch_camera_scene import build_vendor as build_scene_vendor
+    from patch_audio import build_vendor as build_audio_vendor
     from preinstall_os4_apps import REMOVALS, replacements as app_replacements, validated_apks
-    from os4_defaults import image_replacements as default_replacements
+    from os4_defaults import image_replacements as default_replacements, production_properties
     from setup import configure
     host_check()
     firmware_idle(5574)
@@ -123,6 +127,15 @@ def main():
         raise RuntimeError('Unexpected ranchu vendor layout.')
     vendor.write_bytes(content.replace(fstab, patched_fstab).replace(
         b'ro.zygote.disable_gl_preload=1', b'ro.zygote.disable_gl_preload=0'))
+    composer_manifest = build_vendor(vendor, ROOT / 'work/vendor-alpha-fixed.img',
+                                    ROOT / 'work/vendor-alpha-tree')
+    (ROOT / 'work/vendor-alpha-fixed.img').replace(vendor)
+    scene_manifest = build_scene_vendor(vendor, ROOT / 'work/vendor-scene-fixed.img',
+                                       ROOT / 'work/vendor-scene', sdk_path())
+    (ROOT / 'work/vendor-scene-fixed.img').replace(vendor)
+    audio_manifest = build_audio_vendor(vendor, ROOT / 'work/vendor-audio-fixed.img',
+                                       ROOT / 'work/vendor-audio')
+    (ROOT / 'work/vendor-audio-fixed.img').replace(vendor)
     replacements = {}
     def put(path, data, mode=0o644, label='u:object_r:system_file:s0'):
         replacements[path] = (data, mode, label)
@@ -134,9 +147,7 @@ def main():
     prop += b'\n# HyperOS-AVD virtual hardware and native effects.\n'
     prop += b'ro.mediaserver.64b.enable=true\ndebug.hwui.renderer=skiagl\n'
     prop += b'debug.renderengine.backend=skiavkthreaded\n'
-    # Activate the original Xiaomi product RRO, including RecentsActivity.
-    prop += b'ro.miui.product.home=com.miui.home\n'
-    put('system/build.prop', prop, 0o600)
+    put('system/build.prop', production_properties(prop), 0o600)
     put('system_ext/lib64/libhyper_os_flutter.so',
         patch_flutter(erofs(partitions / 'system_ext.img', '/lib64/libhyper_os_flutter.so')),
         label='u:object_r:system_lib_file:s0')
@@ -178,6 +189,9 @@ def main():
     replacements.update(app_edits)
     default_edits, default_manifest = default_replacements(sdk_path(), ROOT / 'work/defaults-overlay')
     replacements.update(default_edits)
+    assistant_edits, assistant_manifest = assistant_replacements(erofs(
+        partitions / 'product.img', ASSISTANT_APK.removeprefix('/product')))
+    replacements.update(assistant_edits)
     image = ROOT / 'work/hyperos-system.img'
     # Flatten the phone overlay mounts. Merely retaining /mi_ext does not make
     # its permissions, runtime declarations or product resources visible.
@@ -207,8 +221,15 @@ def main():
         ('system', image), ('vendor', vendor), ('system_dlkm', ROOT / 'work/base/system_dlkm.img')])
     template = (repo / 'config/avd.ini').read_text().replace('HyperOS 3 - Android 16',
         'HyperOS 4 Official - Android 17').replace('target=android-36', 'target=android-37.0')
-    template = template.replace('hw.ramSize=2560', 'hw.ramSize=4096')
+    # Keep the requested 6 GiB default above App Vault's 4 GiB Lite threshold.
+    # Its high-tier wallpaper blur path still requires more than 6 GiB.
+    template = template.replace('hw.ramSize=2560', 'hw.ramSize=6144')
     template = template.replace('hw.cpu.ncore=2', 'hw.cpu.ncore=4')
+    template = template.replace('hw.audioOutput=no', 'hw.audioOutput=yes')
+    # Enable editable virtual scene images on the back camera and retain the
+    # basic emulated front camera. OS3 keeps its existing defaults.
+    template = template.replace('hw.camera.back=none', 'hw.camera.back=virtualscene')
+    template = template.replace('hw.camera.front=none', 'hw.camera.front=emulated')
     from os4_defaults import display_template
     template = display_template(template)
     (ROOT / 'config/avd.ini').write_text(template)
@@ -220,6 +241,10 @@ def main():
         'mi_ext_overlays': True, 'mi_ext_software_identity': True, 'flutter_render_fix': 6,
         'preinstalled_apps': app_manifest,
         'native_quickstep_identity': True,
+        'assistant_render_fix': assistant_manifest,
+        'composer_alpha_fix': composer_manifest,
+        'camera_scene_fix': scene_manifest,
+        'audio_pcm_fix': audio_manifest,
         'avd_defaults': default_manifest,
         'adb_authentication': not args.diagnostic_adb,
         'experimental': True, 'ota_metadata': metadata}, indent=2) + '\n')
