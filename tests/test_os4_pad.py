@@ -1,4 +1,4 @@
-"""Guard the tablet identity, RAM ceiling and audited native engine profile."""
+"""Guard the tablet identity, defaults and audited native engine profile."""
 import hashlib
 from pathlib import Path
 import struct
@@ -129,13 +129,6 @@ class TabletProfileTests(unittest.TestCase):
                          os4_pad.PROFILE['model_xml_sha256'])
         self.assertIn(b'<bool name="is_pad">true</bool>', os4_pad.model_config())
         self.assertIn(b'<bool name="support_aod">false</bool>', os4_pad.model_config())
-
-    def test_ram_override_cannot_exceed_test_limit(self):
-        self.assertEqual(os4_pad.memory_limit({'hw.ramSize': '4096'}), 4096)
-        self.assertEqual(os4_pad.memory_limit({'hw.ramSize': '3072'}), 3072)
-        for value in ('0', '8192', '6144', '-1'):
-            with self.assertRaises(RuntimeError):
-                os4_pad.memory_limit({'hw.ramSize': '4096'}, {'hw.ramSize': value})
 
     def test_template_uses_source_display_and_no_modem(self):
         values = dict(line.split('=', 1) for line in os4_pad.template('').splitlines())

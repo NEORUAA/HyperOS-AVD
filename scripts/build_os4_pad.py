@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the supplied official yingtian OTA as an isolated 4 GiB test AVD."""
+"""Build the supplied official yingtian OTA as an isolated tablet AVD."""
 import argparse
 import hashlib
 import json
@@ -303,7 +303,7 @@ def main():
         'hyperos': PROFILE['hyperos'], 'archive_sha256': PROFILE['source_archive_sha256'],
         'display': PROFILE['display'], 'model_xml_sha256': PROFILE['model_xml_sha256'],
         'identity_source_sha256': PROFILE['source_sha256'],
-        'memory_limit_mib': 4096, 'hardware_base_api': 36, 'kernel_page_size': 4096,
+        'hardware_base_api': 36, 'kernel_page_size': 4096,
         'vendor_fixes': vendor_fixes, 'gnss_patch': True, 'experimental': True,
         'finddevice_provider_disabled': True,
         'hwui': {'before': hashlib.sha256(hwui).hexdigest(),

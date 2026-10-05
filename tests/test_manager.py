@@ -51,7 +51,7 @@ class ManagerTests(unittest.TestCase):
             manifest.update(variant=variant, source=setup.PAD_SOURCE,
                             source_device='yingtian', hyperos=setup.PAD_HYPEROS)
             manifest['build'].update(source=setup.PAD_SOURCE, device='yingtian',
-                                     hyperos=setup.PAD_HYPEROS, memory_limit_mib=4096)
+                                     hyperos=setup.PAD_HYPEROS)
             manifest['compatibility'] = {'userdata_family': setup.PAD_FAMILY,
                                          'minimum_installer': '1.1.0', 'runtime_in_bundle': True}
             manifest['parts'] = [{'name': archive.name, 'size': archive.stat().st_size,
@@ -103,15 +103,17 @@ class ManagerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'downgrade'):
             manage.compatible(new, old)
 
-    def test_pad_install_rejects_six_gib_before_owner_download_or_writes(self):
+    def test_general_invalid_ram_is_rejected_before_owner_download_or_writes(self):
         with tempfile.TemporaryDirectory() as d:
             folder = Path(d)
             path, _ = self.bundle(folder / 'bundle', variant='os4-pad')
             root = folder / 'instance'
+            options = manage.hardware(4, 32, 4)
+            options['hw.ramSize'] = '65537'
             with patch.object(manage, 'owner') as owner, patch.object(manage, 'idle') as idle, \
                     patch.object(setup, 'install_bundle') as extract:
-                with self.assertRaisesRegex(RuntimeError, '4096'):
-                    manage.install(root, path, 'My_Tablet', 5584, Path('/sdk'), manage.hardware(6, 32, 4))
+                with self.assertRaisesRegex(RuntimeError, '2-64'):
+                    manage.install(root, path, 'My_Tablet', 5584, Path('/sdk'), options)
             owner.assert_not_called()
             idle.assert_not_called()
             extract.assert_not_called()
@@ -140,7 +142,7 @@ class ManagerTests(unittest.TestCase):
             path, manifest = self.bundle(folder / 'bundle',
                 version='pad-v0.1.0-a17-hyperos4-yingtian-r1', variant='os4-pad')
             root, registry = folder / 'My tablet', folder / 'registry'
-            settings = manage.hardware(4, 32, 4, variant='os4-pad')
+            settings = manage.hardware(6, 32, 4, variant='os4-pad')
             with patch.object(manage, 'idle'), patch.object(manage, 'resize'), \
                     patch.object(manage, 'validate_userdata'), \
                     patch.object(manage, 'data_size', return_value={'virtual-size': 32 * 1024**3}), \
@@ -151,6 +153,7 @@ class ManagerTests(unittest.TestCase):
                 data.write_bytes(b'personal tablet data')
                 second, _ = self.bundle(folder / 'next',
                     version='pad-v0.1.1-a17-hyperos4-yingtian-r2', variant='os4-pad')
+                settings = manage.hardware(8, 32, 4, variant='os4-pad')
                 manage.install(root, second, 'My_Tablet', 5584, Path('/sdk'), settings)
                 self.assertEqual(data.read_bytes(), b'personal tablet data')
                 runtime = json.loads((root / 'local/runtime.json').read_text())
@@ -159,26 +162,29 @@ class ManagerTests(unittest.TestCase):
                 self.assertEqual(manage.instances()[0]['variant'], 'os4-pad')
                 config = manage.properties(root / 'avd/My_Tablet.avd/config.ini')
                 self.assertEqual(config['AvdId'], 'My_Tablet')
-                self.assertEqual(config['hw.ramSize'], '4096')
+                self.assertEqual(config['hw.ramSize'], '8192')
                 self.assertEqual(config['disk.dataPartition.size'], '32G')
                 self.assertEqual(json.loads((root / 'local/installed-release.json').read_text())
                                  ['compatibility']['userdata_family'], setup.PAD_FAMILY)
 
-    def test_pad_cli_defaults_and_over_memory_refusal_before_download(self):
+    def test_pad_cli_keeps_default_and_accepts_larger_ram_with_general_range_validation(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d) / 'instance'
             arguments = ['manage.py', 'install', '--variant', 'os4-pad', '--root', str(root),
                          '--name', 'My_Tablet', '--port', '5584']
-            with patch('sys.argv', arguments), patch.object(manage, 'host_check'), \
-                    patch.object(manage, 'sdk_path', return_value=Path('/sdk')), \
-                    patch.object(manage, 'idle'), patch.object(manage, 'catalog', return_value=[{'tag_name': 'vpad'}]), \
-                    patch.object(manage, 'fetch_release', return_value=Path('/bundle/manifest.json')), \
-                    patch.object(manage, 'install') as install:
-                manage.main()
-                self.assertEqual(install.call_args.args[5], manage.hardware(4, 32, 4, variant='os4-pad'))
-            with patch('sys.argv', arguments + ['--ram', '6']), patch.object(manage, 'host_check'), \
+            for ram in (None, 6, 8):
+                extra = [] if ram is None else ['--ram', str(ram)]
+                with self.subTest(ram=ram), patch('sys.argv', arguments + extra), \
+                        patch.object(manage, 'host_check'), \
+                        patch.object(manage, 'sdk_path', return_value=Path('/sdk')), \
+                        patch.object(manage, 'idle'), patch.object(manage, 'catalog', return_value=[{'tag_name': 'vpad'}]), \
+                        patch.object(manage, 'fetch_release', return_value=Path('/bundle/manifest.json')), \
+                        patch.object(manage, 'install') as install:
+                    manage.main()
+                    self.assertEqual(install.call_args.args[5], manage.hardware(ram or 4, 32, 4, variant='os4-pad'))
+            with patch('sys.argv', arguments + ['--ram', '65']), patch.object(manage, 'host_check'), \
                     patch.object(manage, 'fetch_release') as download:
-                with self.assertRaisesRegex(RuntimeError, '4096'):
+                with self.assertRaisesRegex(RuntimeError, '2-64'):
                     manage.main()
             download.assert_not_called()
             self.assertFalse(root.exists())
@@ -503,10 +509,10 @@ class ManagerTests(unittest.TestCase):
                 build.write_text(json.dumps({'source': common.OS4_SOURCE, 'android_api': 37}))
                 self.assertEqual(manage.instances()[0]['variant'], 'os4-official')
 
-    def test_pad_hardware_options_use_four_gib_limit_and_label(self):
+    def test_pad_hardware_options_default_to_four_gib_and_accept_larger_choices(self):
         self.assertEqual(manage.hardware(4, 32, 2, variant='os4-pad')['hw.ramSize'], '4096')
-        with self.assertRaisesRegex(RuntimeError, '4096'):
-            manage.hardware(6, 32, 2, variant='os4-pad')
+        self.assertEqual(manage.hardware(6, 32, 2, variant='os4-pad')['hw.ramSize'], '6144')
+        self.assertEqual(manage.hardware(8, 32, 2, variant='os4-pad')['hw.ramSize'], '8192')
         self.assertEqual(manage.hardware(8, 32, 2, variant='os4-official')['hw.ramSize'], '8192')
         with patch.object(manage, 'ask', side_effect=lambda zh, en, default: default), \
                 patch('sys.stdout', new_callable=io.StringIO) as output:
@@ -515,10 +521,11 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(settings['hw.cpu.ncore'], '4')
         self.assertIn('OS4 Pad', output.getvalue())
         self.assertNotIn('8 GiB', output.getvalue())
+        self.assertNotIn('limit', output.getvalue())
+        self.assertNotIn('上限', output.getvalue())
         with patch.object(manage, 'ask', side_effect=['6', '32', '2']), \
                 patch('sys.stdout', new_callable=io.StringIO):
-            with self.assertRaisesRegex(RuntimeError, '4096'):
-                manage.options_for(variant='os4-pad')
+            self.assertEqual(manage.options_for(variant='os4-pad')['hw.ramSize'], '6144')
         entry = {'root': Path('/owned/tablet'), 'runtime': {'name': 'My_tablet'},
                  'variant': 'os4-pad', 'version': 'legacy'}
         with patch.object(manage, 'instances', return_value=[entry]), \

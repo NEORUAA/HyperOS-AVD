@@ -18,7 +18,7 @@ def validate_build(info):
     expected = {'source': SOURCE, 'device': 'yingtian', 'android_api': 37,
         'hyperos': PROFILE['hyperos'], 'archive_sha256': PROFILE['source_archive_sha256'],
         'display': PROFILE['display'], 'model_xml_sha256': PROFILE['model_xml_sha256'],
-        'identity_source_sha256': PROFILE['source_sha256'], 'memory_limit_mib': 4096,
+        'identity_source_sha256': PROFILE['source_sha256'],
         'hardware_base_api': 36, 'kernel_page_size': 4096, 'gnss_patch': True,
         'experimental': True, 'finddevice_provider_disabled': True,
         'adb_authentication': True, 'hwui': {'before': BEFORE, 'after': AFTER},

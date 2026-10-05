@@ -58,7 +58,7 @@ BUILD_KEYS = ('hyperos', 'source', 'android_api', 'archive_sha256', 'kernel_page
               'preinstalled_apps', 'native_quickstep_identity', 'avd_defaults',
               'assistant_render_fix', 'composer_alpha_fix', 'audio_pcm_fix', 'camera_scene_fix',
               'adb_authentication', 'experimental', 'device', 'display', 'model_xml_sha256',
-              'identity_source_sha256', 'memory_limit_mib', 'vendor_fixes', 'hwui',
+              'identity_source_sha256', 'vendor_fixes', 'hwui',
               'flutter_engine', 'finddevice_provider_disabled')
 RUNTIME_PAYLOADS = {
     'os4-official': {'xiaomi-camera': ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json')},

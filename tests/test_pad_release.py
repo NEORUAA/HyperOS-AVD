@@ -25,7 +25,7 @@ def build_info():
     return {'source': SOURCE, 'device': 'yingtian', 'android_api': 37,
         'hyperos': PROFILE['hyperos'], 'archive_sha256': PROFILE['source_archive_sha256'],
         'display': PROFILE['display'], 'model_xml_sha256': PROFILE['model_xml_sha256'],
-        'identity_source_sha256': PROFILE['source_sha256'], 'memory_limit_mib': 4096,
+        'identity_source_sha256': PROFILE['source_sha256'],
         'hardware_base_api': 36, 'kernel_page_size': 4096, 'gnss_patch': True,
         'experimental': True, 'finddevice_provider_disabled': True, 'adb_authentication': True,
         'hwui': {'before': BEFORE, 'after': AFTER},
@@ -48,15 +48,16 @@ class PadReleaseTests(unittest.TestCase):
             self.assertEqual(value['source_device'], 'yingtian')
             self.assertEqual(value['compatibility'], {'minimum_installer': '1.1.0',
                 'userdata_family': 'os4-yingtian-api37-ranchu-4k', 'upgrade_from': [], 'runtime_in_bundle': True})
-            for key in ('hwui', 'flutter_engine', 'display', 'identity_source_sha256', 'memory_limit_mib'):
+            for key in ('hwui', 'flutter_engine', 'display', 'identity_source_sha256'):
                 self.assertEqual(value['build'][key], build_info()[key])
+            self.assertNotIn('memory_limit_mib', value['build'])
             for variant in ('os3', 'os4-official'):
                 with self.assertRaises(RuntimeError):
                     package_release.release_metadata(root, variant)
 
     def test_unverified_source_or_diagnostic_metadata_is_rejected(self):
         for key, invalid in (('adb_authentication', False), ('source', 'official-hongkong-ota'),
-                             ('device', 'hongkong'), ('memory_limit_mib', 6144),
+                             ('device', 'hongkong'),
                              ('model_xml_sha256', 'unknown'), ('kernel_page_size', 16384)):
             with self.subTest(key=key), self.assertRaisesRegex(RuntimeError, key):
                 release_pad.validate_build({**build_info(), key: invalid})

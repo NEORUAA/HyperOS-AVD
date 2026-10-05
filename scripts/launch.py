@@ -174,9 +174,6 @@ def main():
     properties = dict(line.split('=', 1) for line in avd_config.read_text().splitlines() if '=' in line)
     memory = str(int(properties.get('hw.ramSize', '2560')))
     build = ROOT / 'local/build.json'
-    if build.is_file() and json.loads(build.read_text()).get('source') == 'official-yingtian-ota':
-        from os4_pad import memory_limit
-        memory = str(memory_limit(properties))
     cores = str(int(properties.get('hw.cpu.ncore', '2')))
     command = [str(Path(config['sdk']) / 'emulator/emulator'), '-avd', config['name'],
                '-sysdir', str(ROOT / 'images'), '-port', str(config['port']),

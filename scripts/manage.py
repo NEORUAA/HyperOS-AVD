@@ -403,9 +403,6 @@ def hardware(ram, storage, cores, variant=None):
     if not 2 <= ram <= 64 or not 6 <= storage <= 1024 or not 1 <= cores <= (os.cpu_count() or 1):
         raise RuntimeError('Use RAM 2-64 GiB, storage 6-1024 GiB, and available host CPU cores.')
     values = {'hw.ramSize': str(round(ram * 1024)), 'hw.cpu.ncore': str(cores), 'disk.dataPartition.size': f'{storage}G'}
-    if variant == 'os4-pad':
-        from os4_pad import memory_limit
-        memory_limit(values)
     return values
 
 
@@ -579,9 +576,8 @@ def install(root, manifest_path, name, port, sdk, options, camera=False):
     root = Path(root).expanduser().resolve()
     validate_name(name)
     manifest, _ = setup.read_manifest(str(manifest_path))
-    if manifest.get('variant') == 'os4-pad':
-        from os4_pad import memory_limit
-        memory_limit(options)
+    hardware(int(options['hw.ramSize']) / 1024,
+             int(options['disk.dataPartition.size'][:-1]), int(options['hw.cpu.ncore']))
     minimum = manifest.get('compatibility', {}).get('minimum_installer', '0.2.1')
     if version_key(minimum) > version_key(VERSION):
         raise RuntimeError('This release needs a newer installer; download the latest stable Installer Release.')
@@ -671,8 +667,8 @@ def options_for(instance=None, variant='os4-official'):
     match = re.fullmatch(r'(\d+)(G|GB)', disk)
     storage = int(match[1]) if match else 32
     if variant == 'os4-pad':
-        rows = [tr('OS4 Pad 默认 4 GiB / 4 核；测试内存上限 4 GiB。',
-                   'OS4 Pad: 4 GiB / 4 cores; test memory limit is 4 GiB.'),
+        rows = [tr('OS4 Pad 默认 4 GiB / 4 核。',
+                   'OS4 Pad: 4 GiB / 4 cores.'),
                 tr('已有存储只支持扩容。', 'Existing storage only grows.')]
     else:
         rows = [tr('OS4 建议 6 GiB / 32 GiB / 4 核；OS3 默认 2.5 GiB / 2 核。',

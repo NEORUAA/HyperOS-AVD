@@ -67,7 +67,7 @@ class InstallerTests(unittest.TestCase):
         manifest.update(format=3, variant='os4-pad', version='pad-v0.1.0-a17-hyperos4-yingtian-r1',
                         source=setup.PAD_SOURCE, source_device='yingtian', hyperos=setup.PAD_HYPEROS)
         manifest['build'].update(source=setup.PAD_SOURCE, device='yingtian',
-                                 hyperos=setup.PAD_HYPEROS, memory_limit_mib=4096)
+                                 hyperos=setup.PAD_HYPEROS)
         manifest['compatibility'] = {'userdata_family': setup.PAD_FAMILY,
                                      'minimum_installer': '1.1.0', 'runtime_in_bundle': True}
         path.write_text(json.dumps(manifest))
@@ -83,7 +83,6 @@ class InstallerTests(unittest.TestCase):
                          (('hyperos',), 'OS4.0.16.0.XBMCNXM'), (('android_api',), 36),
                          (('build', 'source'), common.OS4_SOURCE), (('build', 'device'), 'hongkong'),
                          (('build', 'android_api'), 36), (('build', 'adb_authentication'), False),
-                         (('build', 'memory_limit_mib'), 6144),
                          (('compatibility', 'userdata_family'), 'os4-hongkong-api37-ranchu-4k'),
                          (('compatibility', 'minimum_installer'), '1.0.0'),
                          (('compatibility', 'runtime_in_bundle'), False)]
@@ -110,7 +109,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(json.loads((root / 'local/build.json').read_text()), manifest['build'])
             self.assertEqual((root / 'images/system.img').read_bytes(), b'official test firmware')
 
-    def test_pad_six_gib_saved_choice_rejected_before_download_or_directory_write(self):
+    def test_pad_six_gib_saved_choice_is_preserved_during_import(self):
         with tempfile.TemporaryDirectory() as d:
             folder = Path(d)
             path, _ = self.pad_fixture(folder)
@@ -118,21 +117,21 @@ class InstallerTests(unittest.TestCase):
             (root / 'local').mkdir(parents=True)
             (root / 'local/runtime.json').write_text(json.dumps({'hardware': {'hw.ramSize': '6144'}}))
             with patch.object(setup, 'ROOT', root), patch.object(setup.urllib.request, 'urlretrieve') as download:
-                with self.assertRaisesRegex(RuntimeError, '4096'):
-                    setup.install_bundle(str(path))
+                setup.install_bundle(str(path))
             download.assert_not_called()
-            self.assertFalse((root / 'downloads').exists())
-            self.assertFalse((root / 'images').exists())
+            self.assertEqual((root / 'images/system.img').read_bytes(), b'official test firmware')
+            self.assertEqual(json.loads((root / 'local/runtime.json').read_text())
+                             ['hardware']['hw.ramSize'], '6144')
 
     def test_pad_invalid_archive_ram_rejected_before_firmware_promotion(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             path, _ = self.pad_fixture(root,
-                b'target=android-37.0\nhw.cpu.arch=arm64\nhw.ramSize=6144\n')
+                b'target=android-37.0\nhw.cpu.arch=arm64\nhw.ramSize=65537\n')
             image = root / 'images/system.img'
             image.parent.mkdir()
             image.write_bytes(b'original tablet image')
-            with patch.object(setup, 'ROOT', root), self.assertRaisesRegex(RuntimeError, '4096'):
+            with patch.object(setup, 'ROOT', root), self.assertRaisesRegex(RuntimeError, '65536'):
                 setup.install_bundle(str(path))
             self.assertEqual(image.read_bytes(), b'original tablet image')
             self.assertFalse((root / 'local/build.json').exists())
@@ -404,7 +403,7 @@ class InstallerTests(unittest.TestCase):
             self.assertIn('target=android-37.0\n', (registry / 'HyperOS_Test.ini').read_text())
             self.assertEqual(data.read_bytes(), b'personal profile data')
 
-    def test_pad_memory_limit_is_checked_before_any_configuration_write(self):
+    def test_pad_six_gib_reconfiguration_preserves_user_data_and_registration(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self.instance_profile(root, 'official-yingtian-ota', name='My_pad', port=5582)
@@ -422,33 +421,30 @@ class InstallerTests(unittest.TestCase):
             registry = root / 'registry';registry.mkdir()
             registration = registry / 'My_pad.ini'
             registration.write_text('path=' + str(data.parent) + '\ntarget=android-37.0\n')
-            before = {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()}
             with patch.object(setup, 'ROOT', root), patch.object(setup, 'avd_home', return_value=registry):
-                with self.assertRaisesRegex(RuntimeError, '4096'):
-                    setup.configure(root / 'sdk', 'My_pad', 5582)
-            after = {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()}
-            self.assertEqual(after, before)
+                setup.configure(root / 'sdk', 'My_pad', 5582)
+            self.assertEqual(data.read_bytes(), b'personal tablet data')
+            self.assertIn('hw.ramSize=6144\n', config.read_text())
+            self.assertIn('path=' + str(data.parent.resolve()), registration.read_text())
+            self.assertEqual(json.loads(runtime.read_text())['hardware']['hw.ramSize'], '6144')
 
-    def test_pad_oversized_template_is_rejected_before_creating_avd(self):
+    def test_pad_eight_gib_template_is_registered_without_clamping(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self.instance_profile(root, 'official-yingtian-ota', name='My_pad', port=5582)
             (root / 'config').mkdir()
             (root / 'config/avd.ini').write_text(
-                'target=android-37.0\nhw.cpu.arch=arm64\nhw.ramSize=6144\n')
-            before = (root / 'local/runtime.json').read_bytes()
+                'target=android-37.0\nhw.cpu.arch=arm64\nhw.ramSize=8192\n')
             with patch.object(setup, 'ROOT', root), \
                     patch.object(setup, 'avd_home', return_value=root / 'registry'):
-                with self.assertRaisesRegex(RuntimeError, '4096'):
-                    setup.configure(root / 'sdk', 'My_pad', 5582)
-            self.assertFalse((root / 'avd').exists())
-            self.assertFalse((root / 'registry').exists())
-            self.assertFalse((root / 'local/instances.json').exists())
-            self.assertEqual((root / 'local/runtime.json').read_bytes(), before)
+                setup.configure(root / 'sdk', 'My_pad', 5582)
+            self.assertIn('hw.ramSize=8192\n', (root / 'avd/My_pad.avd/config.ini').read_text())
+            state = json.loads((root / 'local/runtime.json').read_text())
+            self.assertEqual((state['name'], state['port']), ('My_pad', 5582))
 
-    def test_memory_limit_is_pad_specific_and_preserves_userdata(self):
+    def test_all_profiles_accept_eight_gib_and_preserve_userdata(self):
         with tempfile.TemporaryDirectory() as temporary:
-            for index, (source, ram) in enumerate((('official-yingtian-ota', '4096'),
+            for index, (source, ram) in enumerate((('official-yingtian-ota', '8192'),
                                                   (common.OS4_SOURCE, '8192'), ('os3', '8192'))):
                 with self.subTest(source=source):
                     root = Path(temporary) / str(index)

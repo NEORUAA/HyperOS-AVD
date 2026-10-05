@@ -6,7 +6,7 @@ from pathlib import Path
 SOURCE = 'official-yingtian-ota'
 NAME = 'HyperOS_4_Pad9ProMax_API_37'
 PORT = 5582
-MAX_MEMORY = 4096
+DEFAULT_MEMORY = 4096
 FINDDEVICE_SHA256 = 'c8fe791d76f8da8bcb23412aebaf3470a3ae4202543c9a64091e1c24cb63aad4'
 CONFIG = Path(__file__).resolve().parent.parent / 'config'
 PROFILE = json.loads((CONFIG / 'yingtian-identity.json').read_text())
@@ -132,18 +132,10 @@ def profile_properties_script():
     return '\n'.join(lines) + '\n'
 
 
-def memory_limit(properties, hardware=None):
-    """Reject overrides before QEMU can exceed the requested test RAM ceiling."""
-    value = int((hardware or {}).get('hw.ramSize', properties.get('hw.ramSize', 0)))
-    if not 1024 <= value <= MAX_MEMORY:
-        raise RuntimeError('The yingtian test AVD requires 1024-4096 MiB RAM.')
-    return value
-
-
 def template(data):
     values = dict(line.split('=', 1) for line in data.splitlines() if '=' in line)
     values.update({'avd.ini.displayname': 'Xiaomi Pad 9 Pro Max - HyperOS 4 Test',
-                   'target': 'android-37.0', 'hw.ramSize': str(MAX_MEMORY),
+                   'target': 'android-37.0', 'hw.ramSize': str(DEFAULT_MEMORY),
                    'hw.cpu.ncore': '4', 'hw.lcd.width': '2272',
                    'hw.lcd.height': '3408', 'hw.lcd.density': '400',
                    'hw.initialOrientation': 'portrait',
@@ -151,7 +143,6 @@ def template(data):
                    'hw.camera.back': 'virtualscene', 'hw.camera.front': 'emulated',
                    'hw.device.name': 'yingtian', 'hw.device.manufacturer': 'Xiaomi',
                    'hw.device.hash2': '', 'disk.dataPartition.size': '6G'})
-    memory_limit(values)
     return ''.join(key + '=' + value + '\n' for key, value in values.items())
 
 
@@ -339,4 +330,4 @@ def apply_runtime(config):
     from os4_defaults import apply_refresh_runtime
     apply_refresh_runtime(config)
     apply_serial(config)
-    print('Pad test defaults ready: 4 GiB ceiling, original tablet identity, 60 Hz.', flush=True)
+    print('Pad defaults ready: original tablet identity, 60 Hz.', flush=True)

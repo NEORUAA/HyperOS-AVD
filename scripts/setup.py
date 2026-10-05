@@ -30,19 +30,17 @@ def release_source(manifest):
     return {'os4-official': OS4_SOURCE, PAD_VARIANT: PAD_SOURCE}.get(variant, 'os3')
 
 
-def validate_pad_memory(manifest, properties=None):
-    """Check saved choices before download or promotion of a Pad release."""
-    if manifest.get('variant') != PAD_VARIANT:
-        return
-    from os4_pad import memory_limit
+def validate_memory(properties=None):
+    """Apply the same sane RAM range to every firmware profile."""
     if properties is None:
         template = ROOT / 'config/avd.ini'
         properties = dict(line.split('=', 1) for line in template.read_text().splitlines()
-                          if '=' in line) if template.is_file() else {'hw.ramSize': '4096'}
+                          if '=' in line) if template.is_file() else {}
     saved = ROOT / 'local/runtime.json'
     hardware = json.loads(saved.read_text()).get('hardware', {}) if saved.is_file() else {}
-    memory_limit(properties)
-    memory_limit(properties, hardware)
+    for values in (properties, hardware):
+        if 'hw.ramSize' in values and not 1024 <= int(values['hw.ramSize']) <= 65536:
+            raise RuntimeError('Use RAM 1024-65536 MiB.')
 
 
 def read_manifest(value):
@@ -82,8 +80,6 @@ def read_manifest(value):
                     or manifest.get('source_device') != 'yingtian'
                     or build.get('device') != 'yingtian'
                     or manifest.get('hyperos') != PAD_HYPEROS
-                    or type(build.get('memory_limit_mib')) is not int
-                    or build.get('memory_limit_mib') != 4096
                     or compatibility.get('userdata_family') != PAD_FAMILY
                     or compatibility.get('runtime_in_bundle') is not True
                     or not isinstance(minimum, str)
@@ -206,7 +202,7 @@ def start_instruction(root):
 
 def install_bundle(value):
     manifest, base = read_manifest(value)
-    validate_pad_memory(manifest)
+    validate_memory()
     cache = ROOT / 'downloads' / manifest['version']
     cache.mkdir(parents=True, exist_ok=True)
     parts = []
@@ -266,7 +262,7 @@ def install_bundle(value):
                     or properties.get('hw.cpu.arch') != 'arm64'
                     or any(key in properties for key in ('image.sysdir.1', 'path', 'path.rel'))):
                 raise RuntimeError('Invalid or nonportable OS4 AVD template.')
-            validate_pad_memory(manifest, properties)
+            validate_memory(properties)
         for name in sorted(seen):
             target = ROOT / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -301,9 +297,7 @@ def configure(sdk, name, port):
         if key not in ('hw.ramSize', 'hw.cpu.ncore', 'disk.dataPartition.size'):
             raise RuntimeError('Unexpected per-instance hardware key: ' + key)
         properties[key] = str(value)
-    if workspace_profile(ROOT) == 'official-yingtian-ota':
-        from os4_pad import memory_limit
-        memory_limit(properties)
+    validate_memory(properties)
     template = ''.join(key + '=' + value + '\n' for key, value in properties.items())
     template += f'image.sysdir.1={ROOT / "images"}/\n'
     template += 'AvdId=' + name + '\navd.ini.displayname=' + name + '\n'

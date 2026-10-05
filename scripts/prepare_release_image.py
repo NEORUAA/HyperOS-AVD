@@ -78,6 +78,7 @@ def prepare_pad(source, output, info):
     template.write_text(text)
     info.update(adb_authentication=True, system_sha256=sha256(output / 'images/system.img'),
                 raw_sha256=sha256(candidate))
+    info.pop('memory_limit_mib', None)
     return info
 
 
