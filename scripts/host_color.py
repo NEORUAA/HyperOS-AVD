@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 
-from common import OS4_NAME, REPO_ROOT, sha256
+from common import REPO_ROOT, sha256
 
 LIBRARY = 'emulator_srgb.dylib'
 RECEIPT = 'emulator_srgb.build.json'
@@ -40,11 +40,19 @@ def build(root):
 def environment(root, name, enabled=True):
     """Keep the SDK and other emulator processes unchanged."""
     result = os.environ.copy()
+    # A copied opt-in from an earlier launch cannot authorize another instance
+    # or override this launch's explicit opt-out.
+    result.pop('HYPEROS_AVD_SRGB', None)
+    result.pop('HYPEROS_AVD_SRGB_AVD', None)
     if not enabled or not (Path(root) / 'local/build.json').is_file() or json.loads(
-            (Path(root) / 'local/build.json').read_text()).get('source') != 'official-hongkong-ota':
+            (Path(root) / 'local/build.json').read_text()).get('source') not in (
+                'official-hongkong-ota', 'official-yingtian-ota'):
         return result
+    if not isinstance(name, str) or not name:
+        raise RuntimeError('The sRGB tag requires the owned launch AVD name.')
     library, _ = build(root)
     injected = result.get('DYLD_INSERT_LIBRARIES', '')
     result['DYLD_INSERT_LIBRARIES'] = str(library.resolve()) + (':' + injected if injected else '')
     result['HYPEROS_AVD_SRGB'] = '1'
+    result['HYPEROS_AVD_SRGB_AVD'] = name
     return result
