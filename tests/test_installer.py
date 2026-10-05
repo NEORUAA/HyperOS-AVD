@@ -64,7 +64,7 @@ class InstallerTests(unittest.TestCase):
     def pad_fixture(self, root, template=None):
         path, manifest = self.os4_fixture(root, template or
             b'target=android-37.0\nhw.cpu.arch=arm64\nhw.ramSize=4096\nhw.cpu.ncore=4\ndisk.dataPartition.size=32G\n')
-        manifest.update(format=3, variant='os4-pad', version='v0.3.0-a17-hyperos4-yingtian-r1',
+        manifest.update(format=3, variant='os4-pad', version='pad-v0.1.0-a17-hyperos4-yingtian-r1',
                         source=setup.PAD_SOURCE, source_device='yingtian', hyperos=setup.PAD_HYPEROS)
         manifest['build'].update(source=setup.PAD_SOURCE, device='yingtian',
                                  hyperos=setup.PAD_HYPEROS, memory_limit_mib=4096)
@@ -78,6 +78,7 @@ class InstallerTests(unittest.TestCase):
             path, manifest = self.pad_fixture(Path(d))
             self.assertEqual(setup.read_manifest(str(path))[0], manifest)
             mutations = [(('format',), 2), (('variant',), 'os4-official'),
+                         (('version',), 'v0.3.0-a17-hyperos4-yingtian-r1'),
                          (('source',), common.OS4_SOURCE), (('source_device',), 'hongkong'),
                          (('hyperos',), 'OS4.0.16.0.XBMCNXM'), (('android_api',), 36),
                          (('build', 'source'), common.OS4_SOURCE), (('build', 'device'), 'hongkong'),

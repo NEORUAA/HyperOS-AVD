@@ -57,7 +57,14 @@ BUILD_KEYS = ('hyperos', 'source', 'android_api', 'archive_sha256', 'kernel_page
               'mi_ext_overlays', 'mi_ext_software_identity', 'flutter_render_fix',
               'preinstalled_apps', 'native_quickstep_identity', 'avd_defaults',
               'assistant_render_fix', 'composer_alpha_fix', 'audio_pcm_fix', 'camera_scene_fix',
-              'adb_authentication', 'experimental')
+              'adb_authentication', 'experimental', 'device', 'display', 'model_xml_sha256',
+              'identity_source_sha256', 'memory_limit_mib', 'vendor_fixes', 'hwui',
+              'flutter_engine', 'finddevice_provider_disabled')
+RUNTIME_PAYLOADS = {
+    'os4-official': {'xiaomi-camera': ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json')},
+    'os4-pad': {'pad-camera-native': ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json'),
+                'weather-angle': ('libEGL_angle.so', 'libGLESv2_angle.so', 'libhgl.so', 'receipt.json')},
+}
 
 
 def verify_os4_image(root, metadata):
@@ -205,7 +212,19 @@ def release_metadata(root, variant):
         metadata.update(format=3, variant=variant, hyperos=build['hyperos'], android_api=37,
                         source=OS4_SOURCE, source_device='hongkong', hardware_base_api=36,
                         build={key: build[key] for key in BUILD_KEYS if key in build})
-    elif (root / 'local/build.json').exists() and json.loads((root / 'local/build.json').read_text()).get('source') == OS4_SOURCE:
+    elif variant == 'os4-pad':
+        from release_pad import validate_build
+        build = json.loads((root / 'local/build.json').read_text())
+        validate_build(build)
+        metadata.update(format=3, variant=variant, hyperos=build['hyperos'], android_api=37,
+                        source=build['source'], source_device='yingtian', hardware_base_api=36,
+                        build={key: build[key] for key in BUILD_KEYS if key in build},
+                        compatibility={'minimum_installer': '1.1.0',
+                            'userdata_family': 'os4-yingtian-api37-ranchu-4k',
+                            'upgrade_from': [], 'runtime_in_bundle': True})
+    elif variant != 'os3':
+        raise RuntimeError('Unknown release variant.')
+    elif (root / 'local/build.json').exists() and json.loads((root / 'local/build.json').read_text()).get('source') in (OS4_SOURCE, 'official-yingtian-ota'):
         raise RuntimeError('Refusing to label official OS4 firmware as OS3.')
     if variant == 'os4-official':
         metadata['compatibility'] = {'minimum_installer': '1.0.0',
@@ -228,7 +247,7 @@ def runtime_files():
 
 def write_bundle(directory, version, metadata, paths, part_mib=1536):
     """Archive only explicit portable files; publish the manifest last."""
-    if not re.fullmatch(r'v[0-9A-Za-z_.-]+', version):
+    if not re.fullmatch(r'(?:pad-)?v[0-9A-Za-z_.-]+', version):
         raise RuntimeError('Invalid release version.')
     if not 1 <= part_mib < 2048:
         raise RuntimeError('Every GitHub release asset must be smaller than 2 GiB.')
@@ -236,12 +255,16 @@ def write_bundle(directory, version, metadata, paths, part_mib=1536):
     for relative, path in paths.items():
         if path.is_symlink() or not path.is_file():
             raise RuntimeError('Release files must not be symlinks.')
-        allowed = (relative.startswith('images/') or relative in ('tools/' + name for name in KSU_FILES)
+        allowed = (relative in ('images/' + name for name in (*IMAGE_FILES, 'userdata.img'))
+                   or relative.startswith(('images/data/misc/modem_simulator/', 'images/data/misc/emulator/'))
+                   or relative in ('tools/' + name for name in KSU_FILES)
                    or metadata['format'] in (2, 3) and relative == 'config/avd.ini'
                    or metadata['format'] == 3 and relative.startswith('runtime/')
                    or relative in ('tools/emulator_srgb.dylib', 'tools/emulator_srgb.build.json')
-                   or metadata['format'] == 3 and relative in ('tools/xiaomi-camera/' + name for name in
-                      ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json')))
+                   or metadata['format'] == 3 and relative in (
+                       'tools/' + folder + '/' + name
+                       for folder, names in RUNTIME_PAYLOADS.get(metadata.get('variant'), {}).items()
+                       for name in names))
         if not allowed or '..' in Path(relative).parts or Path(relative).is_absolute():
             raise RuntimeError('Unexpected release path: ' + relative)
         files[relative] = {'size': path.stat().st_size, 'sha256': sha256(path)}
@@ -278,30 +301,36 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version')
     parser.add_argument('--output', type=Path, help='Stage a new bundle before replacing an unpublished release')
-    parser.add_argument('--variant', choices=('os3', 'os4-official'), default='os3')
+    parser.add_argument('--variant', choices=('os3', 'os4-official', 'os4-pad'), default='os3')
     parser.add_argument('--part-mib', type=int, default=1536)
     args = parser.parse_args()
     root = ROOT
-    if args.variant == 'os4-official' and 'HYPEROS_AVD_WORKSPACE' not in os.environ:
-        root = REPO_ROOT / 'work/os4-official'
+    if args.variant != 'os3' and 'HYPEROS_AVD_WORKSPACE' not in os.environ:
+        root = REPO_ROOT / 'work' / args.variant
     common.ROOT = root
     metadata = release_metadata(root, args.variant)
     if args.variant == 'os4-official':
         verify_os4_image(root, metadata)
-    version = args.version or ('v0.2.1-a17-hyperos4-hongkong-r2' if args.variant == 'os4-official' else 'v0.1.0')
+    elif args.variant == 'os4-pad':
+        from release_pad import verify_image
+        verify_image(root, metadata)
+    version = args.version or {'os3': 'v0.1.0',
+        'os4-official': 'v0.2.1-a17-hyperos4-hongkong-r2',
+        'os4-pad': 'pad-v0.1.0-a17-hyperos4-yingtian-r1'}[args.variant]
     fetch_ksu(KSU_FILES)
     paths = {'images/' + name: root / 'images' / name for name in IMAGE_FILES}
     for relative in ('data/misc/modem_simulator', 'data/misc/emulator'):
         paths.update({path.relative_to(root).as_posix(): path for path in (root / 'images' / relative).rglob('*')
                       if path.is_file() and path.name != '.DS_Store' and not path.name.startswith('._')})
     paths.update({'tools/' + name: root / 'tools' / name for name in KSU_FILES})
-    if args.variant == 'os4-official':
+    if args.variant != 'os3':
         paths['config/avd.ini'] = root / 'config/avd.ini'
         from host_color import build as build_host_color
         for path in build_host_color(root):
             paths['tools/' + path.name] = path
     if metadata['format'] == 3:
-        paths.update({'tools/xiaomi-camera/' + path.name: path for path in (root / 'tools/xiaomi-camera').iterdir() if path.is_file()})
+        for folder, names in RUNTIME_PAYLOADS[args.variant].items():
+            paths.update({'tools/' + folder + '/' + name: root / 'tools' / folder / name for name in names})
         paths.update({'runtime/' + relative: path for relative, path in runtime_files().items()})
     # Always create a new blank template; never trust or read personal avd/ data.
     temporary = root / 'work/release-templates' / version / 'userdata.img'

@@ -22,7 +22,7 @@ import common
 import setup
 from common import REPO_ROOT, avd_home, host_check, port_free, sdk_path, sha256
 
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 REPOSITORY = 'NEORUAA/HyperOS-AVD'
 HOME = Path(os.environ.get('HYPEROS_AVD_HOME', Path.home() / 'HyperOS-AVD')).expanduser().resolve()
 LANG = 'zh'
@@ -98,13 +98,18 @@ def release_variant(release):
     tag = release.get('tag_name', '').lower()
     if tag in ('v0.1.0', 'v0.1.0-a16-hyperos3-fuxi-r1') or re.fullmatch(r'v\d+\.\d+\.\d+-a\d+-hyperos3-.+', tag):
         return 'os3'
+    if re.fullmatch(r'pad-v\d+\.\d+\.\d+-a17-hyperos4-yingtian-r\d+', tag):
+        return 'os4-pad'
+    # Unpublished shared-version Pad tags must not appear as phone images.
+    if re.fullmatch(r'v\d+\.\d+\.\d+-a\d+-hyperos4-yingtian-.+', tag):
+        return None
     if re.fullmatch(r'v\d+\.\d+\.\d+-a\d+-hyperos4-.+', tag):
         return 'os4-official'
     return None
 
 
 def version_key(tag):
-    match = re.match(r'v?(\d+)\.(\d+)\.(\d+)', tag)
+    match = re.match(r'(?:pad-)?v?(\d+)\.(\d+)\.(\d+)', tag)
     return tuple(map(int, match.groups())) if match else (0, 0, 0)
 
 
@@ -256,16 +261,19 @@ def instances():
             installed = root / 'local/installed-release.json'
             metadata = json.loads(installed.read_text()) if installed.is_file() else {}
             build = root / 'local/build.json'
-            official = build.is_file() and json.loads(build.read_text()).get('source') == common.OS4_SOURCE
+            source = json.loads(build.read_text()).get('source') if build.is_file() else None
+            if source is None:
+                source = metadata.get('build', {}).get('source', metadata.get('source'))
+            variant = {common.OS4_SOURCE: 'os4-official',
+                       'official-yingtian-ota': 'os4-pad'}.get(source)
             template = root / 'config/avd.ini'
-            legacy_os3 = (runtime['name'] == common.DEFAULT_NAME
-                          and (root / 'scripts/build_image.py').is_file() and template.is_file()
+            legacy_os3 = ((root / 'scripts/build_image.py').is_file() and template.is_file()
                           and properties(template).get('target') == 'android-36'
                           and properties(template).get('hw.cpu.arch') == 'arm64')
-            if not official and metadata.get('project') != 'HyperOS-AVD' and not legacy_os3:
+            if not variant and metadata.get('project') != 'HyperOS-AVD' and not legacy_os3:
                 continue
             results.append({'root': root, 'runtime': runtime, 'version': metadata.get('version', 'legacy'),
-                            'variant': 'os4-official' if official else 'os3'})
+                            'variant': variant or 'os3'})
         except (OSError, ValueError, KeyError):
             continue
     return results
@@ -391,15 +399,22 @@ def resize(sdk, avd, gib):
             raise RuntimeError('Userdata resize failed.')
 
 
-def hardware(ram, storage, cores):
+def hardware(ram, storage, cores, variant=None):
     if not 2 <= ram <= 64 or not 6 <= storage <= 1024 or not 1 <= cores <= (os.cpu_count() or 1):
         raise RuntimeError('Use RAM 2-64 GiB, storage 6-1024 GiB, and available host CPU cores.')
-    return {'hw.ramSize': str(round(ram * 1024)), 'hw.cpu.ncore': str(cores), 'disk.dataPartition.size': f'{storage}G'}
+    values = {'hw.ramSize': str(round(ram * 1024)), 'hw.cpu.ncore': str(cores), 'disk.dataPartition.size': f'{storage}G'}
+    if variant == 'os4-pad':
+        from os4_pad import memory_limit
+        memory_limit(values)
+    return values
 
 
 def family(manifest):
     if manifest.get('format') == 3:
-        return manifest.get('compatibility', {}).get('userdata_family')
+        declared = manifest.get('compatibility', {}).get('userdata_family')
+        expected = {'os4-official': 'os4-hongkong-api37-ranchu-4k',
+                    'os4-pad': setup.PAD_FAMILY}.get(manifest.get('variant'))
+        return declared if declared == expected else None
     if manifest.get('format') == 2 and manifest.get('variant') == 'os4-official' and manifest.get('android_api') == 37:
         return 'os4-hongkong-api37-ranchu-4k'
     if manifest.get('format') == 1 and manifest.get('android_api', 36) == 36:
@@ -564,6 +579,9 @@ def install(root, manifest_path, name, port, sdk, options, camera=False):
     root = Path(root).expanduser().resolve()
     validate_name(name)
     manifest, _ = setup.read_manifest(str(manifest_path))
+    if manifest.get('variant') == 'os4-pad':
+        from os4_pad import memory_limit
+        memory_limit(options)
     minimum = manifest.get('compatibility', {}).get('minimum_installer', '0.2.1')
     if version_key(minimum) > version_key(VERSION):
         raise RuntimeError('This release needs a newer installer; download the latest stable Installer Release.')
@@ -628,17 +646,17 @@ def pick_instance():
     entries = instances()
     if not entries:
         raise RuntimeError(tr('未找到本项目 AVD，请先安装。', 'No project AVD found. Install one first.'))
-    labels = [f"[{'OS4' if item['variant'] == 'os4-official' else 'OS3'}] "
+    labels = [f"[{variant_label(item['variant'])}] "
               f"{item['runtime']['name']} | {item['version']}\n    {item['root']}" for item in entries]
     return entries[choose(tr('选择已安装实例', 'Select an installed instance'), labels)]
 
 
 def pick_release(variant='all'):
-    say('正在查询 OS3 / OS4 镜像发布...', 'Checking OS3 / OS4 image releases...')
+    say('正在查询 OS3 / OS4 / OS4 Pad 镜像发布...', 'Checking OS3 / OS4 / OS4 Pad image releases...')
     releases = catalog(variant)
     if not releases:
         raise RuntimeError('No published compatible release found.')
-    labels = [f"[{'OS4' if release_variant(r) == 'os4-official' else 'OS3'}] {r['tag_name']}"
+    labels = [f"[{variant_label(release_variant(r))}] {r['tag_name']}"
               + (' | Pre-release' if r.get('prerelease') else ' | Stable') for r in releases]
     return releases[choose(tr('镜像仓库 / 新版本优先', 'Image library / newest first'), labels)]
 
@@ -646,19 +664,30 @@ def pick_release(variant='all'):
 def options_for(instance=None, variant='os4-official'):
     values = {}
     if instance:
+        variant = instance['variant']
         values = properties(instance['root'] / 'avd' / (instance['runtime']['name'] + '.avd') / 'config.ini')
-    default_ram = int(values.get('hw.ramSize', 6144 if variant == 'os4-official' else 2560)) / 1024
+    default_ram = int(values.get('hw.ramSize', {'os4-official': 6144, 'os4-pad': 4096}.get(variant, 2560))) / 1024
     disk = values.get('disk.dataPartition.size', '32G')
     match = re.fullmatch(r'(\d+)(G|GB)', disk)
     storage = int(match[1]) if match else 32
-    panel(tr('资源配置', 'Hardware settings'), [
-        tr('OS4 建议 6 GiB / 32 GiB / 4 核；OS3 默认 2.5 GiB / 2 核。',
-           'OS4: 6 GiB / 32 GiB / 4 cores. OS3: 2.5 GiB / 2 cores.'),
-        tr('OS4 完整负一屏模糊建议 8 GiB；已有存储只支持扩容。',
-           'OS4 full App Vault blur: 8 GiB. Existing storage only grows.')])
+    if variant == 'os4-pad':
+        rows = [tr('OS4 Pad 默认 4 GiB / 4 核；测试内存上限 4 GiB。',
+                   'OS4 Pad: 4 GiB / 4 cores; test memory limit is 4 GiB.'),
+                tr('已有存储只支持扩容。', 'Existing storage only grows.')]
+    else:
+        rows = [tr('OS4 建议 6 GiB / 32 GiB / 4 核；OS3 默认 2.5 GiB / 2 核。',
+                   'OS4: 6 GiB / 32 GiB / 4 cores. OS3: 2.5 GiB / 2 cores.'),
+                tr('OS4 完整负一屏模糊建议 8 GiB；已有存储只支持扩容。',
+                   'OS4 full App Vault blur: 8 GiB. Existing storage only grows.')]
+    panel(tr('资源配置', 'Hardware settings'), rows)
     return hardware(float(ask('RAM (GiB)', 'RAM (GiB)', default_ram)),
         int(ask('存储 (GiB)', 'Storage (GiB)', storage)),
-        int(ask('CPU 核心', 'CPU cores', values.get('hw.cpu.ncore', 4 if variant == 'os4-official' else 2))))
+        int(ask('CPU 核心', 'CPU cores', values.get('hw.cpu.ncore', 4 if variant in ('os4-official', 'os4-pad') else 2))),
+        variant=variant)
+
+
+def variant_label(variant):
+    return {'os4-official': 'OS4', 'os4-pad': 'OS4 Pad'}.get(variant, 'OS3')
 
 
 def dashboard(entries):
@@ -666,7 +695,7 @@ def dashboard(entries):
         print('\033[2J\033[H', end='')
     panel('H Y P E R O S - A V D   /   INSTALLER ' + VERSION, [
         'Apple Silicon / ARM64 / Android Studio',
-        tr('镜像：OS4 官方 OTA  |  OS3 GSI', 'Images: OS4 official OTA  |  OS3 GSI'),
+        tr('镜像：OS4 手机 / Pad 官方 OTA  |  OS3 GSI', 'Images: OS4 phone / Pad official OTA  |  OS3 GSI'),
         tr('安装器：正式 Release  |  镜像：包含 Pre-release',
            'Installer: stable releases  |  Images: prereleases included')])
     panel(tr('主菜单', 'Dashboard'), [
@@ -674,17 +703,17 @@ def dashboard(entries):
         tr('[3] 启动已有实例           [4] RAM / 存储 / CPU', '[3] Start an instance      [4] RAM / storage / CPU'),
         tr('[5] 镜像浏览 / 检查更新    [6] 恢复 / 回滚', '[5] Browse images / updates [6] Recover / rollback'),
         tr('[7] 安装器检查更新         [0] 退出', '[7] Installer updates      [0] Exit')])
-    rows = [f"[{'OS4' if e['variant'] == 'os4-official' else 'OS3'}] {e['runtime']['name']} | "
+    rows = [f"[{variant_label(e['variant'])}] {e['runtime']['name']} | "
             + (tr('源码旧实例', 'Source workspace') if e['version'] == 'legacy' else e['version'])
             for e in entries]
     panel(tr(f'已安装实例 ({len(entries)})', f'Installed instances ({len(entries)})'),
-          rows or [tr('尚未安装，选择 [1] 浏览 OS3 / OS4。', 'No instances yet. Choose [1] for OS3 / OS4.')])
+          rows or [tr('尚未安装，选择 [1] 浏览 OS3 / OS4 / OS4 Pad。', 'No instances yet. Choose [1] for OS3 / OS4 / OS4 Pad.')])
 
 
 def image_updates(entries):
     rows = catalog('all')
     details = []
-    for kind, label in (('os4-official', 'OS4'), ('os3', 'OS3')):
+    for kind, label in (('os4-official', 'OS4'), ('os4-pad', 'OS4 Pad'), ('os3', 'OS3')):
         matches = [r for r in rows if release_variant(r) == kind]
         installed = [e['runtime']['name'] + ': ' + e['version'] for e in entries if e['variant'] == kind]
         details.append(label + ' | ' + tr('最新：', 'Latest: ') +
@@ -692,7 +721,7 @@ def image_updates(entries):
         details.extend('  ' + v for v in installed)
         if matches:
             details.append('  ' + matches[0].get('html_url', ''))
-    panel(tr('OS3 / OS4 镜像更新', 'OS3 / OS4 image updates'), details)
+    panel(tr('OS3 / OS4 / OS4 Pad 镜像更新', 'OS3 / OS4 / OS4 Pad image updates'), details)
 
 
 def installer_updates():
@@ -730,7 +759,8 @@ def tui(language=None):
                         'This source workspace has no release manifest; start/hardware work, automatic firmware migration is refused.'))
                 release = pick_release(item['variant'] if item else 'all')
                 variant = release_variant(release)
-                name = item['runtime']['name'] if item else ask('AVD 名称', 'AVD name', 'HyperOS_4' if variant == 'os4-official' else 'HyperOS_3')
+                default_name = {'os4-official': 'HyperOS_4', 'os4-pad': 'HyperOS_4_Pad'}.get(variant, 'HyperOS_3')
+                name = item['runtime']['name'] if item else ask('AVD 名称', 'AVD name', default_name)
                 root = item['root'] if item else Path(ask('安装目录', 'Installation folder', str(HOME / 'instances' / name))).expanduser().resolve()
                 port = item['runtime']['port'] if item else choose_port()
                 settings = options_for(item, variant)
@@ -793,19 +823,19 @@ def main():
     parser.add_argument('--language', choices=('zh', 'en'))
     commands = parser.add_subparsers(dest='command')
     listing = commands.add_parser('releases')
-    listing.add_argument('--variant', choices=('all', 'os3', 'os4-official'), default='all')
+    listing.add_argument('--variant', choices=('all', 'os3', 'os4-official', 'os4-pad'), default='all')
     listing.add_argument('--stable-only', action='store_true')
     commands.add_parser('list')
     commands.add_parser('installer-updates')
     installing = commands.add_parser('install')
     installing.add_argument('--bundle', type=Path)
     installing.add_argument('--release', default='latest')
-    installing.add_argument('--variant', choices=('os3', 'os4-official'), default='os4-official')
+    installing.add_argument('--variant', choices=('os3', 'os4-official', 'os4-pad'), default='os4-official')
     installing.add_argument('--root', type=Path, required=True)
     installing.add_argument('--name', required=True)
     installing.add_argument('--port', type=int)
     installing.add_argument('--sdk', type=Path)
-    installing.add_argument('--ram', type=float, default=6)
+    installing.add_argument('--ram', type=float)
     installing.add_argument('--storage', type=int, default=32)
     installing.add_argument('--cores', type=int, default=4)
     installing.add_argument('--start', action='store_true')
@@ -829,9 +859,12 @@ def main():
         start({'root': args.root.expanduser().resolve()}, args.headless, args.skip_oobe)
     elif args.command == 'install':
         root = args.root.expanduser().resolve()
+        variant = (setup.read_manifest(str(args.bundle.expanduser().resolve()))[0].get('variant', 'os3')
+                   if args.bundle else args.variant)
+        ram = args.ram if args.ram is not None else {'os4-pad': 4, 'os4-official': 6}.get(variant, 2.5)
+        settings = hardware(ram, args.storage, args.cores, variant=variant)
         previous = root / 'local/runtime.json'
         port = args.port or (json.loads(previous.read_text())['port'] if previous.exists() else choose_port())
-        settings = hardware(args.ram, args.storage, args.cores)
         if port % 2 or not 5556 <= port <= 5682:
             parser.error('Use an even console port between 5556 and 5682.')
         if args.bundle:

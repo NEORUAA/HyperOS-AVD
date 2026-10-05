@@ -56,8 +56,10 @@ def read_manifest(value):
         base = path.parent
     if manifest.get('project') != 'HyperOS-AVD' or manifest.get('format') not in (1, 2, 3):
         raise RuntimeError('Unsupported HyperOS-AVD release manifest.')
-    if not re.fullmatch(r'v[0-9A-Za-z_.-]+', manifest.get('version', '')):
+    if not re.fullmatch(r'(?:pad-)?v[0-9A-Za-z_.-]+', manifest.get('version', '')):
         raise RuntimeError('Invalid release version.')
+    if manifest['version'].startswith('pad-') and manifest.get('variant') != PAD_VARIANT:
+        raise RuntimeError('Invalid official OS4 Pad profile: version namespace requires the Pad firmware variant.')
     if manifest.get('platform') != 'macos-arm64':
         raise RuntimeError('This installer supports macos-arm64 releases only.')
     if manifest.get('format') in (2, 3):
@@ -74,7 +76,8 @@ def read_manifest(value):
         if source == PAD_SOURCE:
             compatibility = manifest.get('compatibility', {})
             minimum = compatibility.get('minimum_installer', '')
-            if (type(manifest['format']) is not int or manifest['format'] != 3
+            if (not re.fullmatch(r'pad-v\d+\.\d+\.\d+-a17-hyperos4-yingtian-r\d+', manifest['version'])
+                    or type(manifest['format']) is not int or manifest['format'] != 3
                     or manifest.get('source') != PAD_SOURCE
                     or manifest.get('source_device') != 'yingtian'
                     or build.get('device') != 'yingtian'

@@ -16,7 +16,7 @@ class InstallerReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out = Path(d) / 'installer'
             metadata = package_installer.package(out)
-            self.assertEqual(metadata['tag'], 'installer-v1.0.0')
+            self.assertEqual(metadata['tag'], 'installer-v1.1.0')
             self.assertFalse(metadata['prerelease'])
             self.assertEqual(metadata['type'], 'installer')
             with zipfile.ZipFile(out / metadata['archive']['name']) as archive:
