@@ -25,15 +25,15 @@ chmod +x Install.command
 ./Install.command
 ```
 
-也可只下载独立正式 [Installer Release](https://github.com/NEORUAA/HyperOS-AVD/releases/tag/installer-v1.0.0) 的 `HyperOS-AVD-Installer-v1.0.0-macos-arm64.zip`，解压后双击 `Install.command`。**镜像会由安装器自动下载**；首次选择中文 / English，之后按菜单操作。
+也可只下载独立正式 [Installer Release](https://github.com/NEORUAA/HyperOS-AVD/releases/tag/installer-v1.1.0) 的 `HyperOS-AVD-Installer-v1.1.0-macos-arm64.zip`，解压后双击 `Install.command`。**镜像会由安装器自动下载**；首次选择中文 / English，之后按菜单操作。OS4 Pad 需要安装器 1.1.0 或更新版本。
 
 Clone the repository and open `Install.command`, or extract the small ZIP from the separate stable Installer Release. The installer downloads firmware automatically. Select 中文 / English, then follow the menu. Installer versions (`installer-v*`) are independent of firmware versions and prereleases.
 
 ```text
 +------------------------------------------------------------------+
-| H Y P E R O S - A V D   /   INSTALLER 1.0.0                      |
+| H Y P E R O S - A V D   /   INSTALLER 1.1.0                      |
 +------------------------------------------------------------------+
-| Images: OS4 official OTA  |  OS3 GSI                             |
+| Images: OS4 phone / Pad official OTA  |  OS3 GSI                |
 | Installer: stable releases  |  Images: prereleases included      |
 +------------------------------------------------------------------+
 +------------------------------------------------------------------+
@@ -47,12 +47,18 @@ Clone the repository and open `Install.command`, or extract the small ZIP from t
 ```
 
 - 名称支持字母、数字、点、下划线、连字符；每个实例独立保存镜像、数据与端口。
-- OS4 默认 6 GiB / 32 GiB / 4 核；负一屏完整背景模糊建议 8 GiB。OS3 默认 2.5 GiB / 2 核。已有存储只允许扩容。
-- `[1]` 同时列出 OS3 / OS4 镜像及历史版本；选择页输入 `0` 返回。`[5]` 查看两版镜像更新，包含 Pre-release；`[7]` 单独检查正式安装器更新并给出下载链接。
+- OS4 手机默认 6 GiB / 32 GiB / 4 核；负一屏完整背景模糊建议 8 GiB。OS4 Pad 默认 4 GiB / 32 GiB / 4 核。OS3 默认 2.5 GiB / 2 核。已有存储只允许扩容。
+- `[1]` 同时列出 OS3 / OS4 手机 / OS4 Pad 镜像及历史版本；选择页输入 `0` 返回。`[5]` 查看各镜像更新，包含 Pre-release；`[7]` 单独检查正式安装器更新并给出下载链接。
 - “启动”或实例目录的 `Start.command` 会启用 root、传感器、60 Hz 与 macOS 色彩适配。直接使用 Android Studio Start 不包含所有初始化步骤。
-- 小米相机桥接为可选实验功能，安装时可开启，预编译附件无需 NDK；后摄录像仍有掉帧。
+- 手机小米相机桥接为可选实验功能，安装时可开启；Pad 首次启动自动初始化自身桥接。预编译附件无需 NDK；相机仍属实验功能，详见对应 Release 的限制。
 
-Names allow ASCII letters, digits, dots, underscores and hyphens. Instances have separate firmware, userdata and ports. OS4 defaults to 6 GiB RAM / 32 GiB storage / 4 cores; OS3 uses 2.5 GiB / 2 cores. Use 8 GiB for full OS4 App Vault wallpaper blur. Storage only grows. Install lists both image families; enter `0` to go back. Image update checks include prereleases; installer update checks list stable releases separately and provide a download link. Use the instance's `Start.command` for root and compatibility initialization. Xiaomi camera is an optional experimental bridge; rear video still drops frames.
+Names allow ASCII letters, digits, dots, underscores and hyphens. Instances have separate firmware, userdata and ports. OS4 phone defaults to 6 GiB RAM / 32 GiB storage / 4 cores; OS4 Pad uses 4 GiB / 32 GiB / 4 cores; OS3 uses 2.5 GiB / 2 cores. Use 8 GiB for full phone App Vault wallpaper blur. Storage only grows. Install lists all three image families; enter `0` to go back. Image update checks include prereleases; installer update checks list stable releases separately and provide a download link. Use the instance's `Start.command` for root and compatibility initialization. The phone camera bridge is optional; Pad initializes its own bridge automatically. These prebuilt experimental bridges do not require NDK. See each release for camera limitations.
+
+Compatibility fixes use the configured instance name and verified firmware, not the factory AVD name. Setup and source rebuilds retain a matching workspace's saved name and port unless explicitly overridden. Changing the display label is safe; manually changing the AVD ID or data-directory name also requires synchronizing its registry and `local/runtime.json`.
+
+OS4 Pad 使用独立的 `yingtian` 镜像族，保留官方机型配置、3408×2272 横屏与 400 dpi。首次安装使用空白用户分区，保留原版开机引导；手机、平板与 OS3 的用户数据不互相迁移。
+
+OS4 Pad uses the separate `yingtian` userdata family with the official device configuration, 3408×2272 landscape and 400 dpi. Fresh installs use blank userdata and retain original setup. Phone, Pad and OS3 userdata cannot be migrated across families.
 
 ## v0.2.0 保数据升级 / Keep v0.2.0 data
 
@@ -95,9 +101,14 @@ python3 scripts/manage.py install --root /path/to/old/work/os4-official \
 
 python3 scripts/manage.py releases
 python3 scripts/manage.py releases --variant os3
+python3 scripts/manage.py releases --variant os4-pad
 python3 scripts/manage.py installer-updates
 python3 scripts/manage.py list
 python3 scripts/manage.py start --root /path/to/instance
+
+# Latest Pad; defaults to 4 GiB RAM / 32 GiB storage / 4 cores.
+python3 scripts/manage.py install --variant os4-pad \
+  --root "$HOME/HyperOS-AVD/instances/My_Pad" --name My_Pad --release latest --start
 ```
 
 下载支持断点续传与 SHA-256 校验；失败后保留缓存。GitHub API 限流或网络中断会显示错误，可稍后重试，或用离线 `--bundle`。同镜像族的未来版本沿用此流程；需要更新安装器格式时，脚本会明确提示。
