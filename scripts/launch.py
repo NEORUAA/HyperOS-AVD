@@ -15,7 +15,8 @@ from setup import configure
 
 def is_os4():
     build = ROOT / 'local/build.json'
-    return build.is_file() and json.loads(build.read_text()).get('source') == 'official-hongkong-ota'
+    return build.is_file() and json.loads(build.read_text()).get('source') in (
+        'official-hongkong-ota', 'official-yingtian-ota')
 
 
 def skip_oobe(config):
@@ -41,7 +42,7 @@ def skip_oobe(config):
     print('OOBE skipped. Existing userdata was preserved.', flush=True)
 
 
-def initialize(config, bypass_oobe=False):
+def initialize(config, bypass_oobe=False, rotate_window=True):
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
         try:
@@ -98,12 +99,38 @@ def initialize(config, bypass_oobe=False):
             capture_output=True, text=True, check=True, timeout=10).stdout.strip()
         if installed == 'yes' or config.get('camera_bridge', False):
             install_xiaomi_camera(config, rebuild=installed == 'yes')
+    elif build.is_file() and json.loads(build.read_text()).get('source') == 'official-yingtian-ota':
+        from os4_pad import apply_runtime, align_window
+        apply_runtime(config)
+        if rotate_window:
+            align_window(config)
+        from apply_flutter_fix import install
+        install(config, sources=('official-yingtian-ota',))
+        from apply_weather_fix import install as install_weather
+        install_weather(config, sources=('official-yingtian-ota',),
+                        angle_folder=ROOT / 'tools/weather-angle')
+        from apply_assistant_fix import install as install_assistant
+        install_assistant(config, sources=('official-yingtian-ota',))
+        from apply_pad_camera_fix import install as install_pad_camera
+        install_pad_camera(config)
+        from apply_pad_camera_native_fix import install as install_pad_camera_native
+        install_pad_camera_native(config)
     if bypass_oobe:
         skip_oobe(config)
     manager = adb(config, 'shell', 'pm path me.weishu.kernelsu', capture_output=True, text=True, timeout=15)
     if 'package:' not in manager.stdout:
-        adb(config, 'install', '--no-incremental', str(ROOT / 'tools/KernelSU_v3.3.0_32601-release.apk'),
-            check=True, timeout=60)
+        apk = ROOT / 'tools/KernelSU_v3.3.0_32601-release.apk'
+        if build.is_file() and json.loads(build.read_text()).get('source') == 'official-yingtian-ota':
+            # MIUI's fresh tablet setup rejects shell installs; use verified KernelSU root.
+            remote = '/data/local/tmp/hyperos-avd-ksu.apk'
+            adb(config, 'push', str(apk), remote, check=True, capture_output=True, timeout=30)
+            try:
+                adb(config, 'shell', 'su -W -c ' + shlex.quote('pm install -r ' + remote),
+                    check=True, timeout=60)
+            finally:
+                adb(config, 'shell', 'rm -f ' + remote, timeout=15)
+        else:
+            adb(config, 'install', '--no-incremental', str(apk), check=True, timeout=60)
     adb(config, 'shell', 'rm -f /data/local/tmp/hyperos-avd-ksud', timeout=15)
     (ROOT / 'local').mkdir(exist_ok=True)
     (ROOT / 'local/last-boot.json').write_text(json.dumps(
@@ -146,6 +173,10 @@ def main():
     avd_config = ROOT / 'avd' / (config['name'] + '.avd') / 'config.ini'
     properties = dict(line.split('=', 1) for line in avd_config.read_text().splitlines() if '=' in line)
     memory = str(int(properties.get('hw.ramSize', '2560')))
+    build = ROOT / 'local/build.json'
+    if build.is_file() and json.loads(build.read_text()).get('source') == 'official-yingtian-ota':
+        from os4_pad import memory_limit
+        memory = str(memory_limit(properties))
     cores = str(int(properties.get('hw.cpu.ncore', '2')))
     command = [str(Path(config['sdk']) / 'emulator/emulator'), '-avd', config['name'],
                '-sysdir', str(ROOT / 'images'), '-port', str(config['port']),
@@ -153,6 +184,10 @@ def main():
                '-memory', memory, '-cores', cores, '-show-kernel', '-verbose']
     if is_os4():
         command += ['-crash-report-mode', 'never']
+    if build.is_file() and json.loads(build.read_text()).get('source') == 'official-yingtian-ota':
+        # The guest supports batched updates; gfxstream also masks inline uniform
+        # blocks in this mode, avoiding the observed MoltenVK descriptor crash.
+        command += ['-feature', 'VulkanBatchedDescriptorSetUpdate']
     if args.headless:
         command += ['-no-window']
     from host_color import environment
@@ -163,7 +198,7 @@ def main():
                                    stderr=subprocess.STDOUT, start_new_session=True)
     print(f"Starting {config['name']} (PID {process.pid}). Log: {log}", flush=True)
     # The emulator stays running if setup fails; evidence and userdata are retained.
-    initialize(config, bypass_oobe=args.skip_oobe)
+    initialize(config, bypass_oobe=args.skip_oobe, rotate_window=not args.headless)
 
 
 if __name__ == '__main__':
