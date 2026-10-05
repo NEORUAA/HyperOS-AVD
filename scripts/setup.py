@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import tarfile
 import tempfile
@@ -14,6 +15,34 @@ import common
 
 from common import (ROOT, REPO_ROOT, DEFAULT_NAME, DEFAULT_PORT, OS4_NAME, OS4_PORT, OS4_SOURCE, avd_home, fetch_ksu, firmware_idle,
                     host_check, port_free, sdk_path, sha256)
+
+PAD_SOURCE = 'official-yingtian-ota'
+PAD_VARIANT = 'os4-pad'
+PAD_HYPEROS = 'OS4.0.15.0.XBMCNXM'
+PAD_FAMILY = 'os4-yingtian-api37-ranchu-4k'
+
+
+def release_source(manifest):
+    """Map the declared firmware family without adopting another profile."""
+    variant = manifest.get('variant', 'os3')
+    if variant not in ('os3', 'os4-official', PAD_VARIANT):
+        raise RuntimeError('Unsupported release firmware variant.')
+    return {'os4-official': OS4_SOURCE, PAD_VARIANT: PAD_SOURCE}.get(variant, 'os3')
+
+
+def validate_pad_memory(manifest, properties=None):
+    """Check saved choices before download or promotion of a Pad release."""
+    if manifest.get('variant') != PAD_VARIANT:
+        return
+    from os4_pad import memory_limit
+    if properties is None:
+        template = ROOT / 'config/avd.ini'
+        properties = dict(line.split('=', 1) for line in template.read_text().splitlines()
+                          if '=' in line) if template.is_file() else {'hw.ramSize': '4096'}
+    saved = ROOT / 'local/runtime.json'
+    hardware = json.loads(saved.read_text()).get('hardware', {}) if saved.is_file() else {}
+    memory_limit(properties)
+    memory_limit(properties, hardware)
 
 
 def read_manifest(value):
@@ -33,45 +62,148 @@ def read_manifest(value):
         raise RuntimeError('This installer supports macos-arm64 releases only.')
     if manifest.get('format') in (2, 3):
         build = manifest.get('build', {})
-        if (manifest.get('variant') != 'os4-official'
-                or build.get('source') != OS4_SOURCE
+        source = release_source(manifest)
+        if (source not in (OS4_SOURCE, PAD_SOURCE)
+                or build.get('source') != source
                 or build.get('android_api') != 37
                 or manifest.get('android_api') != 37
                 or build.get('hyperos') != manifest.get('hyperos')
                 or build.get('adb_authentication') is not True
                 or 'config/avd.ini' not in manifest.get('files', {})):
             raise RuntimeError('Invalid official OS4 release profile.')
-    elif manifest.get('android_api', 36) != 36 or manifest.get('variant', 'os3') != 'os3':
+        if source == PAD_SOURCE:
+            compatibility = manifest.get('compatibility', {})
+            minimum = compatibility.get('minimum_installer', '')
+            if (type(manifest['format']) is not int or manifest['format'] != 3
+                    or manifest.get('source') != PAD_SOURCE
+                    or manifest.get('source_device') != 'yingtian'
+                    or build.get('device') != 'yingtian'
+                    or manifest.get('hyperos') != PAD_HYPEROS
+                    or type(build.get('memory_limit_mib')) is not int
+                    or build.get('memory_limit_mib') != 4096
+                    or compatibility.get('userdata_family') != PAD_FAMILY
+                    or compatibility.get('runtime_in_bundle') is not True
+                    or not isinstance(minimum, str)
+                    or not re.fullmatch(r'\d+\.\d+\.\d+', minimum)
+                    or tuple(map(int, minimum.split('.'))) < (1, 1, 0)):
+                raise RuntimeError('Invalid official OS4 Pad release profile.')
+    elif (manifest.get('android_api', 36) != 36 or manifest.get('variant', 'os3') != 'os3'
+          or manifest.get('source') in (OS4_SOURCE, PAD_SOURCE)
+          or manifest.get('build', {}).get('source') in (OS4_SOURCE, PAD_SOURCE)):
         raise RuntimeError('OS4 requires a format 2 release; refusing an OS3/OS4 mix.')
     return manifest, base
+
+
+def workspace_profile(root):
+    """Read firmware identity before reusing an existing instance's settings."""
+    root = Path(root)
+    build = root / 'local/build.json'
+    if build.is_file():
+        metadata = json.loads(build.read_text())
+        source = metadata.get('source')
+        if source in (OS4_SOURCE, PAD_SOURCE):
+            return source
+        if metadata.get('android_api') == 36:
+            return 'os3'
+        if source or metadata.get('android_api'):
+            return 'unsupported'
+    installed = root / 'local/installed-release.json'
+    if installed.is_file():
+        metadata = json.loads(installed.read_text())
+        if metadata.get('project') == 'HyperOS-AVD':
+            if metadata.get('variant') == 'os4-official':
+                return OS4_SOURCE
+            if metadata.get('variant') == PAD_VARIANT:
+                return PAD_SOURCE
+            if metadata.get('variant', 'os3') == 'os3' and metadata.get('android_api', 36) == 36:
+                return 'os3'
+            return 'unsupported'
+    template = root / 'config/avd.ini'
+    if template.is_file():
+        values = dict(line.split('=', 1) for line in template.read_text().splitlines() if '=' in line)
+        if values.get('target') in ('android-36', 'android-36.0') and values.get('hw.cpu.arch') == 'arm64':
+            return 'os3'
+    return None
+
+
+def select_build_instance(source, default_name, default_port):
+    """Read the existing same-profile instance before a source rebuild mutates it."""
+    if source not in ('os3', OS4_SOURCE, 'official-yingtian-ota'):
+        raise RuntimeError('Unsupported firmware build profile.')
+    current = workspace_profile(ROOT)
+    if current is not None and current != source:
+        raise RuntimeError('Build does not match this workspace; firmware was preserved.')
+    saved = ROOT / 'local/runtime.json'
+    previous = {}
+    if saved.is_file():
+        if current != source:
+            raise RuntimeError('Existing runtime has no matching firmware profile; instance was preserved.')
+        previous = json.loads(saved.read_text())
+    name, port = previous.get('name', default_name), previous.get('port', default_port)
+    if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', name):
+        raise RuntimeError('Use an ASCII AVD name up to 64 characters.')
+    if isinstance(port, bool) or not isinstance(port, int) or port % 2 or not 5556 <= port <= 5682:
+        raise RuntimeError('Use a free, even emulator console port between 5556 and 5682.')
+    return name, port
 
 
 def select_release(manifest, name=None, port=None):
     """Select the firmware root before any port, registry or download action."""
     global ROOT
-    saved_build = ROOT / 'local/build.json'
-    os4 = (manifest is not None and manifest.get('variant') == 'os4-official'
-           or manifest is None and saved_build.exists()
-           and json.loads(saved_build.read_text()).get('source') == OS4_SOURCE)
-    if os4:
+    root = ROOT
+    requested = release_source(manifest) \
+        if manifest is not None else workspace_profile(root) or 'os3'
+    if requested in (OS4_SOURCE, PAD_SOURCE):
         if manifest is not None:
-            ROOT = Path(os.environ.get('HYPEROS_AVD_WORKSPACE', REPO_ROOT / 'work/os4-official')).expanduser().resolve()
-        if ROOT == REPO_ROOT:
+            folder = 'work/os4-pad' if requested == PAD_SOURCE else 'work/os4-official'
+            root = Path(os.environ.get('HYPEROS_AVD_WORKSPACE', REPO_ROOT / folder)).expanduser().resolve()
+        if root == REPO_ROOT:
             raise RuntimeError('OS4 must use a separate workspace; OS3 firmware was preserved.')
-        name, port = name or OS4_NAME, port if port is not None else OS4_PORT
+    current = workspace_profile(root)
+    if (current is not None and current != requested) or requested == 'unsupported':
+        raise RuntimeError('Release does not match this workspace; firmware was preserved.')
+    saved = root / 'local/runtime.json'
+    previous = {}
+    if saved.is_file():
+        if current != requested:
+            raise RuntimeError('Existing runtime has no matching firmware profile; instance was preserved.')
+        previous = json.loads(saved.read_text())
+    if requested == OS4_SOURCE:
+        defaults = OS4_NAME, OS4_PORT
+    elif requested == 'official-yingtian-ota':
+        from os4_pad import NAME, PORT
+        defaults = NAME, PORT
     else:
-        name, port = name or DEFAULT_NAME, port if port is not None else DEFAULT_PORT
-    common.ROOT = ROOT
-    existing = ROOT / 'local/build.json'
-    if manifest is not None and existing.exists():
-        current_os4 = json.loads(existing.read_text()).get('source') == OS4_SOURCE
-        if current_os4 != os4:
-            raise RuntimeError('Release does not match this workspace; firmware was preserved.')
+        defaults = DEFAULT_NAME, DEFAULT_PORT
+    name = previous.get('name', defaults[0]) if name is None else name
+    port = previous.get('port', defaults[1]) if port is None else port
+    ROOT = root
+    common.ROOT = root
     return name, port
+
+
+def start_instruction(root):
+    """Select a launcher by its firmware workspace, independent of AVD names."""
+    root = Path(root).resolve()
+    profile = workspace_profile(root)
+    if (root / 'Start.command').is_file():
+        start = root / 'Start.command'
+    elif profile == OS4_SOURCE and root == REPO_ROOT / 'work/os4-official':
+        start = REPO_ROOT / 'Start-HyperOS4-Official.command'
+    elif profile == 'official-yingtian-ota' and root == REPO_ROOT / 'work/os4-pad':
+        start = REPO_ROOT / 'Start-HyperOS4-Pad.command'
+    elif root == REPO_ROOT and profile in (None, 'os3'):
+        start = REPO_ROOT / 'Start-HyperOS.command'
+    else:
+        command = ('HYPEROS_AVD_WORKSPACE=' + shlex.quote(str(root)) +
+                   ' python3 ' + shlex.quote(str(REPO_ROOT / 'scripts/launch.py')))
+        return 'Run ' + command + ' to boot and complete first-start setup.'
+    return 'Double-click ' + str(start) + ' to boot and complete first-start setup.'
 
 
 def install_bundle(value):
     manifest, base = read_manifest(value)
+    validate_pad_memory(manifest)
     cache = ROOT / 'downloads' / manifest['version']
     cache.mkdir(parents=True, exist_ok=True)
     parts = []
@@ -131,6 +263,7 @@ def install_bundle(value):
                     or properties.get('hw.cpu.arch') != 'arm64'
                     or any(key in properties for key in ('image.sysdir.1', 'path', 'path.rel'))):
                 raise RuntimeError('Invalid or nonportable OS4 AVD template.')
+            validate_pad_memory(manifest, properties)
         for name in sorted(seen):
             target = ROOT / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -153,7 +286,6 @@ def configure(sdk, name, port):
         registered = current.get('path')
         if not registered or Path(registered).expanduser().resolve() != path:
             raise RuntimeError(f'AVD {name} belongs to another workspace. Use --name with a new name.')
-    path.mkdir(parents=True, exist_ok=True)
     config_file = ROOT / 'config/avd.ini'
     template = (config_file if config_file.exists() else REPO_ROOT / 'config/avd.ini').read_text()
     properties = dict(line.split('=', 1) for line in template.splitlines() if '=' in line)
@@ -166,10 +298,14 @@ def configure(sdk, name, port):
         if key not in ('hw.ramSize', 'hw.cpu.ncore', 'disk.dataPartition.size'):
             raise RuntimeError('Unexpected per-instance hardware key: ' + key)
         properties[key] = str(value)
+    if workspace_profile(ROOT) == 'official-yingtian-ota':
+        from os4_pad import memory_limit
+        memory_limit(properties)
     template = ''.join(key + '=' + value + '\n' for key, value in properties.items())
     template += f'image.sysdir.1={ROOT / "images"}/\n'
     template += 'AvdId=' + name + '\navd.ini.displayname=' + name + '\n'
 
+    path.mkdir(parents=True, exist_ok=True)
     (path / 'config.ini').write_text(template)
     registry.parent.mkdir(parents=True, exist_ok=True)
     registry.write_text(f'avd.ini.encoding=UTF-8\npath={path}\ntarget={target}\n')
@@ -217,8 +353,7 @@ def main():
                            'Missing: ' + ', '.join(missing))
     fetch_ksu(['ksud-aarch64-linux-android', 'KernelSU_v3.3.0_32601-release.apk'])
     configure(sdk, args.name, args.port)
-    start = 'Start-HyperOS4-Official.command' if args.name == OS4_NAME else 'Start-HyperOS.command'
-    print(f'Ready. Double-click {start} to boot and complete first-start setup.')
+    print('Ready. ' + start_instruction(ROOT))
 
 
 if __name__ == '__main__':

@@ -1,7 +1,9 @@
 """Check fail-closed binary patching, APK preservation and AVD isolation."""
+import hashlib
 import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch as mock_patch
@@ -14,6 +16,159 @@ import apply_navigation_fix
 
 
 class FlutterPatchTests(unittest.TestCase):
+    def pad_install_fixture(self, folder, *, old=False, native_hash='', wrong_apk=False, no_engine=False):
+        root = Path(folder)
+        (root / 'local').mkdir()
+        (root / 'local/build.json').write_text(json.dumps({'source': apply_flutter_fix.PAD_SOURCE}))
+        raw, engine, system, fixed_system = b'original weather engine', b'fixed weather engine', b'system', b'fixed system'
+        apks = {}
+        for package, entries in (('com.miui.home', {'assets/home': b'factory Rust launcher'}),
+                                 ('com.miui.weather2', {apply_flutter_fix.ENGINE_ENTRY: raw,
+                                                       'assets/data': b'untouched signed APK contents'})):
+            path = root / (package + '.apk')
+            if package == 'com.miui.weather2' and no_engine:
+                entries.pop(apply_flutter_fix.ENGINE_ENTRY)
+            with zipfile.ZipFile(path, 'w') as archive:
+                for name, data in entries.items():
+                    archive.writestr(name, data)
+            apks[package] = path.read_bytes()
+        weather_hash = hashlib.sha256(apks['com.miui.weather2']).hexdigest()
+        before, after = map(lambda data: hashlib.sha256(data).hexdigest(), (raw, engine))
+        home_path = '/product/priv-app/MiuiHome/MiuiHome.apk'
+        packages = {'com.miui.home': home_path, 'com.miui.weather2': apply_flutter_fix.PAD_WEATHER_APK}
+        legacy = {'revision': 6, 'system': {'target': apply_flutter_fix.SYSTEM_LIB,
+                    'before': hashlib.sha256(system).hexdigest(), 'after': hashlib.sha256(fixed_system).hexdigest()},
+                  'packages': packages, 'apks': [{'package': 'com.miui.weather2',
+                    'apk_target': apply_flutter_fix.PAD_WEATHER_APK, 'payload': 'com.miui.weather2.so',
+                    'target': apply_flutter_fix.PAD_WEATHER_ENGINE, 'before': before, 'after': after,
+                    'apk_sha256': weather_hash}]}
+        commands = []
+
+        def guest(config, command, **kwargs):
+            commands.append(command)
+            if command == 'id -u':
+                return '0'
+            if command == 'getprop sys.boot_completed':
+                return '1'
+            if command.startswith('pm path '):
+                return 'package:' + packages[command.removeprefix('pm path ')]
+            if command.startswith('if [ -f ' + apply_flutter_fix.MODULE + '/manifest.json'):
+                return json.dumps(legacy) if old else ''
+            if command.startswith('if [ -e ' + apply_flutter_fix.PAD_WEATHER_ENGINE):
+                return native_hash
+            if command.startswith('sha256sum /data/adb/hyperos-render-stage-'):
+                name = command.rsplit('/', 1)[1]
+                return apply_flutter_fix.sha256(root / 'work/flutter-render-fix' / name) + '  staged'
+            return ''
+
+        def adb(config, action, *args, **kwargs):
+            if action == 'pull':
+                payload = system if args[0] == apply_flutter_fix.SYSTEM_LIB else apks[
+                    'com.miui.home' if args[0] == home_path else 'com.miui.weather2']
+                Path(args[1]).write_bytes(payload)
+
+        def engine_patch(data):
+            if data == system:
+                return fixed_system
+            if data == raw:
+                return engine
+            raise AssertionError('Unexpected source binary')
+
+        with mock_patch.object(apply_flutter_fix, 'ROOT', root), \
+                mock_patch.object(apply_flutter_fix, 'official'), \
+                mock_patch.object(apply_flutter_fix, 'root', side_effect=guest), \
+                mock_patch.object(apply_flutter_fix, 'adb', side_effect=adb), \
+                mock_patch.object(apply_flutter_fix, 'profile', return_value=(hashlib.sha256(system).hexdigest(),
+                    {'name': 'tablet-yingtian', 'output': hashlib.sha256(fixed_system).hexdigest()})), \
+                mock_patch.object(apply_flutter_fix, 'patch', side_effect=engine_patch), \
+                mock_patch.object(apply_flutter_fix, 'PAD_WEATHER_APK_SHA256', '0' * 64 if wrong_apk else weather_hash), \
+                mock_patch.object(apply_flutter_fix, 'PAD_WEATHER_BEFORE', before), \
+                mock_patch.object(apply_flutter_fix, 'PAD_WEATHER_AFTER', after), \
+                mock_patch.object(apply_flutter_fix, 'rewrite_apk') as rewrite, \
+                mock_patch.object(apply_flutter_fix, 'detach') as detach:
+            if wrong_apk or native_hash and native_hash.split()[0] not in (before, after):
+                with self.assertRaises(RuntimeError):
+                    apply_flutter_fix.install({'sdk': '/unused'}, sources=(apply_flutter_fix.PAD_SOURCE,))
+                self.assertFalse(any(command.startswith('mkdir ') for command in commands))
+                result = None
+            else:
+                result = apply_flutter_fix.install({'sdk': '/unused'}, sources=(apply_flutter_fix.PAD_SOURCE,))
+                self.assertEqual(detach.call_count, int(old))
+            rewrite.assert_not_called()
+        self.assertEqual((root / 'com.miui.weather2.apk').read_bytes(), apks['com.miui.weather2'])
+        return result, raw, commands
+
+    def test_pad_factory_engine_missing_restores_external_library_without_apk_rewrite(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest, raw, _ = self.pad_install_fixture(temporary)
+            item, = manifest['apks']
+            self.assertEqual(item['target'], apply_flutter_fix.PAD_WEATHER_ENGINE)
+            self.assertTrue(item['external'])
+            self.assertTrue(item['preserve_original'])
+            self.assertEqual((Path(temporary) / 'work/flutter-render-fix/com.miui.weather2.so.original').read_bytes(), raw)
+
+    def test_pad_legacy_manifest_migrates_instead_of_reusing_missing_extracted_engine(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest, _, _ = self.pad_install_fixture(temporary, old=True)
+            self.assertTrue(manifest['apks'][0]['external'])
+            self.assertTrue(manifest['apks'][0]['preserve_original'])
+
+    def test_pad_unknown_apk_or_native_is_refused_before_guest_writes(self):
+        for arguments in ({'wrong_apk': True}, {'wrong_apk': True, 'no_engine': True},
+                          {'native_hash': '0' * 64 + '  engine'}):
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as temporary:
+                self.pad_install_fixture(temporary, **arguments)
+
+    def test_pad_weather_is_deferred_but_system_and_home_keep_early_bind(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            weather, restored, home, executable = (folder / name for name in
+                                                   ('weather.apk', 'restored.apk', 'home.apk', 'bb'))
+            weather.touch();restored.touch();home.touch();executable.touch();executable.chmod(0o700)
+            checksum = 'a' * 64
+            rows = [('com.miui.weather2', weather, apply_flutter_fix.PAD_WEATHER_ENGINE),
+                    ('com.miui.weather2', restored, '/data/app/random/lib/arm64/libhyper_os_flutter.so'),
+                    ('com.miui.home', home, '/owned/home-engine.so')]
+            (folder / 'apks.conf').write_text(''.join(
+                package + '|payload.so|' + str(apk) + '|' + target + '|before|after|' + checksum + '\n'
+                for package, apk, target in rows))
+            with mock_patch.object(apply_flutter_fix, 'PAD_WEATHER_APK', str(weather)):
+                script = apply_flutter_fix.boot_script(apply_flutter_fix.PAD_SOURCE)
+            body = script[script.index('[ -f "$MODDIR/disable" ] && exit 0\n'):]
+            output = folder / 'binds.txt'
+            program = ('MODDIR=' + str(folder) + '\nBB=' + str(executable) + '\n'
+                       'bind_target() { printf "%s\\n" "$3" >> ' + str(output) + '; }\n'
+                       'sha256sum() { printf "' + checksum + '  %s\\n" "$1"; }\n' + body)
+            subprocess.run(['sh', '-c', program, 'post-fs-data.sh'], check=True, capture_output=True, text=True)
+            self.assertEqual(output.read_text().splitlines(), [apply_flutter_fix.SYSTEM_LIB, '/owned/home-engine.so'])
+
+    def test_pad_boot_script_restoration_is_pinned_atomic_and_phone_unchanged(self):
+        self.assertEqual(apply_flutter_fix.boot_script(), apply_flutter_fix.BOOT_SCRIPT)
+        script = apply_flutter_fix.boot_script(apply_flutter_fix.PAD_SOURCE)
+        subprocess.run(['sh', '-n'], input=script, text=True, check=True, capture_output=True)
+        for checksum in (apply_flutter_fix.PAD_WEATHER_APK_SHA256, apply_flutter_fix.PAD_WEATHER_BEFORE,
+                         apply_flutter_fix.PAD_WEATHER_AFTER):
+            self.assertIn(checksum, script)
+        self.assertIn('ln "$temporary" "$target"', script)
+        self.assertIn('(set -C; cat "$original" > "$temporary")', script)
+
+    def test_pad_restoration_trap_removes_temporary_hardlink(self):
+        script = apply_flutter_fix.boot_script(apply_flutter_fix.PAD_SOURCE)
+        cleanup = next(line.strip() for line in script.splitlines() if 'trap ' in line)
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            staged, target = folder / 'original staging file', folder / 'engine.so'
+            staged.write_bytes(b'original engine')
+            target.hardlink_to(staged)
+            subprocess.run(['sh', '-c', 'temporary=$1\n' + cleanup, 'restore', str(staged)],
+                           check=True, capture_output=True, text=True)
+            self.assertFalse(staged.exists())
+            self.assertEqual(target.read_bytes(), b'original engine')
+        self.assertIn('[ ! -L "$directory" ] || exit 1', script)
+        self.assertNotIn('cp "$original" "$target"', script)
+        with self.assertRaisesRegex(RuntimeError, 'Unsupported Flutter firmware'):
+            apply_flutter_fix.boot_script('unknown-profile')
+
     def test_patch_is_guarded_and_idempotent(self):
         original = b'ELF header' + bytes.fromhex('12345678') + b'payload'
         fixed = b'ELF header' + bytes.fromhex('abcdef01') + b'payload'

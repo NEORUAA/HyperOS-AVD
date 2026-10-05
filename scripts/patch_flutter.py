@@ -7,6 +7,34 @@ from pathlib import Path
 # Offsets are file offsets, not virtual addresses. Each profile is pinned to the
 # complete input and output ELF hashes; never pattern-patch an unknown update.
 PROFILES = {
+    '9caf8bd3413b3093ae0855f86369f31ddf45b46c7ddbaa4c2f656e4f67bb5009': {
+        'name': 'tablet-yingtian',
+        'output': '30ab4c6adb2f0c6193e503a97f9e5f6407e902677c54db6f3896426812ddd509',
+        'shadow_sites': (0xc9ecc4, 0xc9f794, 0xc9f7a8),
+        # Audited against this engine's .gnu_debugdata function symbols.
+        # The 24-byte trampoline occupies assembly alignment padding between
+        # aes_gcm_dec_kernel's RET and bn_mul_mont_words, outside both symbols.
+        # The viewport's reversed [1,0] pair is at 0x123790, not 0x123788.
+        'sites': [
+            (0xd0ded4, '184a9e52', '184a8152'),
+            (0xd0dee4, 'f873a772', '9873a772'),
+            (0xd0df38, 'ffbb02b9', 'ff5f01f9'),
+            (0xd0e07c, '1f0500f9', '1f2003d5'),
+            (0xd0e0f0, 'ff5b01b9', 'ffaf00f9'),
+            (0xd0e230, '60010054', '1f2003d5'),
+            (0xd0e25c, 'e9830091', 'f6ffff17'),
+            (0xd38f6c, 'ac596cb8', '6c008052'),
+            (0xd3f838, '0040621e', '00102e1e'),
+            (0xd3fc84, '0ac143fd', '0ac943fd'),
+            (0xd41b5c, '00c143fd', '00c943fd'),
+            (0x613ca8, '000000000000000000000000000000000000000000000000', 'f30300aa304440f9103e009110ee7c92304400f9c0035fd6'),
+            (0xac3db8, 'f30300aa', 'bc3fed97'),
+            (0xac434c, 'f30300aa', '573eed97'),
+            (0xc9ecc4, '3800c0f2', 'b800c0f2'),
+            (0xc9f794, '2009a00e', '2021022e'),
+            (0xc9f7a8, '4108a00e', '4120092e'),
+        ],
+    },
     '71caea24a7fec06ae7c1b7cdb93c99f45288154a9ca21bb634d8181a97dcef62': {
         'name': 'system-v3',
         'output': 'f3d11ed83da4840c2ab31462529044ea5b2a95b08f18b8114618bc8fbd6759fb',

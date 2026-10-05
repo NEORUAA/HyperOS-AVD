@@ -60,7 +60,8 @@ def main():
     if workspace in (repo, repo / 'work') or workspace in repo.parents:
         raise RuntimeError('Use a separate official candidate workspace.')
     os.environ['HYPEROS_AVD_WORKSPACE'] = str(workspace)
-    from common import ROOT, fetch_ksu, firmware_idle, host_check, sdk_path, sha256
+    from common import (ROOT, OS4_NAME, OS4_PORT, OS4_SOURCE, fetch_ksu,
+                        firmware_idle, host_check, sdk_path, sha256)
     from build_image import erofs
     from erofs_image import build
     from init_userdata import create
@@ -73,9 +74,10 @@ def main():
     from patch_audio import build_vendor as build_audio_vendor
     from preinstall_os4_apps import REMOVALS, replacements as app_replacements, validated_apks
     from os4_defaults import image_replacements as default_replacements, production_properties
-    from setup import configure
+    from setup import configure, select_build_instance
     host_check()
-    firmware_idle(5574)
+    instance_name, instance_port = select_build_instance(OS4_SOURCE, OS4_NAME, OS4_PORT)
+    firmware_idle(instance_port)
     app_bundle = args.preinstalled_apps.resolve() if args.preinstalled_apps else ROOT / 'input/preinstalled-apps'
     validated_apks(app_bundle)
     archive_sha256 = sha256(args.zip)
@@ -248,7 +250,7 @@ def main():
         'avd_defaults': default_manifest,
         'adb_authentication': not args.diagnostic_adb,
         'experimental': True, 'ota_metadata': metadata}, indent=2) + '\n')
-    configure(sdk_path(), 'HyperOS_4_Official_API_37', 5574)
+    configure(sdk_path(), instance_name, instance_port)
     print('Official GSI candidate ready. Use Start-HyperOS4-Official.command.', flush=True)
 
 

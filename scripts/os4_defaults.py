@@ -31,6 +31,16 @@ on property:ro.persistent_properties.ready=true
 # Official hongkong product/etc/displayconfig/display_id_4630947121878579347.xml.
 DISPLAY = {'width': 1120, 'height': 2436, 'density': 480}
 SENSOR_DEFAULTS = {'proximity': '5', 'light': '200'}
+THERMAL_LABEL_SCRIPT = r'''# The ranchu kernel's virtual thermal nodes otherwise receive generic sysfs
+# labels. Xiaomi PowerKeeper requires the dedicated thermal label and crashes
+# repeatedly when reading the generic one under enforcing SELinux.
+for node in /sys/devices/virtual/thermal/thermal_zone0/type /sys/devices/virtual/thermal/thermal_zone0/temp; do
+    [ -f "$node" ] || continue
+    case "$(ls -Z "$node")" in
+        *u:object_r:sysfs:s0*) chcon u:object_r:sysfs_thermal:s0 "$node" || exit 1 ;;
+    esac
+done
+'''
 CONFIG = Path(__file__).resolve().parent.parent / 'config'
 LOG_SCRIPT = (CONFIG / 'kill_HyperOS_Log.sh').read_bytes()
 LOG_TAGS = tuple(LOG_SCRIPT.split(b'tags=(\n', 1)[1].split(b'\n)', 1)[0].decode().split())
@@ -105,7 +115,7 @@ def apply_sensor_defaults(config):
     """Start only the owned OS4 AVD with unobstructed, indoor sensor readings."""
     from common import adb
     from apply_flutter_fix import official
-    official(config)
+    official(config, sources=('official-hongkong-ota', 'official-yingtian-ota'))
     actual = adb(config, 'shell', 'getprop ro.boot.qemu.avd_name',
                  check=True, capture_output=True, text=True, timeout=10).stdout.strip()
     if actual != config['name']:
@@ -308,6 +318,15 @@ def image_replacements(sdk, folder):
     return edits, marker
 
 
+def apply_thermal_runtime(config):
+    """Restore only the emulator's two thermal labels under enforcing SELinux."""
+    from apply_flutter_fix import official, root
+    official(config, sources=('official-hongkong-ota', 'official-yingtian-ota'))
+    if root(config, 'getprop ro.boot.hardware') != 'ranchu':
+        raise RuntimeError('Thermal label repair is restricted to ranchu hardware.')
+    root(config, THERMAL_LABEL_SCRIPT)
+
+
 def apply_color_runtime(config, force=False):
     """Seed neutral display saturation once, preserving later user choices."""
     from apply_flutter_fix import official, root
@@ -333,9 +352,15 @@ def apply_refresh_runtime(config):
     """Persist the tested refresh fix without replacing images or userdata."""
     from apply_flutter_fix import official, root
     from common import ROOT, adb, sha256
-    official(config)
+    official(config, sources=('official-hongkong-ota', 'official-yingtian-ota'))
+    build = ROOT / 'local/build.json'
+    tablet = build.is_file() and json.loads(build.read_text()).get('source') == 'official-yingtian-ota'
+    version = 'OS4.0.17.0.XFRCNXM'
+    if tablet:
+        from os4_pad import PROFILE
+        version = PROFILE['hyperos']
     expected = {'ro.boot.hardware': 'ranchu', 'ro.boot.qemu.avd_name': config['name'],
-                'ro.mi.os.version.incremental': 'OS4.0.17.0.XFRCNXM',
+                'ro.mi.os.version.incremental': version,
                 'ro.boot.qemu.vsync': '60'}
     for key, value in expected.items():
         if root(config, 'getprop ' + key) != value:
@@ -343,7 +368,11 @@ def apply_refresh_runtime(config):
     folder = ROOT / 'work/refresh-fix'
     folder.mkdir(parents=True, exist_ok=True)
     script = folder / 'service.sh'
-    script.write_bytes(REFRESH_WRAPPER)
+    payload = REFRESH_WRAPPER
+    if tablet:
+        from os4_pad import refresh_script
+        payload = refresh_script(payload)
+    script.write_bytes(payload)
     checksum = sha256(script)
     marker = ROOT / 'local/refresh-fix.json'
     old = json.loads(marker.read_text()) if marker.is_file() else {}

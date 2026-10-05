@@ -7,6 +7,9 @@ import zipfile
 PACKAGE = 'com.miui.voiceassist'
 APK = '/product/priv-app/VoiceAssistAndroidT/VoiceAssistAndroidT.apk'
 APK_SHA256 = '70b833c96947b17fc58a3cb7d84c06577b97b58798ce3a7d8f9dd585db5d061d'
+PAD_APK_SHA256 = 'ea98e6d2fda6096dc93b6c8b33595a3aa0df209f564124e633f210452d4292aa'
+PHONE_SOURCE = 'official-hongkong-ota'
+PAD_SOURCE = 'official-yingtian-ota'
 ENTRY = 'lib/arm64-v8a/libmglnative2.so'
 NATIVE = '/product/priv-app/VoiceAssistAndroidT/lib/arm64/libmglnative2.so'
 BEFORE = 'a78630eaa5e6991b888c2744e4f01de67e0079948def8cb60434c98130a1773e'
@@ -14,6 +17,15 @@ AFTER = '7a7b0b363c4222320c6ff7f741ea1559e9f1f9a7ad9f01b78b98b4dd35445374'
 MANIFEST = {'revision': 1, 'package': PACKAGE, 'apk': APK,
             'apk_sha256': APK_SHA256, 'native': NATIVE, 'native_sha256': AFTER,
             'glsl': '300 es', 'egl_alpha_bits': 8}
+
+
+def profile(source=PHONE_SOURCE):
+    """Select one audited signed APK without widening the phone default."""
+    if source == PHONE_SOURCE:
+        return dict(MANIFEST)
+    if source == PAD_SOURCE:
+        return {**MANIFEST, 'apk_sha256': PAD_APK_SHA256}
+    raise RuntimeError('Unsupported XiaoAI firmware profile.')
 
 
 def patch(data):
@@ -42,8 +54,9 @@ def patch(data):
     return bytes(result)
 
 
-def native_from_apk(data):
-    if hashlib.sha256(data).hexdigest() != APK_SHA256:
+def native_from_apk(data, source=PHONE_SOURCE):
+    selected = profile(source)
+    if hashlib.sha256(data).hexdigest() != selected['apk_sha256']:
         raise RuntimeError('Unsupported XiaoAI APK; original signature is preserved.')
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         if archive.namelist().count(ENTRY) != 1:
@@ -51,7 +64,7 @@ def native_from_apk(data):
         return patch(archive.read(ENTRY))
 
 
-def image_replacements(apk):
+def image_replacements(apk, source=PHONE_SOURCE):
     """Add the preferred external native library beside the unchanged APK."""
-    return {NATIVE.lstrip('/'): (native_from_apk(apk), 0o644,
-                                'u:object_r:system_lib_file:s0')}, dict(MANIFEST)
+    return {NATIVE.lstrip('/'): (native_from_apk(apk, source=source), 0o644,
+                                'u:object_r:system_lib_file:s0')}, profile(source)

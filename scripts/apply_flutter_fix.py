@@ -18,6 +18,12 @@ ENGINE_ENTRY = 'lib/arm64-v8a/libhyper_os_flutter.so'
 PACKAGES = ('com.miui.home', 'com.miui.weather2')
 REVISION = 6
 EMPTY = hashlib.sha256(b'').hexdigest()
+PAD_SOURCE = 'official-yingtian-ota'
+PAD_WEATHER_APK = '/product/data-app/MIUIWeather/MIUIWeather.apk'
+PAD_WEATHER_APK_SHA256 = '50f5dd5a06818f9613bf92ae2861beb58426895e6ae86364ed472e4c0aec5652'
+PAD_WEATHER_ENGINE = '/data/app-lib/MIUIWeather/arm64/libhyper_os_flutter.so'
+PAD_WEATHER_BEFORE = 'd67e5c634800a97cd853fd425ded4752c43c2c879fe7269c8b9ffab6c5104836'
+PAD_WEATHER_AFTER = '109fcc92d722321481e62d0bc5488b09d2e5ecbe3241b555d86fe681ddd84083'
 
 # Use KernelSU BusyBox: toybox can resolve a file bind back to its source.
 BOOT_SCRIPT = r'''#!/system/bin/sh
@@ -85,6 +91,71 @@ exit 0
 '''
 
 
+def boot_script(source='official-hongkong-ota'):
+    """Keep the phone script exact; restore only the audited factory Pad engine."""
+    if source == 'official-hongkong-ota':
+        return BOOT_SCRIPT
+    if source != PAD_SOURCE:
+        raise RuntimeError('Unsupported Flutter firmware profile.')
+    anchor = '    if [ -z "$actual" ] && [ -f "$source.original" ]; then\n'
+    if BOOT_SCRIPT.count(anchor) != 1:
+        raise RuntimeError('Unexpected Flutter original-library restoration block.')
+    guard = f'''    if [ "$target" = {PAD_WEATHER_ENGINE} ]; then
+        [ "$(getprop ro.boot.hardware)" = ranchu ] || return 1
+        [ "$(getprop ro.product.device)" = yingtian ] || return 1
+        [ "$(getprop ro.mi.os.version.incremental)" = OS4.0.15.0.XBMCNXM ] || return 1
+        [ "$before" = {PAD_WEATHER_BEFORE} ] && [ "$after" = {PAD_WEATHER_AFTER} ] || return 1
+        [ "$(nsenter -t "$pid" -m -- "$BB" sha256sum {PAD_WEATHER_APK} | "$BB" cut -d ' ' -f 1)" = {PAD_WEATHER_APK_SHA256} ] || return 1
+        [ "$(nsenter -t "$pid" -m -- "$BB" sha256sum "$source" | "$BB" cut -d ' ' -f 1)" = {PAD_WEATHER_AFTER} ] || return 1
+    fi
+'''
+    restoration = f'''    if [ "$target" = {PAD_WEATHER_ENGINE} ]; then
+        if [ -z "$actual" ]; then
+            nsenter -t "$pid" -m -- sh -c '
+                set -e
+                target=$1; original=$2; before=$3
+                [ "$(sha256sum "$original" | cut -d " " -f 1)" = "$before" ] || exit 1
+                [ ! -e "$target" ] && [ ! -L "$target" ] || exit 1
+                for directory in /data/app-lib /data/app-lib/MIUIWeather /data/app-lib/MIUIWeather/arm64; do
+                    [ ! -L "$directory" ] || exit 1
+                    if [ -e "$directory" ]; then
+                        [ -d "$directory" ] || exit 1
+                    else
+                        mkdir "$directory"
+                        chmod 755 "$directory"
+                        chcon u:object_r:apk_data_file:s0 "$directory"
+                    fi
+                done
+                temporary="$target.hyperos-avd-original.$$"
+                (set -C; cat "$original" > "$temporary") || exit 1
+                trap \'rm -f "$temporary"\' EXIT
+                chmod 644 "$temporary"
+                chcon u:object_r:apk_data_file:s0 "$temporary"
+                [ "$(sha256sum "$temporary" | cut -d " " -f 1)" = "$before" ] || exit 1
+                ln "$temporary" "$target"
+            ' sh "$target" "$source.original" "$before" || return 1
+            actual=$before
+        fi
+    fi
+'''
+    # The inner shell uses single quotes, so quote its cleanup without closing it.
+    restoration = restoration.replace('trap \'rm -f "$temporary"\' EXIT',
+                                      'trap "rm -f \\"$temporary\\"" EXIT')
+    early = '        [ -n "$apk_sha" ] && [ -f "$apk_target" ] || continue\n'
+    if BOOT_SCRIPT.count(early) != 1:
+        raise RuntimeError('Unexpected Flutter early APK loop.')
+    # PackageManager may replace extracted factory libraries on a fingerprint
+    # rescan. A file bind here prevents its atomic extraction from completing.
+    # PackageInstaller can also replace a restored or updated Weather app's
+    # extracted library directory. Defer both factory and /data/app layouts.
+    deferred = '        [ "$package" = com.miui.weather2 ] && continue\n'
+    already = '    [ "$actual" = "$after" ] && return 0\n'
+    if BOOT_SCRIPT.count(already) != 1:
+        raise RuntimeError('Unexpected Flutter existing-library guard.')
+    return BOOT_SCRIPT.replace(already, guard + already).replace(
+        anchor, restoration + anchor).replace(early, deferred + early)
+
+
 def root(config, command, **kwargs):
     result = adb(config, 'shell', 'su -W -c ' + shlex.quote('set -e\n' + command),
                  capture_output=True, text=True, timeout=60, **kwargs)
@@ -93,13 +164,13 @@ def root(config, command, **kwargs):
     return result.stdout.strip()
 
 
-def official(config):
+def official(config, sources=('official-hongkong-ota',)):
     """Require the registered owned instance and the verified OS4 profile."""
     from common import avd_home
     build = ROOT / 'local/build.json'
     saved = ROOT / 'local/runtime.json'
     registry = avd_home() / (config['name'] + '.ini')
-    if not build.is_file() or json.loads(build.read_text()).get('source') != 'official-hongkong-ota':
+    if not build.is_file() or json.loads(build.read_text()).get('source') not in sources:
         raise RuntimeError('This patch requires the official OS4 firmware profile.')
     expected = json.loads(saved.read_text()) if saved.is_file() else {}
     values = dict(line.split('=', 1) for line in registry.read_text().splitlines() if '=' in line) if registry.is_file() else {}
@@ -123,12 +194,12 @@ def rewrite_apk(source, destination, engine):
             output.writestr(entry, engine if entry.filename == ENGINE_ENTRY else archive.read(entry))
 
 
-def refresh_scripts(config):
+def refresh_scripts(config, source='official-hongkong-ota'):
     folder = ROOT / 'work/flutter-render-fix'
     folder.mkdir(parents=True, exist_ok=True)
     for name in ('post-fs-data.sh', 'service.sh'):
         local = folder / name
-        local.write_text(BOOT_SCRIPT)
+        local.write_text(boot_script(source))
         remote = '/data/local/tmp/hyperos-render-' + name
         adb(config, 'push', str(local), remote, check=True, capture_output=True, timeout=30)
         root(config, f'cp {remote} {MODULE}/{name}.next\nchmod 755 {MODULE}/{name}.next\nmv {MODULE}/{name}.next {MODULE}/{name}\nrm {remote}')
@@ -148,7 +219,8 @@ def detach(config, manifest):
     paths = [item['target'] for item in old_targets(manifest)]
     commands = []
     for path in paths:
-        if any(c in path for c in '\n\r|"') or not path.startswith(('/system_ext/', '/data/app/', '/product/')):
+        if any(c in path for c in '\n\r|"') or not (path.startswith(('/system_ext/', '/data/app/', '/product/'))
+                or path == '/data/app-lib/MIUIWeather/arm64/libhyper_os_flutter.so'):
             raise RuntimeError('Invalid saved overlay target.')
         loop = (f'for attempt in 1 2 3 4; do '
                 f"awk '$4 ~ /^\\/adb\\/modules\\/{MODULE_ID}\\// && $5 == \"{path}\" {{ found=1 }} END {{exit !found}}' /proc/self/mountinfo || break; "
@@ -157,13 +229,14 @@ def detach(config, manifest):
     root(config, 'for pid in 1 $(getprop init.svc_debug_pid.hyos_spawner) $(pidof zygote64); do\n'
          '[ -d "/proc/$pid" ] || continue\n' + '\n'.join(commands) + '\ndone')
     for item in old_targets(manifest):
-        if item.get('placeholder') or item.get('external'):
+        if (item.get('placeholder') or item.get('external')) and not item.get('preserve_original'):
             path = shlex.quote(item['target'])
             root(config, f'if [ -f {path} ] && [ "$(sha256sum {path} | cut -d " " -f 1)" = {item["before"]} ]; then rm {path}; fi')
 
 
-def install(config, enable=False):
-    official(config)
+def install(config, enable=False, sources=('official-hongkong-ota',)):
+    official(config, sources=sources)
+    source = json.loads((ROOT / 'local/build.json').read_text())['source']
     if root(config, 'id -u') != '0' or root(config, 'getprop sys.boot_completed') != '1':
         raise RuntimeError('Wait for boot completion and KernelSU root first.')
     targets = {pkg: root(config, 'pm path ' + pkg).splitlines()[0].removeprefix('package:') for pkg in PACKAGES}
@@ -175,7 +248,11 @@ def install(config, enable=False):
         if disabled and not enable:
             print('Native Flutter overlay is disabled; keeping this choice.', flush=True)
             return old
-        if old.get('revision') == REVISION and all('apk_target' in i for i in old['apks']) and old.get('packages', {i['package']: i.get('apk_target', i['target']) for i in old['apks']}) == targets:
+        pad_legacy = source == PAD_SOURCE and any(
+            i.get('package') == 'com.miui.weather2' and i.get('apk_target') == PAD_WEATHER_APK
+            and not (i.get('external') and i.get('preserve_original'))
+            for i in old.get('apks', ()))
+        if not pad_legacy and old.get('revision') == REVISION and all('apk_target' in i for i in old['apks']) and old.get('packages', {i['package']: i.get('apk_target', i['target']) for i in old['apks']}) == targets:
             for item in old_targets(old):
                 current = root(config, 'if [ -f ' + shlex.quote(item['target']) + ' ]; then sha256sum ' + shlex.quote(item['target']) + '; fi')
                 current = current.split()[0] if current else ''
@@ -185,7 +262,7 @@ def install(config, enable=False):
                     raise RuntimeError('Overlay target changed unexpectedly: ' + item['target'])
             if not all('apk_target' in i for i in old['apks']):
                 raise RuntimeError('Overlay schema requires rebuilding this module.')
-            refresh_scripts(config)
+            refresh_scripts(config, source)
             root(config, f'rm -f {MODULE}/disable\nsh {MODULE}/service.sh')
             print('Native Flutter overlays are ready.', flush=True)
             return old
@@ -195,7 +272,9 @@ def install(config, enable=False):
     adb(config, 'pull', SYSTEM_LIB, str(original_lib), check=True, capture_output=True, timeout=60)
     lib = original_lib.read_bytes()
     before, system_profile = profile(lib)
-    if system_profile['name'] != 'system-v3':
+    expected_engine = {'official-hongkong-ota': 'system-v3',
+                       'official-yingtian-ota': 'tablet-yingtian'}[source]
+    if system_profile['name'] != expected_engine:
         raise RuntimeError('Unexpected system Flutter engine.')
     (folder / 'flutter.so').write_bytes(patch(lib))
     system = {'target': SYSTEM_LIB, 'before': before, 'after': system_profile['output']}
@@ -207,6 +286,9 @@ def install(config, enable=False):
         original = folder / (pkg + '-current.apk')
         adb(config, 'pull', target, str(original), check=True, capture_output=True, timeout=60)
         actual = sha256(original)
+        factory_pad_weather = source == PAD_SOURCE and pkg == 'com.miui.weather2' and target == PAD_WEATHER_APK
+        if factory_pad_weather and actual != PAD_WEATHER_APK_SHA256:
+            raise RuntimeError('Unsupported factory tablet Weather APK.')
         apk_hashes[pkg] = actual
         saved = folder / (pkg + '-' + actual + '.apk')
         if not saved.exists():
@@ -219,6 +301,26 @@ def install(config, enable=False):
             raw = archive.read(ENGINE_ENTRY)
             engine = patch(raw)
         native_target = str(Path(target).parent / 'lib/arm64/libhyper_os_flutter.so')
+        if factory_pad_weather:
+            # HyperOS extracts the signed factory Weather engine outside its
+            # read-only APK directory. Patch the library actually loaded.
+            if digest(raw) != PAD_WEATHER_BEFORE or digest(engine) != PAD_WEATHER_AFTER:
+                raise RuntimeError('Unsupported factory tablet Weather engine.')
+            native_target = PAD_WEATHER_ENGINE
+            current = root(config, 'if [ -e ' + shlex.quote(native_target) + ' ] || [ -L ' + shlex.quote(native_target) + ' ]; then\n'
+                           '[ -f ' + shlex.quote(native_target) + ' ] && [ ! -L ' + shlex.quote(native_target) + ' ] || exit 1\n'
+                           'sha256sum ' + shlex.quote(native_target) + '\nfi')
+            if current and current.split()[0] not in (PAD_WEATHER_BEFORE, PAD_WEATHER_AFTER):
+                raise RuntimeError('An unrelated tablet Weather engine already exists.')
+            payload = pkg + '.so'
+            (folder / payload).write_bytes(engine)
+            (folder / (payload + '.original')).write_bytes(raw)
+            apks.append({'package': pkg, 'apk_target': target, 'payload': payload,
+                         'target': native_target, 'before': PAD_WEATHER_BEFORE,
+                         'after': PAD_WEATHER_AFTER, 'external': True, 'preserve_original': True})
+            continue
+        if source == PAD_SOURCE and target.startswith('/product/data-app/'):
+            raise RuntimeError('Unsupported tablet factory native layout; signed APK was preserved.')
         extracted = root(config, 'if [ -f ' + shlex.quote(native_target) + ' ]; then echo yes; fi') == 'yes'
         previous_placeholder = any(i['target'] == native_target and (i.get('placeholder') or i.get('external')) for i in old_targets(old)) if old else False
         if target.startswith('/data/app/') and (not extracted or previous_placeholder):
@@ -272,7 +374,7 @@ def install(config, enable=False):
     (folder / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     (folder / 'module.prop').write_text(f'id={MODULE_ID}\nname=HyperOS AVD Flutter render fix\nversion={REVISION}\nversionCode={REVISION}\nauthor=HyperOS-AVD\ndescription=Native depth, Float16, storage alignment and dispersion shadow fix for the official ARM64 AVD\n')
     for name in ('post-fs-data.sh', 'service.sh'):
-        (folder / name).write_text(BOOT_SCRIPT)
+        (folder / name).write_text(boot_script(source))
     # Validate every input before replacing the previous module. Keep its backup.
     stage = '/data/adb/hyperos-render-stage-v' + str(REVISION) + '-' + system['after'][:12]
     pending = root(config, f'if [ -d {stage} ]; then cat {stage}/manifest.json; fi')

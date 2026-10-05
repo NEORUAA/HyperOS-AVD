@@ -13,7 +13,7 @@ import zipfile
 from common import ROOT, adb, runtime
 from apply_flutter_fix import official, root
 from patch_flutter import digest
-from os4_defaults import PHONE_IDENTITY
+from os4_defaults import PHONE_IDENTITY, THERMAL_LABEL_SCRIPT
 
 MODULE = '/data/adb/modules/hyperos_avd_navigation'
 PROPERTY = 'ro.miui.product.home'
@@ -147,16 +147,7 @@ while IFS='=' read -r key value; do
     /data/adb/ksud resetprop -n "$key" "$value" || exit 1
 done < "$MODDIR/identity.prop"
 echo "$(date +%s) Enabled original Xiaomi launcher resource overlay" >> "$MODDIR/navigation.log"
-# The ranchu kernel's virtual thermal nodes otherwise receive generic sysfs
-# labels. Xiaomi PowerKeeper requires the dedicated thermal label and crashes
-# repeatedly when reading the generic one under enforcing SELinux.
-for node in /sys/devices/virtual/thermal/thermal_zone0/type /sys/devices/virtual/thermal/thermal_zone0/temp; do
-    [ -f "$node" ] || continue
-    case "$(ls -Z "$node")" in
-        *u:object_r:sysfs:s0*) chcon u:object_r:sysfs_thermal:s0 "$node" || exit 1 ;;
-    esac
-done
-''' + AOT_SCRIPT
+''' + THERMAL_LABEL_SCRIPT + AOT_SCRIPT
 BOOT_SCRIPT = r'''#!/system/bin/sh
 MODDIR=${0%/*}
 [ -f "$MODDIR/disable" ] && exit 0
