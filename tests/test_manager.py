@@ -17,6 +17,11 @@ import setup
 
 
 class ManagerTests(unittest.TestCase):
+    def setUp(self):
+        dependencies = patch('userdata_resize.check_dependencies', return_value={})
+        self.dependencies = dependencies.start()
+        self.addCleanup(dependencies.stop)
+
     def bundle(self, directory, version='v0.2.1-test', bad=False, variant='os4-official'):
         if variant == 'os4-pad' and version == 'v0.2.1-test':
             version = 'pad-v0.1.0-a17-hyperos4-yingtian-r1'
@@ -114,6 +119,22 @@ class ManagerTests(unittest.TestCase):
                     patch.object(setup, 'install_bundle') as extract:
                 with self.assertRaisesRegex(RuntimeError, '2-64'):
                     manage.install(root, path, 'My_Tablet', 5584, Path('/sdk'), options)
+            owner.assert_not_called()
+            idle.assert_not_called()
+            extract.assert_not_called()
+            self.assertFalse(root.exists())
+
+    def test_missing_resize_dependencies_refuse_before_owner_download_or_writes(self):
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            path, _ = self.bundle(folder / 'bundle')
+            root = folder / 'instance'
+            self.dependencies.side_effect = RuntimeError('Missing resize2fs; install e2fsprogs first.')
+            with patch.object(manage, 'owner') as owner, patch.object(manage, 'idle') as idle, \
+                    patch.object(setup, 'install_bundle') as extract:
+                with self.assertRaisesRegex(RuntimeError, 'Missing resize2fs'):
+                    manage.install(root, path, 'My_Phone', 5584, Path('/sdk'), manage.hardware(6, 32, 4))
+            self.dependencies.assert_called_once_with(Path('/sdk'))
             owner.assert_not_called()
             idle.assert_not_called()
             extract.assert_not_called()
@@ -314,6 +335,52 @@ class ManagerTests(unittest.TestCase):
             self.assertFalse((root / 'avd/Test_temp.avd').exists())
             self.invoke(root, path, registry)
             self.assertEqual((root / 'images/system.img').read_bytes(), b'new firmware')
+
+    def test_new_install_prepares_userdata_before_frozen_runtime_handoff(self):
+        for variant in ('os4-official', 'os4-pad'):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as d:
+                folder = Path(d)
+                path, _ = self.bundle(folder / 'bundle', variant=variant)
+                root, registry = folder / 'instance', folder / 'registry'
+                observed = []
+                def resize_before_launch(sdk, data, capacity):
+                    userdata = data / 'userdata-qemu.img'
+                    observed.append(userdata.read_bytes() if userdata.exists() else None)
+                    self.assertEqual(capacity, 32)
+                wrapper = manage.wrapper
+                def verify_handoff(instance):
+                    self.assertEqual(observed, [None, b'blank'])
+                    self.assertEqual((instance / 'avd/New_AVD.avd/userdata-qemu.img').read_bytes(), b'blank')
+                    wrapper(instance)
+                with patch.object(manage, 'idle'), patch.object(manage, 'resize', side_effect=resize_before_launch), \
+                        patch.object(manage, 'avd_home', return_value=registry), \
+                        patch.object(setup, 'avd_home', return_value=registry), \
+                        patch.object(manage, 'wrapper', side_effect=verify_handoff):
+                    manage.install(root, path, 'New_AVD', 5584, Path('/sdk'), manage.hardware(6, 32, 4))
+                state = json.loads((root / 'local/manager.json').read_text())
+                self.assertEqual(state['runtime'], 'versions/' + state['version'] + '/runtime')
+                self.assertTrue((root / 'Start.command').is_file())
+
+    def test_failed_fresh_userdata_growth_retains_failed_copy_and_can_be_retried(self):
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            path, _ = self.bundle(folder / 'bundle')
+            root, registry = folder / 'instance', folder / 'registry'
+            def fail_after_copy(sdk, data, capacity):
+                if (data / 'userdata-qemu.img').exists():
+                    raise RuntimeError('injected fresh filesystem resize failure')
+            with patch.object(manage, 'idle'), patch.object(manage, 'resize', side_effect=fail_after_copy), \
+                    patch.object(manage, 'avd_home', return_value=registry), \
+                    patch.object(setup, 'avd_home', return_value=registry):
+                with self.assertRaisesRegex(RuntimeError, 'fresh filesystem'):
+                    manage.install(root, path, 'Test_temp', 5580, Path('/sdk'), manage.hardware(6, 32, 4))
+            self.assertFalse((root / 'avd/Test_temp.avd').exists())
+            self.assertFalse((registry / 'Test_temp.ini').exists())
+            failed = list((root / 'backups').glob('failed-data-*'))
+            self.assertEqual(len(failed), 1)
+            self.assertEqual((failed[0] / 'userdata-qemu.img').read_bytes(), b'blank')
+            self.invoke(root, path, registry)
+            self.assertEqual((root / 'avd/Test_temp.avd/userdata-qemu.img').read_bytes(), b'blank')
 
     def test_corrupt_download_does_not_change_existing_data(self):
         with tempfile.TemporaryDirectory() as d:
@@ -610,20 +677,10 @@ class ManagerTests(unittest.TestCase):
             with patch.object(manage, 'data_size', return_value={'backing-filename': 'userdata-qemu.img'}):
                 manage.validate_userdata(Path('/sdk'), root)
 
-    def test_resize_both_images_and_refuse_shrink_before_writes(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            (root / 'userdata-qemu.img').touch();(root / 'userdata-qemu.img.qcow2').touch()
-            with patch.object(manage, 'data_size', return_value={'virtual-size': 64 * 1024**3}), patch.object(manage.subprocess, 'run') as run:
-                with self.assertRaisesRegex(RuntimeError, 'reduced'):
-                    manage.resize(Path('/sdk'), root, 32)
-                run.assert_not_called()
-            infos = iter([{'virtual-size': 6 * 1024**3, 'format': 'raw'},
-                          {'virtual-size': 6 * 1024**3, 'format': 'qcow2'},
-                          {'virtual-size': 32 * 1024**3}, {'virtual-size': 32 * 1024**3}])
-            with patch.object(manage, 'data_size', side_effect=lambda *a: next(infos)), patch.object(manage.subprocess, 'run') as run:
-                manage.resize(Path('/sdk'), root, 32)
-                self.assertEqual(sum('resize' in call.args[0] for call in run.call_args_list), 2)
+    def test_resize_delegates_to_verified_offline_filesystem_growth(self):
+        with patch('userdata_resize.resize_userdata', return_value={'changed': True}) as grow:
+            self.assertEqual(manage.resize(Path('/sdk'), Path('/private/instance.avd'), 32), {'changed': True})
+        grow.assert_called_once_with(Path('/sdk'), Path('/private/instance.avd'), 32 * 1024**3)
 
     def test_new_instance_does_not_touch_other_workspace(self):
         with tempfile.TemporaryDirectory() as d:

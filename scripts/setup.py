@@ -86,6 +86,23 @@ def read_manifest(value):
                     or not re.fullmatch(r'\d+\.\d+\.\d+', minimum)
                     or tuple(map(int, minimum.split('.'))) < (1, 1, 0)):
                 raise RuntimeError('Invalid official OS4 Pad release profile.')
+        elif manifest.get('hyperos') == '4.0.18.0.XFRCNXM':
+            from phone_profile import profile_from_build
+            from manage import MODULE_UPGRADE_PREFLIGHT
+            selected = profile_from_build(build)
+            compatibility = manifest.get('compatibility', {})
+            minimum = compatibility.get('minimum_installer', '')
+            if (type(manifest['format']) is not int or manifest['format'] != 3
+                    or manifest.get('source') != OS4_SOURCE
+                    or manifest.get('source_device') != 'hongkong'
+                    or build.get('archive_sha256') != selected['archive_sha256']
+                    or compatibility.get('userdata_family') != 'os4-hongkong-api37-ranchu-4k'
+                    or compatibility.get('runtime_in_bundle') is not True
+                    or compatibility.get('module_upgrade_preflight') != MODULE_UPGRADE_PREFLIGHT
+                    or compatibility.get('upgrade_from') != ['v0.2.1-a17-hyperos4-hongkong-r2']
+                    or not isinstance(minimum, str) or not re.fullmatch(r'\d+\.\d+\.\d+', minimum)
+                    or tuple(map(int, minimum.split('.'))) < (1, 2, 0)):
+                raise RuntimeError('Invalid official OS4 r3 upgrade profile.')
     elif (manifest.get('android_api', 36) != 36 or manifest.get('variant', 'os3') != 'os3'
           or manifest.get('source') in (OS4_SOURCE, PAD_SOURCE)
           or manifest.get('build', {}).get('source') in (OS4_SOURCE, PAD_SOURCE)):
@@ -202,6 +219,22 @@ def start_instruction(root):
 
 def install_bundle(value):
     manifest, base = read_manifest(value)
+    previous = ROOT / 'local/build.json'
+    if (manifest.get('hyperos') == '4.0.18.0.XFRCNXM'
+            and any(path.is_file() for path in (ROOT / 'avd').glob('*.avd/userdata-qemu.img*'))):
+        from phone_profile import profile_from_build
+        try:
+            saved = json.loads(previous.read_text())
+            selected = profile_from_build(saved)
+            verified = (saved.get('source') == OS4_SOURCE
+                        and saved.get('hyperos') == manifest['hyperos']
+                        and saved.get('archive_sha256') == selected['archive_sha256']
+                        and saved.get('archive_sha256') == manifest['build']['archive_sha256'])
+        except (OSError, ValueError, KeyError, RuntimeError):
+            verified = False
+        if not verified:
+            raise RuntimeError('Use Installer 1.2.0 Upgrade or Recover for retained OS4 userdata; '
+                               'direct Setup requires verified matching firmware and OTA identity.')
     validate_memory()
     cache = ROOT / 'downloads' / manifest['version']
     cache.mkdir(parents=True, exist_ok=True)
@@ -339,10 +372,12 @@ def main():
         if Path(current.get('path', '/nonexistent')).expanduser().resolve() != ROOT / 'avd' / (args.name + '.avd'):
             raise RuntimeError(f'AVD {args.name} belongs to another workspace. Use --name with a new name.')
     # Protect every AVD in this checkout before replacing shared firmware files.
+    sdk = sdk_path(args.sdk)
+    from userdata_resize import check_dependencies
+    check_dependencies(sdk)
     if args.bundle or args.manifest:
         firmware_idle(args.port)
         install_bundle(args.bundle or args.manifest)
-    sdk = sdk_path(args.sdk)
     required = ('system.img', 'ramdisk.img', 'kernel-ranchu', 'source.properties', 'userdata.img')
     missing = [name for name in required if not (ROOT / 'images' / name).is_file()]
     if missing:

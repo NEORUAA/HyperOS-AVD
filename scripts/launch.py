@@ -37,6 +37,36 @@ def vulkan_features(build):
     return []
 
 
+def prepare_userdata(config):
+    """Repair disk/filesystem mismatches before the owned Emulator can open them."""
+    avd = ROOT / 'avd' / (config['name'] + '.avd')
+    properties = dict(line.split('=', 1) for line in (avd / 'config.ini').read_text().splitlines()
+                      if '=' in line)
+    storage = config.get('hardware', {}).get('disk.dataPartition.size',
+                                             properties.get('disk.dataPartition.size'))
+    if (not isinstance(storage, str) or not storage.endswith('G') or not storage[:-1].isdigit()
+            or not 6 <= int(storage[:-1]) <= 1024):
+        raise RuntimeError('Missing or invalid userdata capacity in this AVD configuration.')
+    from manage import resize, validate_userdata
+    from userdata_resize import PENDING
+    pending = avd / PENDING
+    recovered = None
+    if pending.exists() or pending.is_symlink():
+        # An interrupted activation can temporarily have no active base. Its
+        # original chain must be recovered before considering a fresh template.
+        recovered = resize(Path(config['sdk']), avd, int(storage[:-1]))
+    userdata = avd / 'userdata-qemu.img'
+    if not userdata.exists():
+        from userdata_resize import check_dependencies
+        check_dependencies(Path(config['sdk']))
+        print('Creating fresh userdata from the clean release template.', flush=True)
+        shutil.copyfile(ROOT / 'images/userdata.img', userdata)
+    validate_userdata(Path(config['sdk']), avd)
+    if recovered is not None:
+        return recovered
+    return resize(Path(config['sdk']), avd, int(storage[:-1]))
+
+
 def skip_oobe(config):
     command = '\n'.join([
         'set -e',
@@ -176,16 +206,7 @@ def main():
     # Refresh relocated paths before every cold start; collision checks protect other AVDs.
     configure(Path(config['sdk']), config['name'], config['port'])
     fetch_ksu(['ksud-aarch64-linux-android', 'KernelSU_v3.3.0_32601-release.apk'])
-    userdata = ROOT / 'avd' / (config['name'] + '.avd') / 'userdata-qemu.img'
-    if not userdata.exists():
-        print('Creating fresh userdata from the clean release template.', flush=True)
-        shutil.copyfile(ROOT / 'images/userdata.img', userdata)
-    from manage import resize, validate_userdata
-    validate_userdata(Path(config['sdk']), userdata.parent)
-    hardware = config.get('hardware', {})
-    storage = hardware.get('disk.dataPartition.size')
-    if storage:
-        resize(Path(config['sdk']), userdata.parent, int(storage.rstrip('G')))
+    prepare_userdata(config)
     logs = ROOT / 'logs'
     logs.mkdir(exist_ok=True)
     log = logs / 'emulator-current.log'
