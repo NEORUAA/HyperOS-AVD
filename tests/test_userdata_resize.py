@@ -1,5 +1,6 @@
 """Verify actual offline ext4 growth and recoverable raw/QCOW2 activation."""
 import hashlib
+import copy
 import json
 import os
 from pathlib import Path
@@ -63,8 +64,8 @@ class OfflineFilesystemTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.avd = (Path(self.temporary.name) / 'Offline.avd').resolve()
-        self.avd.mkdir()
+        self.avd = (Path(self.temporary.name) / 'avd/Offline.avd').resolve()
+        self.avd.mkdir(parents=True)
         self.base = self.avd / storage.DATA
         with self.base.open('wb') as stream:
             stream.truncate(64 * MIB)
@@ -111,6 +112,436 @@ class OfflineFilesystemTests(unittest.TestCase):
         # while the effective superblock still describes a 64 MiB filesystem.
         self.run_tool([self.qemu, 'resize', self.base, 256 * MIB])
         effective.unlink()
+
+    def opaque_overlay(self, name=storage.DATA):
+        """Model unreadable mapped-device metadata; do not claim crypto validation."""
+        effective = self.avd / ('opaque-' + name)
+        shutil.copyfile(self.avd / name, effective)
+        with effective.open('r+b') as stream:
+            stream.write(b'\xa5' * 4096)
+        self.run_tool([self.qemu, 'convert', '-O', 'qcow2', '-B', name,
+                       effective, self.avd / (name + '.qcow2')])
+        effective.unlink()
+
+    def install_key_template(self):
+        workspace = self.avd.parent.parent
+        template = workspace / 'images/encryptionkey.img'
+        template.parent.mkdir(parents=True)
+        shutil.copyfile(self.avd / 'encryptionkey.img', template)
+        manifest = workspace / 'local/installed-release.json'
+        manifest.parent.mkdir()
+        manifest.write_text(json.dumps({'files': {'images/encryptionkey.img': {
+            'sha256': storage.digest(template), 'size': template.stat().st_size}}}))
+        return template
+
+    def boot_key_layers(self, template):
+        shutil.copyfile(template, self.avd / 'encryptionkey.img')
+        self.run_tool([self.qemu, 'create', '-q', '-f', 'qcow2', '-F', 'raw', '-b',
+                       'encryptionkey.img', self.avd / 'encryptionkey.img.qcow2'])
+
+    def legacy_opaque(self):
+        self.run_tool([self.qemu, 'resize', self.base, 256 * MIB])
+        self.opaque_overlay()
+
+    def guest_record(self, result, *, changed=False):
+        """Model the trusted guest helper's return, not a measured live guest."""
+        return {'schema': storage.GUEST_RECORD_SCHEMA, 'requested_bytes': 256 * MIB,
+                'name': self.avd.name.removesuffix('.avd'), 'serial': 'emulator-5584',
+                'boot_id': '01234567-89ab-cdef-0123-456789abcdef', 'hardware': 'ranchu',
+                'product_device': 'test_device', 'incremental': 'test_build', 'root_uid': 0,
+                'selinux': 'Enforcing', 'mounted_type': 'ext4', 'mapped_device': '/dev/block/dm-0',
+                'mapped_device_bytes': 256 * MIB, 'filesystem': {**self.geometry(), 'bytes': 256 * MIB},
+                'verified': True, 'changed': changed, 'capacity_proof': 'verified-in-guest',
+                'host_token': result['userdata_capacity_token'], 'probe_verified': True if changed else None,
+                'backup': str(self.avd.parent / 'offline-backup') if changed else None}
+
+    def test_explicit_guest_deferral_has_no_capacity_claim_or_data_mutation(self):
+        self.legacy_opaque()
+        before = self.hashes()
+        with patch.object(storage, 'check_dependencies', side_effect=AssertionError('No host fs tools')):
+            with self.assertRaisesRegex(storage.OpaqueFilesystemError, 'guest-scoped'):
+                storage.resize_userdata(SDK, self.avd, 256 * MIB)
+            result = storage.resize_userdata(SDK, self.avd, 256 * MIB, allow_guest=True)
+        self.assertTrue(result['guest_required'])
+        self.assertFalse(result['changed'])
+        self.assertIsNone(result['filesystem_bytes'])
+        self.assertNotIn('prepared_filesystem_bytes', result)
+        token = result['userdata_capacity_token']
+        self.assertEqual(token['base_filesystem']['bytes'], 64 * MIB)
+        self.assertEqual(token['data_base_sha256'], before[storage.DATA])
+        self.assertEqual(set(token['layer_identity']), set(storage.LAYER_NAMES))
+        self.assertEqual(self.hashes(), before)
+        for name in (storage.PENDING, storage.VERIFIED, storage.GUEST_VERIFIED):
+            self.assertFalse((self.avd / name).exists())
+
+    def test_guest_deferral_requires_same_capacity_complete_key_chain_and_version(self):
+        self.legacy_opaque()
+        before = self.hashes()
+        for size in (128 * MIB, 512 * MIB):
+            with self.subTest(size=size), self.assertRaises(RuntimeError):
+                storage.resize_userdata(SDK, self.avd, size, allow_guest=True)
+            self.assertEqual(self.hashes(), before)
+        key = self.avd / 'encryptionkey.img.qcow2'
+        saved = key.read_bytes()
+        key.unlink()
+        with self.assertRaises(storage.OpaqueFilesystemError):
+            storage.resize_userdata(SDK, self.avd, 256 * MIB, allow_guest=True)
+        key.write_bytes(saved)
+        self.run_tool([self.qemu, 'resize', key, 8 * MIB])
+        with self.assertRaises(storage.OpaqueFilesystemError):
+            storage.resize_userdata(SDK, self.avd, 256 * MIB, allow_guest=True)
+        key.write_bytes(saved)
+        (self.avd / 'qemu-version.txt').write_text('1')
+        with self.assertRaises(storage.OpaqueFilesystemError):
+            storage.resize_userdata(SDK, self.avd, 256 * MIB, allow_guest=True)
+
+    def test_guest_proof_publishes_then_accepts_historical_capacity_with_small_raw_filesystem(self):
+        self.legacy_opaque()
+        prepared = storage.resize_userdata(SDK, self.avd, 256 * MIB, allow_guest=True)
+        # The guest may write both overlays while their raw bases remain fixed.
+        original = self.hashes()
+        self.run_tool([self.qemu, 'amend', '-f', 'qcow2', '-o', 'lazy_refcounts=on',
+                       self.avd / (storage.DATA + '.qcow2')])
+        self.assertNotEqual(self.hashes()[storage.DATA + '.qcow2'], original[storage.DATA + '.qcow2'])
+        before = self.hashes()
+        with patch.object(storage, 'check_dependencies', side_effect=AssertionError('No host fs tools')):
+            result = storage.publish_guest_capacity(SDK, self.avd, 256 * MIB,
+                                                   self.guest_record(prepared, changed=True))
+            self.run_tool([self.qemu, 'amend', '-f', 'qcow2', '-o', 'lazy_refcounts=on',
+                           self.avd / 'encryptionkey.img.qcow2'])
+            after_guest_write = self.hashes()
+            historical = storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertEqual(result['capacity_proof'], 'verified-in-guest')
+        self.assertIsNone(result['filesystem_bytes'])
+        self.assertEqual(historical['prepared_filesystem_bytes'], 256 * MIB)
+        self.assertEqual(historical['capacity_proof'], 'verified-in-guest')
+        self.assertEqual(self.geometry()['bytes'], 64 * MIB)
+        self.assertEqual(self.hashes(), after_guest_write)
+        self.assertEqual(self.hashes()[storage.DATA], before[storage.DATA])
+        self.assertEqual(self.hashes()['encryptionkey.img'], before['encryptionkey.img'])
+        receipt = json.loads((self.avd / storage.GUEST_VERIFIED).read_text())
+        self.assertEqual(receipt['base_filesystem']['bytes'], 64 * MIB)
+        self.assertEqual(receipt['filesystem']['bytes'], 256 * MIB)
+        self.assertNotIn('host_token', receipt)
+
+    def test_guest_publisher_rejects_unverified_wrong_scope_capacity_and_typed_records(self):
+        self.legacy_opaque()
+        prepared = storage.resize_userdata(SDK, self.avd, 256 * MIB, allow_guest=True)
+        before = self.hashes()
+        record = self.guest_record(prepared)
+        cases = [('verified', False), ('verified', 1), ('root_uid', False), ('name', 'Different'),
+                 ('serial', 'emulator-5585'), ('boot_id', 'wrong'), ('hardware', 'other'),
+                 ('selinux', 'Permissive'), ('mounted_type', 'f2fs'), ('mapped_device', '/dev/block/vda'),
+                 ('mapped_device_bytes', 64 * MIB), ('requested_bytes', 64 * MIB), ('changed', 0),
+                 ('host_token', None), ('probe_verified', True), ('backup', '/unexpected')]
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                invalid = {**record, field: value}
+                with self.assertRaisesRegex(RuntimeError, 'Guest capacity proof did not match'):
+                    storage.publish_guest_capacity(SDK, self.avd, 256 * MIB, invalid)
+                self.assertEqual(self.hashes(), before)
+                self.assertFalse((self.avd / storage.GUEST_VERIFIED).exists())
+        for field, value in (('bytes', 64 * MIB), ('block_size', True), ('uuid', 'z' * 32)):
+            invalid = copy.deepcopy(record)
+            invalid['filesystem'][field] = value
+            with self.subTest(geometry=field), self.assertRaises(RuntimeError):
+                storage.publish_guest_capacity(SDK, self.avd, 256 * MIB, invalid)
+        for field, value in (('avd', str(self.avd.parent)), ('nonce', 'wrong'),
+                             ('data_base_sha256', '0' * 64), ('layer_identity', {})):
+            invalid = copy.deepcopy(record)
+            invalid['host_token'][field] = value
+            with self.subTest(token=field), self.assertRaises(RuntimeError):
+                storage.publish_guest_capacity(SDK, self.avd, 256 * MIB, invalid)
+        self.assertEqual(self.hashes(), before)
+
+    def test_guest_publisher_rechecks_bases_layer_identity_and_offline_state(self):
+        self.legacy_opaque()
+        prepared = storage.resize_userdata(SDK, self.avd, 256 * MIB, allow_guest=True)
+        record = self.guest_record(prepared)
+        for name in (storage.DATA, 'encryptionkey.img'):
+            path = self.avd / name
+            with path.open('r+b') as stream:
+                stream.seek(8192)
+                old = stream.read(1)
+                stream.seek(8192)
+                stream.write(bytes([old[0] ^ 0xff]))
+            before = self.hashes()
+            with self.subTest(base=name), self.assertRaises(RuntimeError):
+                storage.publish_guest_capacity(SDK, self.avd, 256 * MIB, record)
+            self.assertEqual(self.hashes(), before)
+            with path.open('r+b') as stream:
+                stream.seek(8192)
+                stream.write(old)
+        with patch.object(storage, 'assert_offline', side_effect=RuntimeError('Close this AVD')), \
+                self.assertRaisesRegex(RuntimeError, 'Close this AVD'):
+            storage.publish_guest_capacity(SDK, self.avd, 256 * MIB, record)
+        path = self.avd / (storage.DATA + '.qcow2')
+        copy_path = path.with_suffix('.replacement')
+        shutil.copyfile(path, copy_path)
+        copy_path.replace(path)
+        before = self.hashes()
+        with self.assertRaises(RuntimeError):
+            storage.publish_guest_capacity(SDK, self.avd, 256 * MIB, record)
+        self.assertEqual(self.hashes(), before)
+        self.assertFalse((self.avd / storage.GUEST_VERIFIED).exists())
+
+    def test_guest_continuity_accepts_rename_but_refuses_replaced_overlay_and_larger_target(self):
+        self.legacy_opaque()
+        prepared = storage.resize_userdata(SDK, self.avd, 256 * MIB, allow_guest=True)
+        storage.publish_guest_capacity(SDK, self.avd, 256 * MIB, self.guest_record(prepared))
+        renamed = self.avd.with_name('Renamed.avd')
+        self.avd.rename(renamed)
+        self.avd, self.base = renamed, renamed / storage.DATA
+        self.assertEqual(storage.resize_userdata(SDK, self.avd, 256 * MIB)['capacity_proof'], 'verified-in-guest')
+        before = self.hashes()
+        with self.assertRaises(storage.OpaqueFilesystemError):
+            storage.resize_userdata(SDK, self.avd, 512 * MIB, allow_guest=True)
+        self.assertEqual(self.hashes(), before)
+        path = self.avd / (storage.DATA + '.qcow2')
+        copy_path = path.with_suffix('.replacement')
+        shutil.copyfile(path, copy_path)
+        copy_path.replace(path)
+        with self.assertRaises(storage.OpaqueFilesystemError):
+            storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertEqual(self.hashes(), before)
+        fresh = storage.resize_userdata(SDK, self.avd, 256 * MIB, allow_guest=True)
+        self.assertTrue(fresh['guest_required'])
+
+    def test_guest_marker_foreign_ownership_and_publication_failure_preserve_images(self):
+        self.legacy_opaque()
+        prepared = storage.resize_userdata(SDK, self.avd, 256 * MIB, allow_guest=True)
+        record = self.guest_record(prepared)
+        before = self.hashes()
+        marker = self.avd / storage.GUEST_VERIFIED
+        marker.write_text(json.dumps({'schema': 'foreign'}))
+        with self.assertRaisesRegex(RuntimeError, 'foreign guest userdata capacity receipt'):
+            storage.publish_guest_capacity(SDK, self.avd, 256 * MIB, record)
+        self.assertEqual(self.hashes(), before)
+        marker.unlink()
+        with patch.object(storage, '_json', side_effect=OSError('proof write failed')), \
+                self.assertRaisesRegex(OSError, 'proof write failed'):
+            storage.publish_guest_capacity(SDK, self.avd, 256 * MIB, record)
+        self.assertEqual(self.hashes(), before)
+        self.assertFalse(marker.exists())
+        storage.publish_guest_capacity(SDK, self.avd, 256 * MIB, record)
+        original = marker.read_text()
+        for field, value in (('requested_bytes', True), ('layer_identity', {}), ('data_base_sha256', '0' * 64)):
+            invalid = json.loads(original)
+            invalid[field] = value
+            marker.write_text(json.dumps(invalid))
+            with self.subTest(marker=field), self.assertRaises(storage.OpaqueFilesystemError):
+                storage.resize_userdata(SDK, self.avd, 256 * MIB)
+            self.assertEqual(self.hashes(), before)
+
+    def test_opaque_guest_writes_keep_verified_capacity_without_host_resize(self):
+        storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.opaque_overlay()
+        self.opaque_overlay('encryptionkey.img')
+        before = self.hashes()
+        with patch.object(storage, 'check_dependencies', side_effect=RuntimeError('Missing resize2fs')) as tools:
+            result = storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        tools.assert_not_called()
+        self.assertFalse(result['changed'])
+        self.assertIsNone(result['filesystem_bytes'])
+        self.assertEqual(result['prepared_filesystem_bytes'], 256 * MIB)
+        self.assertEqual(result['capacity_proof'], 'verified-before-encryption')
+        self.assertEqual(self.hashes(), before)
+
+    def test_completed_old_receipt_can_follow_an_opaque_chain_after_avd_rename(self):
+        storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        (self.avd / storage.VERIFIED).unlink()
+        renamed = self.avd.with_name('Renamed.avd')
+        self.avd.rename(renamed)
+        self.avd, self.base = renamed, renamed / storage.DATA
+        self.opaque_overlay()
+        before = self.hashes()
+        result = storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertEqual(result['prepared_filesystem_bytes'], 256 * MIB)
+        self.assertEqual(self.hashes(), before)
+
+    def test_new_preboot_proof_pins_later_created_stock_key_layers(self):
+        template = self.install_key_template()
+        for name in ('encryptionkey.img', 'encryptionkey.img.qcow2'):
+            (self.avd / name).unlink()
+        storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.boot_key_layers(template)
+        self.opaque_overlay()
+        before = self.hashes()
+        result = storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertEqual(result['prepared_filesystem_bytes'], 256 * MIB)
+        self.assertEqual(self.hashes(), before)
+
+    def test_old_preboot_receipt_requires_manifest_pinned_stock_key_template(self):
+        template = self.install_key_template()
+        for name in ('encryptionkey.img', 'encryptionkey.img.qcow2'):
+            (self.avd / name).unlink()
+        storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        (self.avd / storage.VERIFIED).unlink()
+        # Model a receipt written before explicit preboot key pins existed.
+        for folder in self.avd.glob('.userdata-resize-backup-*'):
+            path = folder / 'transaction.json'
+            receipt = json.loads(path.read_text())
+            receipt.pop('key_base', None)
+            path.write_text(json.dumps(receipt))
+        self.boot_key_layers(template)
+        self.opaque_overlay()
+        result = storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertEqual(result['prepared_filesystem_bytes'], 256 * MIB)
+        (self.avd.parent.parent / 'local/installed-release.json').unlink()
+        before = self.hashes()
+        with self.assertRaisesRegex(storage.OpaqueFilesystemError, 'guest-scoped'):
+            storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertEqual(self.hashes(), before)
+
+    def test_plaintext_noop_records_proof_before_first_encrypted_boot(self):
+        result = storage.resize_userdata(SDK, self.avd, 64 * MIB)
+        self.assertFalse(result['changed'])
+        self.assertTrue((self.avd / storage.VERIFIED).is_file())
+        self.opaque_overlay()
+        result = storage.resize_userdata(SDK, self.avd, 64 * MIB)
+        self.assertEqual(result['prepared_filesystem_bytes'], 64 * MIB)
+
+    def test_opaque_legacy_oversize_disk_is_not_claimed_as_filesystem_growth(self):
+        self.run_tool([self.qemu, 'resize', self.base, 256 * MIB])
+        self.opaque_overlay()
+        before = self.hashes()
+        with self.assertRaisesRegex(storage.OpaqueFilesystemError, 'guest-scoped'):
+            storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertEqual(self.hashes(), before)
+        self.assertEqual(self.geometry()['bytes'], 64 * MIB)
+
+    def test_opaque_growth_and_shrink_refuse_without_writing_data_or_keys(self):
+        storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.opaque_overlay()
+        before = self.hashes()
+        for size, message in ((512 * MIB, 'guest-scoped'), (128 * MIB, 'reduced')):
+            with self.subTest(size=size), self.assertRaisesRegex(RuntimeError, message):
+                storage.resize_userdata(SDK, self.avd, size)
+            self.assertEqual(self.hashes(), before)
+
+    def test_opaque_continuity_rejects_changed_raw_userdata_and_key_bases(self):
+        storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.opaque_overlay()
+        for name in ('encryptionkey.img', storage.DATA):
+            path = self.avd / name
+            with path.open('r+b') as stream:
+                stream.seek(8192)
+                saved = stream.read(1)
+                stream.seek(8192)
+                stream.write(bytes([saved[0] ^ 0xff]))
+            before = self.hashes()
+            with self.subTest(name=name), self.assertRaisesRegex(storage.OpaqueFilesystemError, 'guest-scoped'):
+                storage.resize_userdata(SDK, self.avd, 256 * MIB)
+            self.assertEqual(self.hashes(), before)
+            with path.open('r+b') as stream:
+                stream.seek(8192)
+                stream.write(saved)
+
+    def test_opaque_continuity_rejects_forged_missing_and_foreign_proofs(self):
+        storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.opaque_overlay()
+        marker = self.avd / storage.VERIFIED
+        original = marker.read_text()
+        before = self.hashes()
+        for field, value in (('schema', 'foreign'), ('filesystem', {'bytes': 256 * MIB}),
+                             ('data_base_sha256', '0' * 64), ('key_base', None)):
+            with self.subTest(field=field):
+                saved = json.loads(original)
+                saved[field] = value
+                marker.write_text(json.dumps(saved))
+                with self.assertRaisesRegex(storage.OpaqueFilesystemError, 'guest-scoped'):
+                    storage.resize_userdata(SDK, self.avd, 256 * MIB)
+                self.assertEqual(self.hashes(), before)
+        marker.unlink()
+        foreign = self.avd / 'foreign-capacity.json'
+        foreign.write_text(original)
+        marker.symlink_to(foreign.name)
+        with self.assertRaisesRegex(storage.OpaqueFilesystemError, 'guest-scoped'):
+            storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertEqual(foreign.read_text(), original)
+        marker.unlink()
+        for folder in self.avd.glob('.userdata-resize-backup-*'):
+            shutil.rmtree(folder)
+        with self.assertRaisesRegex(storage.OpaqueFilesystemError, 'guest-scoped'):
+            storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertEqual(self.hashes(), before)
+
+    def test_opaque_continuity_requires_metadata_overlay_and_qemu_version_two(self):
+        storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.opaque_overlay()
+        (self.avd / 'qemu-version.txt').write_text('1')
+        before = self.hashes()
+        with self.assertRaisesRegex(storage.OpaqueFilesystemError, 'guest-scoped'):
+            storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertEqual(self.hashes(), before)
+        (self.avd / 'qemu-version.txt').write_text('2')
+        (self.avd / 'encryptionkey.img.qcow2').unlink()
+        before = self.hashes()
+        with self.assertRaisesRegex(storage.OpaqueFilesystemError, 'guest-scoped'):
+            storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertEqual(self.hashes(), before)
+
+    def test_plaintext_growth_refuses_foreign_marker_before_any_disk_changes(self):
+        before = self.hashes()
+        marker = self.avd / storage.VERIFIED
+        foreign = self.avd / 'foreign-marker'
+        foreign.write_bytes(b'foreign marker must stay intact')
+        for kind in ('foreign-schema', 'malformed-json', 'marker-symlink', 'marker-directory', 'temporary-symlink'):
+            with self.subTest(kind=kind):
+                if kind == 'foreign-schema':
+                    marker.write_text(json.dumps({'schema': 'foreign'}))
+                elif kind == 'malformed-json':
+                    marker.write_text('{')
+                elif kind == 'marker-symlink':
+                    marker.symlink_to(foreign.name)
+                elif kind == 'marker-directory':
+                    marker.mkdir()
+                else:
+                    marker.with_suffix('.next').symlink_to(foreign.name)
+                with self.assertRaisesRegex(RuntimeError, 'foreign userdata capacity receipt'):
+                    storage.resize_userdata(SDK, self.avd, 256 * MIB)
+                self.assertEqual(self.hashes(), before)
+                self.assertFalse((self.avd / storage.PENDING).exists())
+                self.assertEqual(foreign.read_bytes(), b'foreign marker must stay intact')
+                if marker.is_dir() and not marker.is_symlink():
+                    marker.rmdir()
+                else:
+                    marker.unlink(missing_ok=True)
+                marker.with_suffix('.next').unlink(missing_ok=True)
+
+    def test_capacity_proof_preparation_failure_rolls_back_data_and_keeps_previous_marker(self):
+        storage.resize_userdata(SDK, self.avd, 64 * MIB)
+        before = self.hashes()
+        marker = (self.avd / storage.VERIFIED).read_bytes()
+        with patch.object(storage, '_remember_filesystem', side_effect=RuntimeError('injected proof preparation failure')), \
+                self.assertRaisesRegex(RuntimeError, 'proof preparation'):
+            storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertEqual(self.hashes(), before)
+        self.assertEqual((self.avd / storage.VERIFIED).read_bytes(), marker)
+        self.assertFalse((self.avd / storage.PENDING).exists())
+
+    def test_postcommit_marker_publication_failure_keeps_durable_capacity_proof(self):
+        storage.resize_userdata(SDK, self.avd, 64 * MIB)
+        before = self.hashes()
+        marker = self.avd / storage.VERIFIED
+        previous = marker.read_bytes()
+        write_json = storage._json
+        def fail_marker(path, value):
+            if path == marker:
+                raise OSError('injected marker publication failure')
+            return write_json(path, value)
+        with patch.object(storage, '_json', side_effect=fail_marker):
+            result = storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertTrue(result['changed'])
+        self.assertEqual(self.geometry()['bytes'], 256 * MIB)
+        self.probe_is_retained()
+        self.assertEqual(marker.read_bytes(), previous)
+        backup = Path(result['backup'])
+        self.assertEqual(storage.digest(backup / 'original' / storage.DATA), before[storage.DATA])
+        self.assertIn('key_base', json.loads((backup / 'transaction.json').read_text()))
+        self.opaque_overlay()
+        opaque = storage.resize_userdata(SDK, self.avd, 256 * MIB)
+        self.assertEqual(opaque['prepared_filesystem_bytes'], 256 * MIB)
 
     def test_raw_filesystem_growth_preserves_probe_uuid_and_key_chain(self):
         before = self.geometry()

@@ -385,10 +385,105 @@ def validate_userdata(sdk, avd):
             raise RuntimeError('Unexpected userdata/key backing chain; preserved without booting: ' + str(overlay))
 
 
-def resize(sdk, avd, gib):
+def resize(sdk, avd, gib, *, allow_guest=False):
     """Grow and verify the effective ext4, even when its virtual disk is already larger."""
     from userdata_resize import resize_userdata
+    if allow_guest:
+        return resize_userdata(sdk, avd, gib * 1024**3, allow_guest=True)
     return resize_userdata(sdk, avd, gib * 1024**3)
+
+
+def prepare_storage(root, name, port, sdk, gib, folder):
+    """Repair legacy encrypted capacity only through the owned decrypted guest."""
+    root, sdk, folder = Path(root), Path(sdk), Path(folder)
+    validate_name(name)
+    owner(root, name)
+    idle(root, name, port)
+    avd = root / 'avd' / (name + '.avd')
+    result = resize(sdk, avd, gib, allow_guest=True)
+    if not result.get('guest_required'):
+        return result
+    manifest = json.loads((root / 'local/installed-release.json').read_text())
+    if manifest.get('variant') not in ('os3', 'os4-official', 'os4-pad'):
+        raise RuntimeError('Guest storage repair requires a known installed release.')
+    saved = json.loads((root / 'local/runtime.json').read_text())
+    if saved.get('name') != name or saved.get('port') != port:
+        raise RuntimeError('Guest storage repair belongs to a different instance.')
+    for relative in ('images/system.img', 'images/vendor.img', 'images/kernel-ranchu',
+                     'images/ramdisk.img', 'tools/ksud-aarch64-linux-android'):
+        expected = manifest.get('files', {}).get(relative, {}).get('sha256')
+        if not expected or sha256(root / relative) != expected:
+            raise RuntimeError('Storage repair firmware differs from the installed release: ' + relative)
+    current = properties(avd / 'config.ini')
+    config = {**saved, 'sdk': str(sdk), 'userdata_capacity_token': result['userdata_capacity_token']}
+    command = [str(sdk / 'emulator/emulator'), '-avd', name, '-sysdir', str(root / 'images'),
+               '-port', str(port), '-no-window', '-no-snapshot-load', '-no-snapshot-save',
+               '-accel', 'on', '-gpu', 'host', '-memory', current.get('hw.ramSize', '4096'),
+               '-cores', current.get('hw.cpu.ncore', '2'), '-crash-report-mode', 'never']
+    from launch import vulkan_features
+    from rear_display_config import runtime_options
+    command += vulkan_features(manifest.get('build', {}))
+    command += runtime_options(manifest.get('build', {}))
+    say('正在检查加密用户分区的实际容量；完整备份已保存。',
+        'Checking the decrypted userdata filesystem; a full backup is saved.')
+    log = folder / 'storage-repair-emulator.log'
+    process, validated_guest, record = None, False, None
+    try:
+        with log.open('wb') as output:
+            process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT,
+                                       start_new_session=True)
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise RuntimeError('Storage repair emulator exited; inspect ' + str(log))
+            try:
+                state = common.adb(config, 'get-state', capture_output=True, text=True, timeout=10)
+                if 'unauthorized' in state.stderr:
+                    raise RuntimeError('Authorize this AVD computer connection before retrying storage repair.')
+                if state.returncode == 0 and state.stdout.strip() == 'device':
+                    identity = common.adb(config, 'emu', 'avd', 'name', capture_output=True,
+                                          text=True, check=True, timeout=15)
+                    if identity.stdout.splitlines()[:1] != [name]:
+                        raise RuntimeError('Storage repair connected to a different AVD.')
+                    validated_guest = True
+                    boot = common.adb(config, 'shell', 'getprop sys.boot_completed',
+                                      capture_output=True, text=True, timeout=15)
+                    if boot.returncode == 0 and boot.stdout.strip() == '1':
+                        break
+            except subprocess.TimeoutExpired:
+                pass
+            time.sleep(2)
+        else:
+            raise RuntimeError('Storage repair guest did not finish booting; inspect ' + str(log))
+        from userdata_guest import verify_and_grow
+        record = verify_and_grow(config, gib * 1024**3, backup=folder)
+        common.adb(config, 'shell', 'su -W -c sync', check=True, timeout=30)
+    finally:
+        if process is not None and process.poll() is None:
+            if validated_guest:
+                try:
+                    identity = common.adb(config, 'emu', 'avd', 'name', capture_output=True,
+                                          text=True, timeout=15)
+                    if identity.returncode == 0 and identity.stdout.splitlines()[:1] == [name]:
+                        stopped = common.adb(config, 'emu', 'kill', capture_output=True, timeout=15)
+                        if stopped.returncode:
+                            process.terminate()
+                    else:
+                        process.terminate()
+                except (OSError, subprocess.SubprocessError):
+                    process.terminate()
+            else:
+                process.terminate()
+            try:
+                process.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError('Storage repair guest is still running. Close only ' + name
+                                   + ' before restoring its saved backup.') from None
+    idle(root, name, port)
+    from userdata_resize import publish_guest_capacity
+    published = publish_guest_capacity(sdk, avd, gib * 1024**3, record)
+    json_write(folder / 'storage-repair.json', record)
+    return published
 
 
 def hardware(ram, storage, cores, variant=None):
@@ -850,6 +945,15 @@ def install(root, manifest_path, name, port, sdk, options, camera=False):
                     raise RuntimeError('Cached firmware differs from the release manifest.')
         idle(root, name, port)
         folder = backup(root, name)
+        if old is not None:
+            upgrade_transaction(root, folder, name, port)
+            try:
+                prepare_storage(root, name, port, sdk,
+                                int(options['disk.dataPartition.size'][:-1]), folder)
+            except BaseException:
+                idle(root, name, port)
+                restore(root, folder)
+                raise
         if old is not None and firmware_change(old, manifest):
             upgrade_transaction(root, folder, name, port)
             try:
@@ -1024,11 +1128,13 @@ def tui(language=None):
                     paths = {key: str((root / key).resolve()) for key in ('images', 'tools', 'config')}
                     json_write(folder / 'transaction.json', {'name': run['name'], 'port': run['port'], 'paths': paths, 'real': dict.fromkeys(paths, False)})
                     try:
-                        resize(Path(run['sdk']), root / 'avd' / (run['name'] + '.avd'), int(settings['disk.dataPartition.size'][:-1]))
+                        prepare_storage(root, run['name'], run['port'], Path(run['sdk']),
+                                        int(settings['disk.dataPartition.size'][:-1]), folder)
                         json_write(root / 'local/runtime.json', {**run, 'hardware': settings})
                         with scope(root):
                             setup.configure(Path(run['sdk']), run['name'], run['port'])
                     except BaseException:
+                        idle(root, run['name'], run['port'])
                         restore(root, folder)
                         raise
                 say('硬件配置已保存，下次冷启动生效。', 'Hardware saved; changes apply on the next cold boot.')

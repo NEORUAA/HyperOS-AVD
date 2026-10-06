@@ -54,7 +54,7 @@ def prepare_userdata(config):
     if pending.exists() or pending.is_symlink():
         # An interrupted activation can temporarily have no active base. Its
         # original chain must be recovered before considering a fresh template.
-        recovered = resize(Path(config['sdk']), avd, int(storage[:-1]))
+        recovered = resize(Path(config['sdk']), avd, int(storage[:-1]), allow_guest=True)
     userdata = avd / 'userdata-qemu.img'
     if not userdata.exists():
         from userdata_resize import check_dependencies
@@ -62,9 +62,14 @@ def prepare_userdata(config):
         print('Creating fresh userdata from the clean release template.', flush=True)
         shutil.copyfile(ROOT / 'images/userdata.img', userdata)
     validate_userdata(Path(config['sdk']), avd)
-    if recovered is not None:
-        return recovered
-    return resize(Path(config['sdk']), avd, int(storage[:-1]))
+    result = recovered if recovered is not None else resize(
+        Path(config['sdk']), avd, int(storage[:-1]), allow_guest=True)
+    if isinstance(result, dict) and result.get('guest_required'):
+        from manage import backup, prepare_storage
+        folder = backup(ROOT, config['name'])
+        result = prepare_storage(ROOT, config['name'], config['port'],
+                                 Path(config['sdk']), int(storage[:-1]), folder)
+    return result
 
 
 def skip_oobe(config):

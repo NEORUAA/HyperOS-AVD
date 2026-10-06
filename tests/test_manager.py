@@ -164,7 +164,7 @@ class ManagerTests(unittest.TestCase):
                 version='pad-v0.1.0-a17-hyperos4-yingtian-r1', variant='os4-pad')
             root, registry = folder / 'My tablet', folder / 'registry'
             settings = manage.hardware(6, 32, 4, variant='os4-pad')
-            with patch.object(manage, 'idle'), patch.object(manage, 'resize'), \
+            with patch.object(manage, 'idle'), patch.object(manage, 'resize', return_value={'changed': False}), \
                     patch.object(manage, 'validate_userdata'), \
                     patch.object(manage, 'data_size', return_value={'virtual-size': 32 * 1024**3}), \
                     patch.object(manage, 'avd_home', return_value=registry), \
@@ -262,7 +262,7 @@ class ManagerTests(unittest.TestCase):
         return {p.name: p.read_bytes() for p in data.iterdir()}
 
     def invoke(self, root, path, registry, **kwargs):
-        with patch.object(manage, 'idle'), patch.object(manage, 'resize'), patch.object(manage, 'validate_userdata'), \
+        with patch.object(manage, 'idle'), patch.object(manage, 'resize', return_value={'changed': False}), patch.object(manage, 'validate_userdata'), \
                 patch.object(manage, 'data_size', return_value={'virtual-size': 32 * 1024**3}), \
                 patch.object(manage, 'avd_home', return_value=registry), \
                 patch.object(setup, 'avd_home', return_value=registry):
