@@ -50,6 +50,8 @@ class FlutterPatchTests(unittest.TestCase):
                 return '0'
             if command == 'getprop sys.boot_completed':
                 return '1'
+            if command == 'getprop ro.mi.os.version.incremental':
+                return 'OS4.0.15.0.XBMCNXM'
             if command.startswith('pm path '):
                 return 'package:' + packages[command.removeprefix('pm path ')]
             if command.startswith('if [ -f ' + apply_flutter_fix.MODULE + '/manifest.json'):
@@ -78,6 +80,9 @@ class FlutterPatchTests(unittest.TestCase):
                 mock_patch.object(apply_flutter_fix, 'official'), \
                 mock_patch.object(apply_flutter_fix, 'root', side_effect=guest), \
                 mock_patch.object(apply_flutter_fix, 'adb', side_effect=adb), \
+                mock_patch.object(apply_flutter_fix, 'firmware_context', return_value={
+                    'source': apply_flutter_fix.PAD_SOURCE, 'incremental': 'OS4.0.15.0.XBMCNXM',
+                    'shared_input_sha256': hashlib.sha256(system).hexdigest()}), \
                 mock_patch.object(apply_flutter_fix, 'profile', return_value=(hashlib.sha256(system).hexdigest(),
                     {'name': 'tablet-yingtian', 'output': hashlib.sha256(fixed_system).hexdigest()})), \
                 mock_patch.object(apply_flutter_fix, 'patch', side_effect=engine_patch), \

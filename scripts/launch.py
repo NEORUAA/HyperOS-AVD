@@ -19,6 +19,24 @@ def is_os4():
         'official-hongkong-ota', 'official-yingtian-ota')
 
 
+def vulkan_features(build):
+    """Select image-specific descriptor and presentation workarounds."""
+    if build.get('source') == 'official-yingtian-ota':
+        return ['-feature', 'VulkanBatchedDescriptorSetUpdate']
+    if (build.get('source') == 'official-hongkong-ota'
+            and build.get('hyperos') == '4.0.18.0.XFRCNXM'):
+        from phone_profile import profile_from_build
+        from patch_pad_hwui import PHONE_BEFORE, PHONE_AFTER, PHONE_PROFILE
+        profile = profile_from_build(build)
+        expected = {'before': PHONE_BEFORE, 'after': PHONE_AFTER, 'profile': PHONE_PROFILE}
+        if (profile['pins']['hwui'] == PHONE_BEFORE and build.get('hwui') == expected
+                and build.get('hwui_renderer') == 'skiavk'):
+            # Keep the verified presentation workaround. The separately baked
+            # sync driver bounds command bursts when both panels are active.
+            return ['-feature', 'VulkanBatchedDescriptorSetUpdate,-GLAsyncSwap']
+    return []
+
+
 def skip_oobe(config):
     command = '\n'.join([
         'set -e',
@@ -93,6 +111,9 @@ def initialize(config, bypass_oobe=False, rotate_window=True):
         install_weather(config)
         from apply_assistant_fix import install as install_assistant
         install_assistant(config)
+        if json.loads(build.read_text()).get('rear_display_wake_fix'):
+            from apply_rear_display_fix import install as install_rear_display
+            install_rear_display(config)
         from apply_xiaomi_camera_fix import MODULE, install as install_xiaomi_camera
         installed = adb(config, 'shell', 'su -W -c ' + shlex.quote(
             f'if [ -f {MODULE}/manifest.json ]; then echo yes; fi'),
@@ -181,10 +202,13 @@ def main():
                '-memory', memory, '-cores', cores, '-show-kernel', '-verbose']
     if is_os4():
         command += ['-crash-report-mode', 'never']
-    if build.is_file() and json.loads(build.read_text()).get('source') == 'official-yingtian-ota':
+    if build.is_file():
         # The guest supports batched updates; gfxstream also masks inline uniform
         # blocks in this mode, avoiding the observed MoltenVK descriptor crash.
-        command += ['-feature', 'VulkanBatchedDescriptorSetUpdate']
+        image_build = json.loads(build.read_text())
+        command += vulkan_features(image_build)
+        from rear_display_config import runtime_options
+        command += runtime_options(image_build)
     if args.headless:
         command += ['-no-window']
     from host_color import environment

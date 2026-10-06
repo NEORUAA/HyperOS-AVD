@@ -19,10 +19,16 @@ MANIFEST = {'revision': 1, 'package': PACKAGE, 'apk': APK,
             'glsl': '300 es', 'egl_alpha_bits': 8}
 
 
-def profile(source=PHONE_SOURCE):
+def profile(source=PHONE_SOURCE, firmware=None):
     """Select one audited signed APK without widening the phone default."""
     if source == PHONE_SOURCE:
-        return dict(MANIFEST)
+        if firmware is None:
+            return dict(MANIFEST)
+        from phone_profile import profile as phone_profile
+        verified = phone_profile(firmware['hyperos'])
+        if firmware['archive_sha256'] != verified['archive_sha256']:
+            raise RuntimeError('Unsupported XiaoAI OTA identity.')
+        return {**MANIFEST, 'apk_sha256': verified['pins']['assistant_apk']}
     if source == PAD_SOURCE:
         return {**MANIFEST, 'apk_sha256': PAD_APK_SHA256}
     raise RuntimeError('Unsupported XiaoAI firmware profile.')
@@ -54,8 +60,8 @@ def patch(data):
     return bytes(result)
 
 
-def native_from_apk(data, source=PHONE_SOURCE):
-    selected = profile(source)
+def native_from_apk(data, source=PHONE_SOURCE, firmware=None):
+    selected = profile(source, firmware)
     if hashlib.sha256(data).hexdigest() != selected['apk_sha256']:
         raise RuntimeError('Unsupported XiaoAI APK; original signature is preserved.')
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -64,7 +70,7 @@ def native_from_apk(data, source=PHONE_SOURCE):
         return patch(archive.read(ENTRY))
 
 
-def image_replacements(apk, source=PHONE_SOURCE):
+def image_replacements(apk, source=PHONE_SOURCE, firmware=None):
     """Add the preferred external native library beside the unchanged APK."""
-    return {NATIVE.lstrip('/'): (native_from_apk(apk, source=source), 0o644,
-                                'u:object_r:system_lib_file:s0')}, profile(source)
+    return {NATIVE.lstrip('/'): (native_from_apk(apk, source=source, firmware=firmware), 0o644,
+                                'u:object_r:system_lib_file:s0')}, profile(source, firmware)

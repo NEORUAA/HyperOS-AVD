@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Persist verified OS4 provisioning, display and first-boot defaults."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,13 @@ COMPONENT = FINDDEVICE + '/' + PROVIDER
 APK_SHA256 = 'e57888e1721680fece2961ec0cf23c646693be2e58d0ae6b772c285ce317cfd1'
 OVERLAY = 'org.hyperos.avd.settings.defaults'
 SCREEN_TIMEOUT = 2147483647
+AWAKE_STAMP = '/data/local/tmp/hyperos-avd-awake-defaults-v1'
+AWAKE_SCRIPT = f'''if [ ! -e {AWAKE_STAMP} ]; then
+    settings put system screen_off_timeout {SCREEN_TIMEOUT}
+    settings put secure sleep_timeout -1
+    settings put global stay_on_while_plugged_in 7
+    touch {AWAKE_STAMP}
+fi'''
 COLOR_SATURATION = '1.0'
 COLOR_STAMP = '/data/local/tmp/hyperos-avd-color-defaults-v2'
 GRADIENT_BLUR_PROPERTY = 'persist.sys.gradient_blur_perf'
@@ -143,7 +151,7 @@ def quickstep_properties(data):
     return b'\n'.join(lines) + b'\n'
 
 
-def production_properties(data):
+def production_properties(data, profile=None):
     """Keep the stock user build; KernelSU shell access is independent of this."""
     lines = quickstep_properties(data).splitlines()
     matches = [i for i, line in enumerate(lines) if line.startswith(b'ro.debuggable=')]
@@ -176,7 +184,7 @@ def production_properties(data):
         lines[matches[0]] = key + b'false'
     else:
         lines += [b'# Use the stock generic gradient blur on ranchu.', key + b'false']
-    return log_properties(identity_properties(b'\n'.join(lines) + b'\n'))
+    return log_properties(identity_properties(b'\n'.join(lines) + b'\n', profile))
 
 
 def log_properties(data):
@@ -194,10 +202,10 @@ def log_properties(data):
     return b'\n'.join(lines) + b'\n'
 
 
-def identity_properties(data):
+def identity_properties(data, profile=None):
     """Copy verified public phone identity without changing ranchu HAL selectors."""
     lines = data.splitlines()
-    for name, value in PHONE_IDENTITY.items():
+    for name, value in (profile['properties'] if profile else PHONE_IDENTITY).items():
         key = (name + '=').encode()
         matches = [i for i, line in enumerate(lines) if line.startswith(key)]
         if len(matches) > 1:
@@ -217,7 +225,7 @@ def disable_debug_console(data):
     return data.replace(trigger, b'\n')
 
 
-def boot_defaults(data):
+def boot_defaults(data, profile=None):
     data = disable_debug_console(data)
     if GRADIENT_BLUR_INIT not in data:
         data += GRADIENT_BLUR_INIT
@@ -230,10 +238,11 @@ def boot_defaults(data):
     return data
 
 
-def display_template(data):
+def display_template(data, profile=None):
     """Use the official primary display geometry, leaving OS3 unchanged."""
-    values = {'hw.lcd.width': DISPLAY['width'], 'hw.lcd.height': DISPLAY['height'],
-              'hw.lcd.density': DISPLAY['density']}
+    display = profile['display'] if profile else DISPLAY
+    values = {'hw.lcd.width': display['width'], 'hw.lcd.height': display['height'],
+              'hw.lcd.density': display['density']}
     lines = data.splitlines()
     for key, value in values.items():
         matches = [i for i, line in enumerate(lines) if line.startswith(key + '=')]
@@ -243,12 +252,33 @@ def display_template(data):
     return '\n'.join(lines) + '\n'
 
 
-def image_replacements(sdk, folder):
+def phone_scripts(profile=None):
+    """Version only the verified firmware guard, keeping legacy Pad anchors."""
+    if profile is None:
+        return AOD_SCRIPT, REFRESH_SCRIPT
+    old = b'OS4.0.17.0.XFRCNXM'
+    new = profile['incremental'].encode()
+    if AOD_SCRIPT.count(old) != 1 or REFRESH_SCRIPT.count(old) != 1:
+        raise RuntimeError('Unexpected phone defaults firmware guard.')
+    return AOD_SCRIPT.replace(old, new), REFRESH_SCRIPT.replace(old, new)
+
+
+def refresh_wrapper(profile=None):
+    _, script = phone_scripts(profile)
+    header = REFRESH_WRAPPER[:REFRESH_WRAPPER.index(REFRESH_SCRIPT.removeprefix(b'#!/system/bin/sh\n'))]
+    return header + script.removeprefix(b'#!/system/bin/sh\n')
+
+
+def image_replacements(sdk, folder, profile=None):
     """Use native component overrides and an RRO; keep signed APKs intact."""
     from common import sha256
     from patch_gnss import java
-    import hashlib
-    if hashlib.sha256(MODEL_XML).hexdigest() != MODEL_SHA256:
+    model_xml = Path(profile['model_xml']).read_bytes() if profile else MODEL_XML
+    model_sha = profile['model_xml_sha256'] if profile else MODEL_SHA256
+    display = profile['display'] if profile else DISPLAY
+    finddevice_sha = profile['pins']['finddevice_apk'] if profile else APK_SHA256
+    aod_script, refresh_script = phone_scripts(profile)
+    if hashlib.sha256(model_xml).hexdigest() != model_sha:
         raise RuntimeError('Original hongkong model configuration checksum mismatch.')
     sdk, folder = Path(sdk), Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -286,19 +316,19 @@ def image_replacements(sdk, folder):
     subprocess.run([str(tools / 'apksigner'), 'verify', str(signed)],
                    check=True, capture_output=True, env=environment)
     marker = {'schema': 3, 'finddevice_disabled_component': PROVIDER,
-              'finddevice_apk_sha256': APK_SHA256, 'settings_overlay': OVERLAY,
+              'finddevice_apk_sha256': finddevice_sha, 'settings_overlay': OVERLAY,
               'settings_overlay_sha256': sha256(signed), 'screen_off_timeout': SCREEN_TIMEOUT,
               'sleep_timeout': -1, 'stay_on_while_plugged_in': 7, 'emulator_ac_online': True,
-              'debuggable': False, 'serial_console': False, 'display': DISPLAY,
+              'debuggable': False, 'serial_console': False, 'display': display,
               'color_mode': 0, 'color_saturation': COLOR_SATURATION,
               'gradient_blur_perf': False,
               'log_filter': {'script': '/system_ext/bin/kill_HyperOS_Log.sh',
                              'script_sha256': hashlib.sha256(LOG_SCRIPT).hexdigest(),
                              'tags': list(LOG_TAGS), 'level': 'S'},
               'refresh': {'physical_hz': 60, 'render_hz': 60, 'mode_id': 0,
-                          'script_sha256': hashlib.sha256(REFRESH_SCRIPT).hexdigest()},
+                          'script_sha256': hashlib.sha256(refresh_script).hexdigest()},
               'aod': {'doze_always_on': 1, 'aod_show_style': 2, 'aod_mode_user_set': 1,
-                      'model': 'emu64a', 'model_xml_sha256': hashlib.sha256(MODEL_XML).hexdigest(),
+                      'model': 'emu64a', 'model_xml_sha256': hashlib.sha256(model_xml).hexdigest(),
                       'support_aod_fullscreen': True}}
     edits = {
         'system/etc/sysconfig/hyperos-avd-components.xml': (COMPONENT_XML, 0o644, 'u:object_r:system_file:s0'),
@@ -307,13 +337,13 @@ def image_replacements(sdk, folder):
         'product/etc/hyperos-avd-defaults.json':
             ((json.dumps(marker, indent=2) + '\n').encode(), 0o644, 'u:object_r:system_file:s0'),
         'product/etc/device_features/emu64a.xml':
-            (MODEL_XML, 0o644, 'u:object_r:system_file:s0'),
+            (model_xml, 0o644, 'u:object_r:system_file:s0'),
         'system_ext/bin/hyperos-avd-aod-defaults.sh':
-            (AOD_SCRIPT, 0o755, 'u:object_r:system_file:s0'),
+            (aod_script, 0o755, 'u:object_r:system_file:s0'),
         'system_ext/bin/kill_HyperOS_Log.sh':
             (LOG_SCRIPT, 0o755, 'u:object_r:system_file:s0'),
         'product/etc/init/lock_fps.sh':
-            (REFRESH_SCRIPT, 0o755, 'u:object_r:system_file:s0'),
+            (refresh_script, 0o755, 'u:object_r:system_file:s0'),
     }
     return edits, marker
 
@@ -359,6 +389,10 @@ def apply_refresh_runtime(config):
     if tablet:
         from os4_pad import PROFILE
         version = PROFILE['hyperos']
+    else:
+        from phone_profile import profile_from_build
+        phone_profile = profile_from_build()
+        version = phone_profile['incremental']
     expected = {'ro.boot.hardware': 'ranchu', 'ro.boot.qemu.avd_name': config['name'],
                 'ro.mi.os.version.incremental': version,
                 'ro.boot.qemu.vsync': '60'}
@@ -368,7 +402,7 @@ def apply_refresh_runtime(config):
     folder = ROOT / 'work/refresh-fix'
     folder.mkdir(parents=True, exist_ok=True)
     script = folder / 'service.sh'
-    payload = REFRESH_WRAPPER
+    payload = REFRESH_WRAPPER if tablet else refresh_wrapper(phone_profile)
     if tablet:
         from os4_pad import refresh_script
         payload = refresh_script(payload)
@@ -378,7 +412,9 @@ def apply_refresh_runtime(config):
     old = json.loads(marker.read_text()) if marker.is_file() else {}
     current = root(config, f'if [ -f {REFRESH_SERVICE} ]; then sha256sum {REFRESH_SERVICE}; fi')
     current = current.split()[0] if current else ''
-    owned = {checksum}
+    # The previous release's verified service is safe to migrate even when an
+    # upgrade did not carry the host-side local receipt into its new runtime.
+    owned = {checksum, hashlib.sha256(REFRESH_WRAPPER).hexdigest()}
     if old.get('target') == REFRESH_SERVICE:
         owned.add(old['sha256'])
     if current and current not in owned:
@@ -403,15 +439,18 @@ sh {REFRESH_SERVICE}''')
 
 
 def apply_gradient_blur_runtime(config):
-    """Persist the verified stock HWUI path; cold boot reloads its native flag."""
+    """Persist the verified HWUI path; cold boot reloads its native flag."""
     from apply_flutter_fix import official, root
+    from phone_profile import profile_from_build
+    from patch_pad_hwui import phone_hashes
     official(config)
+    phone_profile = profile_from_build()
     for key, value in (('ro.boot.hardware', 'ranchu'),
                        ('ro.boot.qemu.avd_name', config['name'])):
         if root(config, 'getprop ' + key) != value:
             raise RuntimeError('Gradient blur override refused different hardware: ' + key)
     checksum = root(config, 'sha256sum /system/lib64/libhwui.so').split()[0]
-    if checksum != HWUI_SHA256:
+    if checksum not in phone_hashes(phone_profile):
         raise RuntimeError('Unsupported HWUI for the verified gradient blur override.')
     if root(config, 'getprop ' + GRADIENT_BLUR_PROPERTY) != 'false':
         root(config, 'setprop ' + GRADIENT_BLUR_PROPERTY + ' false')
@@ -421,17 +460,19 @@ def apply_gradient_blur_runtime(config):
 
 
 def apply_runtime(config):
-    """Apply the same defaults to existing userdata without resetting OOBE."""
+    """Seed defaults once without replacing later choices or resetting OOBE."""
     from apply_flutter_fix import official, root
     from common import ROOT, adb
+    from phone_profile import profile_from_build
     official(config)
+    phone_profile = profile_from_build()
     if root(config, 'getprop ro.boot.hardware') != 'ranchu':
         raise RuntimeError('OS4 defaults are restricted to ranchu hardware.')
     paths = root(config, 'pm path ' + FINDDEVICE).splitlines()
     if len(paths) != 1 or not paths[0].startswith('package:'):
         raise RuntimeError('Expected the verified original FindDevice APK.')
     apk = paths[0].removeprefix('package:')
-    if root(config, 'sha256sum ' + shlex.quote(apk)).split()[0] != APK_SHA256:
+    if root(config, 'sha256sum ' + shlex.quote(apk)).split()[0] != phone_profile['pins']['finddevice_apk']:
         raise RuntimeError('Unsupported FindDevice APK; no component changes applied.')
     before = ROOT / 'local/defaults-before.json'
     if not before.exists():
@@ -445,10 +486,7 @@ def apply_runtime(config):
     output = root(config, 'pm disable --user 0 ' + shlex.quote(COMPONENT))
     if 'new state: disabled' not in output:
         raise RuntimeError('FindDevice provider disable validation failed: ' + output)
-    root(config, 'am force-stop ' + FINDDEVICE + '\n'
-         f'settings put system screen_off_timeout {SCREEN_TIMEOUT}\n'
-         'settings put secure sleep_timeout -1\n'
-         'settings put global stay_on_while_plugged_in 7')
+    root(config, 'am force-stop ' + FINDDEVICE + '\n' + AWAKE_SCRIPT)
     # The default emulator battery is unplugged. Supply AC so PowerManager's
     # stay-awake mode is indefinite, rather than relying on a 24-day timeout.
     adb(config, 'emu', 'power', 'ac', 'on', check=True, capture_output=True, timeout=15)
@@ -470,19 +508,20 @@ def prepare_image():
     from build_image import erofs
     from erofs_image import build
     from lp_image import pack
+    from phone_profile import profile_from_build
+    profile = profile_from_build()
     source = ROOT / 'work/hyperos-system.img'
     folder = ROOT / 'work/defaults-candidate'
-    edits, marker = image_replacements(sdk_path(), folder / 'overlay')
+    edits, marker = image_replacements(sdk_path(), folder / 'overlay', profile)
     edits['system/build.prop'] = (
-        production_properties(erofs(source, '/system/build.prop')), 0o600, 'u:object_r:system_file:s0')
+        production_properties(erofs(source, '/system/build.prop'), profile), 0o600, 'u:object_r:system_file:s0')
     edits['system_ext/etc/init/init.hyperos_avd.rc'] = (
-        boot_defaults(erofs(source, '/system_ext/etc/init/init.hyperos_avd.rc')),
+        boot_defaults(erofs(source, '/system_ext/etc/init/init.hyperos_avd.rc'), profile),
         0o644, 'u:object_r:system_file:s0')
-    if erofs(source, '/product/etc/device_features/hongkong.xml') != MODEL_XML:
+    if erofs(source, '/product/etc/device_features/hongkong.xml') != Path(profile['model_xml']).read_bytes():
         raise RuntimeError('The source hongkong configuration differs from the verified original.')
     original = erofs(source, '/product/priv-app/MIUIFindDeviceCN/MIUIFindDeviceCN.apk')
-    import hashlib
-    if hashlib.sha256(original).hexdigest() != APK_SHA256:
+    if hashlib.sha256(original).hexdigest() != profile['pins']['finddevice_apk']:
         raise RuntimeError('Candidate source contains an unsupported FindDevice APK.')
     raw, packed = folder / 'hyperos-system.img', folder / 'system.img'
     source_hash = sha256(source)

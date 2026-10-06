@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep pinned yingtian CPU shader preloads without pre-fork GPU drivers."""
+"""Keep pinned Xiaomi CPU shader preloads without pre-fork GPU drivers."""
 import argparse
 import hashlib
 from pathlib import Path
@@ -16,13 +16,42 @@ SITE = 0x94adec
 TARGET = 0x94ae10
 ORIGINAL = bytes.fromhex('d4a6ff97')
 REPLACEMENT = bytes.fromhex('09000014')
+PHONE_PROFILE = 'hongkong-4.0.18'
+PHONE_BEFORE = '6dfbac6a533ce08b6ace8e7cd7df3c4067350a1f1410729f8c0acd4bc8a78bd4'
+PHONE_AFTER = '63e0c54ded534019fdda4a4e31c1755cd88086f2838ff73b76607b0cfd638829'
+PROFILES = {
+    BEFORE: {'name': 'yingtian', 'before': BEFORE, 'after': AFTER, 'size': SIZE,
+             'symbol_address': SYMBOL_ADDRESS, 'symbol_size': SYMBOL_SIZE,
+             'site': SITE, 'target': TARGET, 'original': ORIGINAL},
+    PHONE_BEFORE: {'name': PHONE_PROFILE, 'before': PHONE_BEFORE, 'after': PHONE_AFTER,
+                   'size': 17458360, 'symbol_address': 0x9ecc68, 'symbol_size': 0x50,
+                   'site': 0x9ecc78, 'target': 0x9ecc9c,
+                   'original': bytes.fromhex('49a6ff97')},
+}
+
+
+def source_profile(data):
+    checksum = hashlib.sha256(data).hexdigest()
+    for value in PROFILES.values():
+        if checksum in (value['before'], value['after']):
+            return value, checksum
+    raise RuntimeError('Unsupported Xiaomi HWUI SHA-256: ' + checksum)
+
+
+def phone_hashes(profile):
+    """Accept the preload fix only for the independently verified r3 source."""
+    original = profile['pins']['hwui']
+    if profile['hyperos'] == '4.0.18.0.XFRCNXM' and original == PHONE_BEFORE:
+        return (original, PHONE_AFTER)
+    return (original,)
 
 
 def preload_symbol(data):
     """Resolve the exported function and its file offset from this ELF."""
-    if (len(data) != SIZE or data[:6] != b'\x7fELF\x02\x01'
+    value, _ = source_profile(data)
+    if (len(data) != value['size'] or data[:6] != b'\x7fELF\x02\x01'
             or struct.unpack_from('<H', data, 18)[0] != 183):
-        raise RuntimeError('Unexpected yingtian HWUI ELF layout.')
+        raise RuntimeError('Unexpected Xiaomi HWUI ELF layout.')
     offset = struct.unpack_from('<Q', data, 40)[0]
     entry_size, count = struct.unpack_from('<HH', data, 58)
     if entry_size != 64:
@@ -45,8 +74,9 @@ def preload_symbol(data):
             if info != 0x12 or not code[2] & 4:  # Global function in SHF_EXECINSTR
                 raise RuntimeError('Unexpected yingtian HWUI preload symbol type.')
             matches.append((address, size, code[4] + address - code[3]))
-    if matches != [(SYMBOL_ADDRESS, SYMBOL_SIZE, SYMBOL_ADDRESS)]:
-        raise RuntimeError('Unexpected yingtian HWUI preload symbol or offset.')
+    expected = (value['symbol_address'], value['symbol_size'], value['symbol_address'])
+    if matches != [expected]:
+        raise RuntimeError('Unexpected Xiaomi HWUI preload symbol or offset.')
     return matches[0]
 
 
@@ -56,25 +86,24 @@ def patch(data):
     The Java zygote preload gate must remain enabled (disable_gl_preload=0).
     Disabling that gate also skips MiBlurBlendUtils::initShaders, leaving its
     overlay effect null. Branch past peekRenderPipelineType, Vulkan instance
-    enumeration and eglGetDisplay, while retaining all three OEM calls at
-    0x94ae10-0x94ae18. Renderers initialize their drivers after the fork.
+    enumeration and eglGetDisplay, while retaining all three OEM calls at the
+    pinned target. Renderers initialize their drivers after the fork.
     """
-    checksum = hashlib.sha256(data).hexdigest()
-    if checksum not in (BEFORE, AFTER):
-        raise RuntimeError('Unsupported yingtian HWUI SHA-256: ' + checksum)
+    value, checksum = source_profile(data)
     preload_symbol(data)
-    expected = REPLACEMENT if checksum == AFTER else ORIGINAL
-    if data[SITE:SITE + 4] != expected:
-        raise RuntimeError('Unexpected yingtian HWUI GPU preload instruction.')
+    expected = REPLACEMENT if checksum == value['after'] else value['original']
+    site = value['site']
+    if data[site:site + 4] != expected:
+        raise RuntimeError('Unexpected Xiaomi HWUI GPU preload instruction.')
     instruction = struct.unpack('<I', REPLACEMENT)[0]
-    if instruction != 0x14000000 | ((TARGET - SITE) // 4):
-        raise RuntimeError('Unexpected yingtian HWUI preload branch target.')
-    if checksum == AFTER:
+    if instruction != 0x14000000 | ((value['target'] - site) // 4):
+        raise RuntimeError('Unexpected Xiaomi HWUI preload branch target.')
+    if checksum == value['after']:
         return data
     result = bytearray(data)
-    result[SITE:SITE + 4] = REPLACEMENT
-    if len(result) != len(data) or hashlib.sha256(result).hexdigest() != AFTER:
-        raise RuntimeError('Yingtian HWUI patch output checksum mismatch.')
+    result[site:site + 4] = REPLACEMENT
+    if len(result) != len(data) or hashlib.sha256(result).hexdigest() != value['after']:
+        raise RuntimeError('Xiaomi HWUI patch output checksum mismatch.')
     return bytes(result)
 
 
@@ -85,7 +114,8 @@ def main():
     args = parser.parse_args()
     data = patch(args.input.read_bytes())
     args.output.write_bytes(data)
-    print('yingtian HWUI CPU shader preload: ' + hashlib.sha256(data).hexdigest())
+    value, checksum = source_profile(data)
+    print(value['name'] + ' HWUI CPU shader preload: ' + checksum)
 
 
 if __name__ == '__main__':
