@@ -12,7 +12,7 @@
 | 来源 | 小米 13（fuxi）MysticGSI | 小米 18 Pro（hongkong）官方 OTA | Xiaomi Pad 9 Pro Max（yingtian）官方 OTA |
 | 显示 | 手机布局 | 主屏 1120×2436 / 480 dpi，背屏 912×596 / 450 dpi | 横屏 3408×2272 / 400 dpi |
 | 默认资源 | 2 核 / 2.5 GiB | 4 核 / 6 GiB（负一屏完整模糊建议 8 GiB） | 4 核 / 4 GiB |
-| 发布说明 | [兼容范围](docs/compatibility.md) | [v0.2.2 / r3](docs/releases/os4-r3.md) | [v0.1.0 / r1](docs/releases/os4-pad-r1.md) |
+| 发布说明 | [兼容范围](docs/compatibility.md) | [v0.2.3 / r4](docs/releases/os4-r4.md) | [v0.1.0 / r1](docs/releases/os4-pad-r1.md) |
 
 Pad 使用独立的 `pad-v*` 版本线；手机与 OS3 的版本号继续沿用 `v*`。各版本独立保存镜像与用户数据，可同时安装。镜像在 [GitHub Releases](https://github.com/NEORUAA/HyperOS-AVD/releases) 分卷提供，勿混用不同 Release 的文件。
 
@@ -32,7 +32,7 @@ Pad 使用独立的 `pad-v*` 版本线；手机与 OS3 的版本号继续沿用 
 
 <img src="screenshots/os4/r3/%E5%B7%B2%E7%B2%98%E8%B4%B4%202026-10-06%20%E4%B8%8B%E5%8D%889.15.47.png" width="640" alt="OS4 r3 系统版本与独立妙享背屏窗口" />
 
-以下 4×2 为 r2 的界面参考，r3 保留这些功能。
+以下 4×2 为 r2 的界面参考，r3 / r4 保留这些功能。
 
 <table>
   <tr>
@@ -73,7 +73,7 @@ Pad 使用独立的 `pad-v*` 版本线；手机与 OS3 的版本号继续沿用 
 curl -fsSL https://github.com/NEORUAA/HyperOS-AVD/releases/latest/download/install.sh | bash
 ```
 
-ASCII 菜单自动下载并校验 OS3 / 手机 OS4 / Pad OS4 镜像，可自定义 **AVD 名称、RAM、存储和 CPU**，支持备份后升级与恢复。默认存储 32 GiB；手机 r3 需 **Installer 1.2.0 或以上**，Pad 版需 1.1.0 或以上。也可下载 [Installer ZIP](https://github.com/NEORUAA/HyperOS-AVD/releases) 后双击 **`Install.command`**。
+ASCII 菜单自动下载并校验 OS3 / 手机 OS4 / Pad OS4 镜像，可自定义 **AVD 名称、RAM、存储和 CPU**，支持备份后升级与恢复。默认存储 32 GiB；手机 r4 需 **Installer 1.2.1 或以上**，Pad 版需 1.1.0 或以上。也可下载 [Installer ZIP](https://github.com/NEORUAA/HyperOS-AVD/releases) 后双击 **`Install.command`**。
 
 安装器与镜像独立发版：安装器使用 `installer-v*` 正式 Release，镜像继续使用各自的 Pre-release。也可直接从源码运行：
 
@@ -84,13 +84,13 @@ chmod +x Install.command
 ./Install.command
 ```
 
-**r2 → r3：关闭目标 AVD → Installer 1.2.0 选“升级” → 选择原实例与 r3。** 自动备份 userdata、QCOW2 和加密密钥，保留应用及个人设置，失败可恢复。r1 先升 r2；已安装旧版实验相机模块时，先按安装指南处理兼容检查。Pad 与手机版不能互相覆盖升级；安装后从安装器或实例目录的 `Start.command` 启动。
+**r3 → r4：关闭目标 AVD → Installer 1.2.1 选“升级” → 选择原实例与 r4。** 自动备份 userdata、QCOW2 和加密密钥，保留应用及个人设置，失败可恢复。r1 / r2 / r3 均可直接升级至 r4；已安装旧版实验相机模块时，先按安装指南处理兼容检查。Pad 与手机版不能互相覆盖升级；安装后从安装器或实例目录的 `Start.command` 启动。
 
-[安装 / 升级 / 恢复指南](docs/installing.md) · [Installer 1.2.0](docs/releases/installer-v1.2.md) · [发布流程](docs/releasing.md)
+[安装 / 升级 / 恢复指南](docs/installing.md) · [Installer 1.2.1](docs/releases/installer-v1.2.1.md) · [发布流程](docs/releasing.md)
 
 ## 兼容范围
 
-**手机 OS4：** r3 全局 HWUI Vulkan，新增原版妙享背屏、独立窗口、双击息屏 / 唤醒及右侧边缘返回；修复锁屏编辑预览花屏。保留桌面手势、Flutter 玻璃、天气 / 相册、完整引导、60 Hz、Mac 色彩和声音适配；新用户默认常亮与 AOD。
+**手机 OS4：** r4 固化安全中心、定位服务与 SIM 注册的启动崩溃修复，减少缺失硬件接口导致的后台反复重启；保留 r3 全局 HWUI Vulkan、原版妙享背屏、独立窗口、双击息屏 / 唤醒、右侧边缘返回与锁屏编辑预览修复。保留桌面手势、Flutter 玻璃、天气 / 相册、完整引导、60 Hz、Mac 色彩和声音适配；新用户默认常亮与 AOD。
 
 **Pad OS4：** 保留平板布局与原机配置，已核验首次引导、横屏、天气背景与权限弹窗、KernelSU 和冷启动；沿用原厂 `yingtian.xml` 配置，不开启 AOD。
 

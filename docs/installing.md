@@ -23,7 +23,7 @@ chmod +x Install.command
 ./Install.command
 ```
 
-**手机 OS4 r3 需要 Installer 1.2.0 或以上；Pad OS4 需要 1.1.0 或以上。** 安装器使用独立的 `installer-v*` 正式版本，镜像含 Pre-release，均可在菜单中发现。
+**手机 OS4 r4 需要 Installer 1.2.1 或以上；r3 需要 1.2.0 或以上；Pad OS4 需要 1.1.0 或以上。** 安装器使用独立的 `installer-v*` 正式版本，镜像含 Pre-release，均可在菜单中发现。
 
 ```text
 +------------------------------------------------------------------+
@@ -38,7 +38,7 @@ chmod +x Install.command
 
 | 镜像 | 默认 RAM / CPU / 存储 | 数据系列 |
 | --- | --- | --- |
-| 手机 OS4 | 6 GiB / 4 核 / 32 GiB | `hongkong`，r2 → r3 可保数据升级 |
+| 手机 OS4 | 6 GiB / 4 核 / 32 GiB | `hongkong`，r1 / r2 / r3 可直接保数据升 r4 |
 | Pad OS4 | 4 GiB / 4 核 / 32 GiB | `yingtian`，与手机独立 |
 | OS3 | 2.5 GiB / 2 核 / 32 GiB | `fuxi`，与 OS4 独立 |
 
@@ -47,6 +47,12 @@ chmod +x Install.command
 首次安装使用空白用户分区，保留原版开机引导。按提示在虚拟机确认 ADB 授权，等待初始化完成。之后通过安装器“启动”或实例目录的 **`Start.command`** 启动，以加载 root、传感器、60 Hz、Mac 色彩等适配；Android Studio 的 Start 不包含全部初始化步骤。
 
 手机小米相机桥接可选开启，Pad 自动初始化自身桥接；相机仍属实验功能。r3 会自动建立独立背屏窗口，支持原版右边缘向左返回、双击息屏与唤醒。
+
+## r1 / r2 / r3 → r4 保数据升级
+
+关闭目标 AVD，使用 **Installer 1.2.1** 选择“升级” → 原手机 OS4 实例 → `v0.2.3-a17-hyperos4-hongkong-r4`。自动备份用户分区、QCOW2 与加密密钥，校验固件与项目模块兼容性后切换到 OS4.0.18.0 修复镜像，保留名称、硬件配置、应用与设置；失败可从备份恢复。已有 r4 可重装，保数据降级不支持。
+
+r4 修复已写入系统分区，新装或恢复出厂后也会保留。此前项目自带的 boot-service 测试模块与 r4 使用相同修复字节；本次升级不会删除用户模块。Installer 1.2.0 不识别 r4，请先更新安装器。r1 / r2 / r3 均可直接升级至 r4。
 
 ## r2 → r3 保数据升级
 
@@ -57,7 +63,7 @@ chmod +x Install.command
 
 备份包含 userdata 原始镜像、QCOW2 层及加密密钥，保存在实例的 `backups/`。确认升级正常后再自行清理。已有 AOD、常亮、色彩模式与模拟序列号保留；新用户默认值不会覆盖旧用户选择。
 
-自动迁移仅开放 **r2 → r3**；r1 先升级到 r2。OS3、手机与 Pad 不能互相覆盖。没有 `local/installed-release.json` 的早期源码实例可启动、调整硬件，但不能自动迁移固件。
+旧 r3 发布清单仅开放 **r2 → r3**；新 r4 清单采用通用向前升级策略，r1 / r2 / r3 可直接升 r4。OS3、手机与 Pad 不能互相覆盖。没有 `local/installed-release.json` 的早期源码实例可启动、调整硬件，但不能自动迁移固件。
 
 **相机旧模块检查：** 若报 `XiaomiCamera revision 1 cannot migrate`，固件尚未切换。先使用“恢复 / 回滚”（若提示有待恢复事务），启动旧 r2，将项目的实验相机桥接更新至 revision 2 后关闭 AVD，再重试升级。安装器拒绝未知项目模块或被修改的固件；不会代替用户更改模块的禁用 / 删除选择。第三方模块仍由用户管理，不能据此保证兼容新固件。
 
@@ -78,14 +84,14 @@ chmod +x Install.command
 ## CLI / 离线安装
 
 ```sh
-# A new phone instance, after r3 is published.
+# A new phone instance, after r4 is published.
 python3 scripts/manage.py install --variant os4-official \
   --root "$HOME/HyperOS-AVD/instances/My_OS4" --name My_OS4 \
-  --release v0.2.2-a17-hyperos4-hongkong-r3 --ram 6 --storage 32 --cores 4 --start
+  --release v0.2.3-a17-hyperos4-hongkong-r4 --ram 6 --storage 32 --cores 4 --start
 
 # Offline install or upgrade: keep the existing root, name and port.
 python3 scripts/manage.py install --root /path/to/instance \
-  --name My_OS4 --bundle /path/to/r3/manifest.json \
+  --name My_OS4 --bundle /path/to/r4/manifest.json \
   --ram 6 --storage 32 --cores 4
 
 python3 scripts/manage.py releases --variant os4-official

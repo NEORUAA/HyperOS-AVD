@@ -1,65 +1,49 @@
 # Release 发布
 
-本次准备 **手机 OS4 v0.2.2 / r3 Pre-release** 与 **Installer 1.2.0 正式 Release**。本地准备不包含 push、tag 或 GitHub 发布；Pad 独立版本线保持不变。
+本次准备 **手机 OS4 v0.2.3 / r4 Pre-release** 与 **Installer 1.2.1 正式 Release**。只准备本地附件和分类提交，不 push、打 tag 或发布；Pad 与旧版 Release 保留。
 
-| 内容 | Tag | 类型 | 标题与正文 |
-| --- | --- | --- | --- |
-| 安装器 | `installer-v1.2.0` | 正式，可设 Latest | [HyperOS-AVD Installer v1.2.0](releases/installer-v1.2.md) |
-| 手机 OS4 r3 | `v0.2.2-a17-hyperos4-hongkong-r3` | Pre-release | [HyperOS 4 · v0.2.2 · Apple Silicon · r3](releases/os4-r3.md) |
-| Pad OS4 r1 | `pad-v0.1.0-a17-hyperos4-yingtian-r1` | 既有 Pre-release | [Pad 正文](releases/os4-pad-r1.md) |
-| 手机 OS4 r2 | `v0.2.1-a17-hyperos4-hongkong-r2` | 既有 Pre-release | [r2 正文](releases/os4-r2.md) |
+| 内容 | Tag | 标题与正文 |
+| --- | --- | --- |
+| 安装器 | `installer-v1.2.1` | [HyperOS-AVD Installer v1.2.1](releases/installer-v1.2.1.md) |
+| 手机 OS4 r4 | `v0.2.3-a17-hyperos4-hongkong-r4` | [HyperOS 4.0.18.0 · v0.2.3 · Apple Silicon · r4](releases/os4-r4.md) |
 
-## 本地准备
+标题沿用当前 GitHub Release 的“HyperOS 系统版本 · 项目版本 · Apple Silicon · 修订号”格式；手机和 Pad 独立编号。
 
-审查 Git 改动，将固件移植、渲染 / 背屏修复、保数据安装器与 ext4 扩容修复、文档按 Conventional Commits 分类。镜像、OTA、SDK、缓存、日志、备份与个人用户数据不提交 Git。安装器 ZIP 包含安装指南，**文档与源码定稿后再打包**；冻结代码修改后须重新打包并核验收据。
+## 本地构建与验证
 
-以已完成固化的独立 r3 构建为输入，直接打包它的实际镜像；不从正在使用的 AVD 复制用户分区。以下命令只生成本地文件：
+从已验收的 r3 **packed system 镜像**派生独立 r4 工作区，应用固定输入哈希的启动服务修复。不会复制 AVD 用户分区、账号、设备登记 ID 或个人密钥；空白 userdata 在打包时重新创建。
 
 ```sh
 python3 -m unittest discover -s tests -p 'test_*.py'
 git diff --check
-
-HYPEROS_AVD_WORKSPACE="$PWD/work/os4-r3-build" \
+python3 scripts/prepare_release_image.py \
+  --source /path/to/accepted-r3 --output work/os4-r4-build --boot-service-fixes
+HYPEROS_AVD_WORKSPACE="$PWD/work/os4-r4-build" \
   python3 scripts/package_release.py --variant os4-official \
-  --version v0.2.2-a17-hyperos4-hongkong-r3
+  --version v0.2.3-a17-hyperos4-hongkong-r4
 python3 scripts/package_installer.py
-
-(cd releases/v0.2.2-a17-hyperos4-hongkong-r3 && shasum -a 256 -c SHA256SUMS)
-(cd releases/installer-v1.2.0 && shasum -a 256 -c SHA256SUMS)
+(cd releases/v0.2.3-a17-hyperos4-hongkong-r4 && shasum -a 256 -c SHA256SUMS)
+(cd releases/installer-v1.2.1 && shasum -a 256 -c SHA256SUMS)
 ```
 
-输出目录或空白 userdata 模板已存在时会拒绝覆盖。重做未发布附件需先检查并移走这次的生成物，或用 `--output` 创建新目录；不要改动已有公开 Release 或实例备份。打包预检核验系统 / vendor 的实际字节、原始签名、修复资源和原生库，附带空白 userdata、匹配启动代码及预编译库，最终用户无需 NDK 或 OTA。
+源工作区的 `local/build.json` 必须匹配实际 packed 镜像；准备器会重新解出 system / vendor 并核验原有修复，再重打包，避免使用已清理或过期的 raw 缓存。输出目录和空白 userdata 模板若存在会拒绝覆盖，重做时选新目录并保留用户备份。
 
-新建 / 扩容用户分区需 e2fsprogs（`brew install e2fsprogs`），必须在活动数据改动前通过依赖检查。扩容验证须检查真实 ext4 容量、原有文件与文件系统 UUID；只核对配置或 QCOW2 虚拟大小不足以证明成功。
+上传前检查分卷哈希、逐文件解包哈希、冻结运行源码与安装器收据；用发布包验证新装及 r3 独立测试用户分区保数据升级；r1 / r2 和未来修订通过通用兼容规则测试，不重新下载旧镜像。验证边界见 [r4 验证记录](releases/os4-r4-validation.md)。
 
-上传前还需：逐卷校验与独立解包，核对冻结源码 / 二进制收据；从分卷验证全新安装、OOBE 与冷启动；在独立 r2 数据副本中验证保数据升级及恢复。包校验、已有测试实例和从发布包启动是不同的验证结果。
-
-## 附件
+## 附件与提交
 
 | Release | 本地目录 | 上传内容 |
 | --- | --- | --- |
-| Installer 1.2.0 | `releases/installer-v1.2.0/` | 安装器 ZIP、`install.sh`、`installer.json`、`SHA256SUMS`，4 件 |
-| 手机 OS4 r3 | `releases/v0.2.2-a17-hyperos4-hongkong-r3/` | 5 个镜像分卷、`manifest.json`、`SHA256SUMS`，7 件 |
+| Installer 1.2.1 | `releases/installer-v1.2.1/` | ZIP、`install.sh`、`installer.json`、`SHA256SUMS`，4 件 |
+| 手机 OS4 r4 | `releases/v0.2.3-a17-hyperos4-hongkong-r4/` | 全部镜像分卷、`manifest.json`、`SHA256SUMS` |
 
-r3 分卷合计 6,800,845,749 bytes（约 6.334 GiB）；前四卷各 1536 MiB，第五卷 358,394,805 bytes，每件小于 2 GiB。逐件 SHA-256 见目录内清单。每个 Release 的附件各自上传，保持文件名，不混放旧版本。包内不含个人账号、序列号、ADB 密钥或当前用户分区。
+每卷小于 2 GiB，文件名和件数以清单为准，不混入旧附件。Git 分类提交：启动服务 / 内核能力修复；r4 安装、升级与打包；发布说明与验证记录。镜像、日志、OTA、SDK、缓存及备份不提交。
 
-## 验证记录
+## 后续发布顺序
 
-独立 r2 → r3 实例的多次冷启动中，20 个检查项全部通过；14 个保留字段与旧数据一致，含 38 项第三方包清单、Android ID、引导状态、模拟序列号、AOD / 常亮 / 色彩设置和两个用户文件探针。天气检查为应用私有目录内的探针文件，不能扩大为全部数据库、账号或云端会话验收。
+1. 审阅本地提交与验证记录，随后 push 并为对应提交创建 `installer-v1.2.1`、`v0.2.3-a17-hyperos4-hongkong-r4` tag。
+2. 先发布 Installer 1.2.1，使用上表标题和正文，上传 4 件附件，设为正式 Latest。
+3. 再发布手机 r4，标题 **HyperOS 4.0.18.0 · v0.2.3 · Apple Silicon · r4**，上传全部附件并勾选 Pre-release。
+4. 检查公共安装入口、附件件数与哈希，以及安装器菜单是否同时保留 OS3、手机和 Pad 的独立版本。
 
-r3 当前测试实例已通过全局 HWUI Vulkan、锁屏编辑预览修复、独立背屏及右侧边缘返回、双击息屏 / 唤醒与冷启动检查。最终主机回归共 473 项，472 通过、1 跳过；系统 / vendor 的 55 个签名、原生和资源文件预检通过。5 个分卷及 manifest 的 SHA-256 全部通过，归档内 91 个文件逐项校验通过；Installer ZIP 的 64 个清单文件与冻结源码一致。实际新装与启动结果见 [r3 发布验证](releases/os4-r3-validation.md)；运行日志与含个人标识的原始 JSON 不公开。
-
-39 项存储测试覆盖真实离线 ext4 / QCOW2 扩容、失败回滚与中断恢复；另在独立真实 AVD 中重现“虚拟盘 32 GiB、文件系统约 6 GiB”。完整备份与维护启动后，实际解密设备和 ext4 超级块均为 32 GiB，冷启动的 `/data` 约 31 GiB；测试文件、Android ID、引导状态与模拟序列号保留。已加密磁盘继续增大虚拟容量（如 32 → 64 GiB）暂不支持，原有 32 GiB 容量修复不受此限制。
-
-历史验证见 [r2](releases/os4-r2-validation.md) 与 [Pad r1](releases/os4-pad-r1-validation.md)。相机、云服务等限制以各版本正文为准。
-
-## 远端发布
-
-完成上述检查、审阅分类提交与附件后，才执行以下发布步骤；这些操作不属于本地准备：
-
-1. Push 已审阅提交，创建 `installer-v1.2.0` 与 `v0.2.2-a17-hyperos4-hongkong-r3` tag。
-2. 先发布 Installer 1.2.0，上传 4 件附件，设为正式 Latest，使公共 `install.sh` 指向新安装器。
-3. 再发布手机 r3，粘贴对应正文、上传全部附件并勾选 Pre-release。Pad、r2 及 OS3 的 Release 保留。
-4. 在公共 GitHub 页面核对附件件数 / 大小、curl 入口与菜单发现；安装器需能同时发现手机、Pad 和 OS3 的各自版本。
-
-必须先让 Installer 1.2.0 可下载，再开放需它完成升级的 r3 镜像。r3 清单仅允许 r2 保数据迁移；旧相机桥接 revision 1 会阻止迁移，需按[安装指南](installing.md)先处理，不能删除兼容检查绕过。
+Installer 1.2.0 的 r3 清单校验不接受 r4，必须先让 1.2.1 可下载。r4 使用通用的同家族向前升级策略，支持 r1 / r2 / r3 直接升级；后续修订号无需逐版列出来源。固件哈希、加密模板、模块兼容性和版本方向仍需通过检查。不支持跨机型升级或保数据降级。历史结果见 [r3](releases/os4-r3-validation.md)、[Pad r1](releases/os4-pad-r1-validation.md)。
