@@ -59,7 +59,7 @@ BUILD_KEYS = ('hyperos', 'source', 'android_api', 'archive_sha256', 'kernel_page
               'assistant_render_fix', 'composer_alpha_fix', 'audio_pcm_fix', 'camera_scene_fix',
               'adb_authentication', 'experimental', 'device', 'display', 'model_xml_sha256',
               'identity_source_sha256', 'vendor_fixes', 'hwui',
-              'flutter_engine', 'finddevice_provider_disabled')
+              'flutter_engine', 'finddevice_provider_disabled', 'boot_service_fix')
 RUNTIME_PAYLOADS = {
     'os4-official': {'xiaomi-camera': ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json')},
     'os4-pad': {'pad-camera-native': ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json'),
@@ -182,6 +182,30 @@ def verify_rear_display(profile, build, read, read_vendor, template):
     return len(sources) + len(displays) + 5
 
 
+def verify_boot_services(build, read):
+    """Check actual baked bytes when a release claims boot-service repairs."""
+    marker = build.get('boot_service_fix')
+    if marker is None:
+        return 0
+    from patch_boot_services import TARGETS, AFTER, PROBE_SHA256, BOOT_INIT
+    expected = {'schema': 1, 'firmware': 'OS4.0.18.0.XFRCNXM',
+                'targets': {name: {'path': path, 'before': before, 'after': AFTER[name]}
+                            for name, (path, before, _) in TARGETS.items()},
+                'probe_sha256': PROBE_SHA256}
+    if build.get('hyperos') != '4.0.18.0.XFRCNXM' or marker != expected:
+        raise RuntimeError('Unexpected boot service fix metadata.')
+    paths = {path: AFTER[name] for name, (path, _, _) in TARGETS.items()}
+    paths['/system/bin/hyperos_kernel_probe'] = PROBE_SHA256
+    paths['/system/etc/hyperos-kernel-services.sh'] = sha256(
+        REPO_ROOT / 'config/check_kernel_services.sh')
+    for path, checksum in paths.items():
+        if hashlib.sha256(read(path)).hexdigest() != checksum:
+            raise RuntimeError('Baked boot service checksum mismatch: ' + path)
+    if read('/system_ext/etc/init/init.hyperos_avd.rc').count(BOOT_INIT) != 1:
+        raise RuntimeError('Missing boot service kernel capability initialization.')
+    return len(paths)
+
+
 def verify_os4_image(root, metadata):
     """Verify the release's actual packed image and baked compatibility files."""
     from lp_image import read_lp
@@ -243,6 +267,7 @@ def verify_os4_image(root, metadata):
         return subprocess.check_output([dump, '--cat', '--path=' + path.removeprefix('/vendor'), str(vendor)])
     template = dict(line.split('=', 1) for line in (root / 'config/avd.ini').read_text().splitlines() if '=' in line)
     rear_files = verify_rear_display(selected, metadata['build'], read, read_vendor, template)
+    boot_service_files = verify_boot_services(metadata['build'], read)
     if selected['hyperos'] != '4.0.18.0.XFRCNXM':
         if metadata['build'].get('composer_alpha_fix') != COMPOSER_FIX:
             raise RuntimeError('Missing verified ranchu composer alpha fix metadata.')
@@ -348,7 +373,7 @@ def verify_os4_image(root, metadata):
     for path, checksum in expected.items():
         if hashlib.sha256(read(path)).hexdigest() != checksum:
             raise RuntimeError('Baked release checksum mismatch: ' + path)
-    print(f'OS4 preflight passed: packed system/vendor, properties, defaults and {len(expected) + lockscreen_files + rear_files} signed/native/resource files.', flush=True)
+    print(f'OS4 preflight passed: packed system/vendor, properties, defaults and {len(expected) + lockscreen_files + rear_files + boot_service_files} pinned APK/native/resource files.', flush=True)
 
 
 def release_metadata(root, variant):
@@ -399,6 +424,11 @@ def release_metadata(root, variant):
             metadata['compatibility'].update(minimum_installer='1.2.0',
                 upgrade_from=['v0.2.1-a17-hyperos4-hongkong-r2'],
                 module_upgrade_preflight=MODULE_UPGRADE_PREFLIGHT)
+            if build.get('boot_service_fix') is not None:
+                from manage import FORWARD_UPGRADE_POLICY
+                metadata['compatibility']['minimum_installer'] = '1.2.1'
+                metadata['compatibility'].pop('upgrade_from')
+                metadata['compatibility']['upgrade_policy'] = FORWARD_UPGRADE_POLICY
     return metadata
 
 
@@ -482,7 +512,9 @@ def main():
     elif args.variant == 'os4-pad':
         from release_pad import verify_image
         verify_image(root, metadata)
-    phone_version = ('v0.2.2-a17-hyperos4-hongkong-r3'
+    phone_version = ('v0.2.3-a17-hyperos4-hongkong-r4'
+                     if metadata.get('build', {}).get('boot_service_fix') is not None
+                     else 'v0.2.2-a17-hyperos4-hongkong-r3'
                      if metadata['hyperos'] == '4.0.18.0.XFRCNXM'
                      else 'v0.2.1-a17-hyperos4-hongkong-r2')
     version = args.version or {'os3': 'v0.1.0',

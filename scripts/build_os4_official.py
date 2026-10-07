@@ -346,7 +346,18 @@ def main():
     shutil.copytree(repo / 'tools/smali', ROOT / 'tools/smali', dirs_exist_ok=True)
     services = ROOT / 'work/services-original.jar'
     services.write_bytes(erofs(system, '/system/framework/services.jar'))
-    put('system/framework/services.jar', patch(services, ROOT / 'work/services-gps-fixed.jar'))
+    fixed_services = patch(services, ROOT / 'work/services-gps-fixed.jar')
+    put('system/framework/services.jar', fixed_services)
+    boot_service_manifest = None
+    if profile['hyperos'] == '4.0.18.0.XFRCNXM':
+        from patch_boot_services import image_replacements as service_replacements
+        service_edits, boot_service_manifest = service_replacements({
+            'services': fixed_services,
+            'miui-services': erofs(partitions / 'system_ext.img', '/framework/miui-services.jar'),
+            'qualcomm': erofs(partitions / 'system_ext.img', '/priv-app/com.qualcomm.location/com.qualcomm.location.apk'),
+            'registration': erofs(partitions / 'product.img', '/priv-app/AutoRegistration/AutoRegistration.apk'),
+        }, ROOT / 'work/boot-service-fixes')
+        replacements.update(service_edits)
     app_edits, app_manifest = app_replacements(app_bundle, system, ROOT / 'work/preinstalled-native', sdk_path())
     replacements.update(app_edits)
     default_edits, default_manifest = default_replacements(sdk_path(), ROOT / 'work/defaults-overlay',
@@ -424,6 +435,8 @@ def main():
         'experimental': True, 'ota_metadata': metadata}
     if lockscreen_manifest is not None:
         build_metadata['lockscreen_video_fix'] = lockscreen_manifest
+    if boot_service_manifest is not None:
+        build_metadata['boot_service_fix'] = boot_service_manifest
     if rear_manifest is not None:
         build_metadata['rear_display'] = rear_manifest
         build_metadata['rear_display_composer_fix'] = rear_composer_manifest
