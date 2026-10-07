@@ -32,6 +32,52 @@ def authenticated_properties(data):
     return b'\n'.join(lines) + b'\n'
 
 
+def prepare_boot_services(source, output):
+    """Bake r4 repairs from the verified packed r3 image, never guest userdata."""
+    from phone_profile import profile_from_build
+    from package_release import release_metadata, verify_os4_image
+    from patch_boot_services import TARGETS, BOOT_INIT, image_replacements as service_replacements
+    source, output = Path(source).resolve(), Path(output).resolve()
+    if source == output or source in output.parents or output in source.parents or output.exists():
+        raise RuntimeError('Use a new separate sibling workspace for release preparation.')
+    info = json.loads((source / 'local/build.json').read_text())
+    if profile_from_build(info)['hyperos'] != '4.0.18.0.XFRCNXM' or info.get('boot_service_fix'):
+        raise RuntimeError('Expected the unmodified source-pinned r3 phone release.')
+    if info.get('system_sha256') != sha256(source / 'images/system.img'):
+        raise RuntimeError('Source packed image differs from its accepted release receipt.')
+    output.mkdir(parents=True)
+    for directory in ('images', 'tools', 'config'):
+        shutil.copytree(source / directory, output / directory, copy_function=clone)
+    work = output / 'work'
+    unpack(source / 'images/system.img', work / 'accepted')
+    raw = work / 'accepted/system.img'
+    clone(raw, work / 'hyperos-system.img')
+    clone(work / 'accepted/vendor.img', work / 'vendor.img')
+    (output / 'local').mkdir()
+    (output / 'local/build.json').write_text(json.dumps(info, indent=2) + '\n')
+    verify_os4_image(output, release_metadata(output, 'os4-official'))
+    edits, receipt = service_replacements(
+        {name: erofs(raw, path) for name, (path, _, _) in TARGETS.items()}, work / 'boot-services')
+    init_path = 'system_ext/etc/init/init.hyperos_avd.rc'
+    init = erofs(raw, '/' + init_path)
+    if b'service hyperos-kernel-services ' in init:
+        raise RuntimeError('Source image already contains a kernel capability policy.')
+    edits[init_path] = (init + BOOT_INIT, 0o644, 'u:object_r:system_file:s0')
+    candidate = work / 'hyperos-system.img'
+    build(candidate, [('', raw)], work / 'tree', edits)
+    for path, (content, _, _) in edits.items():
+        if erofs(candidate, '/' + path) != content:
+            raise RuntimeError('Boot service preparation mismatch: ' + path)
+    pack(source / 'images/system.img', output / 'images/system.img', [
+        ('system', candidate), ('vendor', work / 'accepted/vendor.img'),
+        ('system_dlkm', work / 'accepted/system_dlkm.img')])
+    info.update(boot_service_fix=receipt, system_sha256=sha256(output / 'images/system.img'),
+                raw_sha256=sha256(candidate))
+    (output / 'local/build.json').write_text(json.dumps(info, indent=2) + '\n')
+    verify_os4_image(output, release_metadata(output, 'os4-official'))
+    print('Prepared isolated r4 release image: ' + str(output), flush=True)
+
+
 def prepare_pad(source, output, info):
     from os4_pad import PROFILE, SOURCE
     from patch_weather import ANGLE, bridge_prebuilt_receipt, verify_bridge_prebuilt
@@ -144,5 +190,12 @@ if __name__ == '__main__':
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--variant', choices=('os4-official', 'os4-pad'), default='os4-official')
+    parser.add_argument('--boot-service-fixes', action='store_true',
+                        help='Bake pinned r4 repairs into the accepted r3 phone image')
     args = parser.parse_args()
-    prepare(args.source, args.output, args.variant)
+    if args.boot_service_fixes:
+        if args.variant != 'os4-official':
+            parser.error('Boot service fixes only support the phone release.')
+        prepare_boot_services(args.source, args.output)
+    else:
+        prepare(args.source, args.output, args.variant)

@@ -23,8 +23,9 @@ import common
 import setup
 from common import REPO_ROOT, avd_home, host_check, port_free, sdk_path, sha256
 
-VERSION = '1.2.0'
+VERSION = '1.2.1'
 MODULE_UPGRADE_PREFLIGHT = 'phone-owned-module-guards-v1'
+FORWARD_UPGRADE_POLICY = 'same-family-forward-v1'
 REPOSITORY = 'NEORUAA/HyperOS-AVD'
 HOME = Path(os.environ.get('HYPEROS_AVD_HOME', Path.home() / 'HyperOS-AVD')).expanduser().resolve()
 LANG = 'zh'
@@ -514,14 +515,26 @@ def compatible(old, new):
         after = new.get('files', {}).get(field, {}).get('sha256')
         if not before or before != after:
             raise RuntimeError('Encryption template changed; automatic data migration is unsafe.')
-    if version_key(new['version']) < version_key(old['version']):
+    def release_order(version):
+        revision = re.search(r'(?:-|_)r(\d+)$', version)
+        return version_key(version), int(revision.group(1)) if revision else 0
+    if release_order(new['version']) < release_order(old['version']):
         raise RuntimeError('Data-preserving downgrades are not supported. Use a separate AVD.')
     migration = new.get('compatibility', {}).get('module_upgrade_preflight')
+    policy = new.get('compatibility', {}).get('upgrade_policy')
+    if policy:
+        if policy != FORWARD_UPGRADE_POLICY or new.get('variant') != 'os4-official':
+            raise RuntimeError('Unknown release upgrade policy; update the installer.')
+        from phone_profile import profile_from_build
+        # Revision numbers do not identify firmware or userdata compatibility.
+        # Both source and destination must have supported, pinned OTA profiles.
+        profile_from_build(old.get('build', {}))
+        profile_from_build(new.get('build', {}))
     if migration:
         if migration != MODULE_UPGRADE_PREFLIGHT:
             raise RuntimeError('Unknown release module migration; update the installer.')
         allowed = new['compatibility'].get('upgrade_from', [])
-        if old['version'] != new['version'] and old['version'] not in allowed:
+        if not policy and old['version'] != new['version'] and old['version'] not in allowed:
             raise RuntimeError('This source release has not been validated for this data-preserving upgrade.')
 
 

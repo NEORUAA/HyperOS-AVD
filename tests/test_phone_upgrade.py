@@ -21,6 +21,7 @@ import test_manager
 
 R2 = 'v0.2.1-a17-hyperos4-hongkong-r2'
 R3 = 'v0.2.2-a17-hyperos4-hongkong-r3'
+R4 = 'v0.2.3-a17-hyperos4-hongkong-r4'
 OLD = 'OS4.0.17.0.XFRCNXM'
 NEW = '4.0.18.0.XFRCNXM'
 
@@ -35,6 +36,75 @@ def r3_manifest(value):
 
 
 class PhoneUpgradeTests(unittest.TestCase):
+    def test_forward_policy_accepts_supported_old_and_future_revisions(self):
+        from apply_boot_service_fix import receipt
+        helper = test_manager.ManagerTests()
+        with tempfile.TemporaryDirectory() as directory:
+            path, original = helper.bundle(Path(directory) / 'bundle')
+            old = r3_manifest(original)
+            new = copy.deepcopy(old)
+            new['version'] = R4
+            new['build']['boot_service_fix'] = receipt()
+            new['compatibility'].pop('upgrade_from')
+            new['compatibility'].update(minimum_installer='1.2.1', upgrade_policy=manage.FORWARD_UPGRADE_POLICY)
+            path.write_text(json.dumps(new))
+            parsed, _ = setup.read_manifest(str(path))
+            manage.compatible(old, parsed)
+            self.assertFalse(manage.firmware_change(old, parsed))
+            for mutate in ('old-installer', 'unknown-policy', 'bad-receipt', 'missing-receipt'):
+                bad = copy.deepcopy(new)
+                if mutate == 'old-installer':
+                    bad['compatibility']['minimum_installer'] = '1.2.0'
+                elif mutate == 'unknown-policy':
+                    bad['compatibility']['upgrade_policy'] = 'unsafe-skip-checks'
+                elif mutate == 'bad-receipt':
+                    bad['build']['boot_service_fix']['probe_sha256'] = 'f' * 64
+                else:
+                    del bad['build']['boot_service_fix']
+                path.write_text(json.dumps(bad))
+                with self.subTest(mutate=mutate), self.assertRaisesRegex(RuntimeError, 'r4|upgrade policy'):
+                    setup.read_manifest(str(path))
+            for version in ('v0.2.0-a17-hyperos4-hongkong-r1', R2, R3):
+                source = copy.deepcopy(original if version != R3 else old)
+                source['version'] = version
+                with self.subTest(source=version):
+                    manage.compatible(source, new)
+                    self.assertEqual(manage.firmware_change(source, new), version != R3)
+            future = copy.deepcopy(new)
+            future['version'] = 'v0.9.9-a17-hyperos4-hongkong-r999'
+            path.write_text(json.dumps(future))
+            setup.read_manifest(str(path))
+            manage.compatible(new, future)
+            future['version'] = 'v0.2.3-a17-hyperos4-hongkong-r999'
+            path.write_text(json.dumps(future))
+            setup.read_manifest(str(path))
+            manage.compatible(new, future)
+            with self.assertRaisesRegex(RuntimeError, 'downgrades'):
+                manage.compatible(future, new)
+            wrong = copy.deepcopy(old)
+            wrong['build']['archive_sha256'] = 'f' * 64
+            with self.assertRaisesRegex(RuntimeError, 'archive'):
+                manage.compatible(wrong, new)
+            with self.assertRaisesRegex(RuntimeError, 'downgrades'):
+                manage.compatible(new, old)
+
+    def test_r4_metadata_requires_new_installer_and_retains_pinned_receipt(self):
+        from apply_boot_service_fix import receipt
+        build = {'source': common.OS4_SOURCE, 'hyperos': NEW, 'android_api': 37,
+                 'archive_sha256': ARCHIVES[NEW], 'adb_authentication': True,
+                 'flutter_render_fix': 6, 'native_quickstep_identity': True,
+                 'preinstalled_apps': {'apps': ['test']}, 'avd_defaults': {'test': True},
+                 'boot_service_fix': receipt()}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'local').mkdir()
+            (root / 'local/build.json').write_text(json.dumps(build))
+            metadata = package_release.release_metadata(root, 'os4-official')
+            self.assertEqual(metadata['build']['boot_service_fix'], receipt())
+            self.assertEqual(metadata['compatibility']['minimum_installer'], '1.2.1')
+            self.assertNotIn('upgrade_from', metadata['compatibility'])
+            self.assertEqual(metadata['compatibility']['upgrade_policy'], manage.FORWARD_UPGRADE_POLICY)
+
     def staging_fixture(self, folder):
         root = folder / 'instance'
         avd = root / 'avd/Test_temp.avd'

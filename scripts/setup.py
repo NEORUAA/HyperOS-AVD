@@ -88,10 +88,21 @@ def read_manifest(value):
                 raise RuntimeError('Invalid official OS4 Pad release profile.')
         elif manifest.get('hyperos') == '4.0.18.0.XFRCNXM':
             from phone_profile import profile_from_build
-            from manage import MODULE_UPGRADE_PREFLIGHT
+            from manage import MODULE_UPGRADE_PREFLIGHT, FORWARD_UPGRADE_POLICY
             selected = profile_from_build(build)
             compatibility = manifest.get('compatibility', {})
             minimum = compatibility.get('minimum_installer', '')
+            r4 = build.get('boot_service_fix') is not None
+            policy = compatibility.get('upgrade_policy')
+            forward = policy == FORWARD_UPGRADE_POLICY
+            if policy is not None and not forward:
+                raise RuntimeError('Unknown official OS4 forward upgrade policy.')
+            if r4:
+                from apply_boot_service_fix import receipt
+                if build['boot_service_fix'] != receipt() or not forward:
+                    raise RuntimeError('Invalid official OS4 r4 boot service profile.')
+            elif forward:
+                raise RuntimeError('Missing official OS4 r4 boot service profile.')
             if (type(manifest['format']) is not int or manifest['format'] != 3
                     or manifest.get('source') != OS4_SOURCE
                     or manifest.get('source_device') != 'hongkong'
@@ -99,10 +110,10 @@ def read_manifest(value):
                     or compatibility.get('userdata_family') != 'os4-hongkong-api37-ranchu-4k'
                     or compatibility.get('runtime_in_bundle') is not True
                     or compatibility.get('module_upgrade_preflight') != MODULE_UPGRADE_PREFLIGHT
-                    or compatibility.get('upgrade_from') != ['v0.2.1-a17-hyperos4-hongkong-r2']
+                    or (not forward and compatibility.get('upgrade_from') != ['v0.2.1-a17-hyperos4-hongkong-r2'])
                     or not isinstance(minimum, str) or not re.fullmatch(r'\d+\.\d+\.\d+', minimum)
-                    or tuple(map(int, minimum.split('.'))) < (1, 2, 0)):
-                raise RuntimeError('Invalid official OS4 r3 upgrade profile.')
+                    or tuple(map(int, minimum.split('.'))) < ((1, 2, 1) if r4 else (1, 2, 0))):
+                raise RuntimeError('Invalid official OS4 ' + ('r4' if r4 else 'r3') + ' upgrade profile.')
     elif (manifest.get('android_api', 36) != 36 or manifest.get('variant', 'os3') != 'os3'
           or manifest.get('source') in (OS4_SOURCE, PAD_SOURCE)
           or manifest.get('build', {}).get('source') in (OS4_SOURCE, PAD_SOURCE)):
