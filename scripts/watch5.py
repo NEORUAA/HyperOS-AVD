@@ -2,6 +2,7 @@
 """Build and boot the isolated 32-bit grasslte experiment with an ARM64 kernel."""
 import argparse
 from datetime import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,8 @@ SOURCE = 'official-grasslte-ota'
 ARCHIVE = 'grasslte-ota_full-OS3.0.190.0.VOFAECNXM-user-15.0-5f05bdfd2e.zip'
 ARCHIVE_SHA256 = '25028d3b26ef77f997c2c0518d8d7326459426483b9701aed8126d4a90adcb7f'
 PARTITIONS = ('system', 'system_ext', 'product', 'mi_ext', 'vendor', 'odm')
+PSM_PATH = '/system/priv-app/PSMService/PSMService.apk'
+PSM_SHA256 = 'bf6810c61afbda6e2ed429e95befa23521de2789badccfc932a7e4060419f4bd'
 
 
 def properties(data):
@@ -44,7 +47,14 @@ def set_properties(data, values):
 def add_mi_ext_fstab(data):
     if b'mi_ext ' in data:
         raise RuntimeError('Unexpected existing mi_ext mount entry.')
-    return data.rstrip(b'\n') + b'\nmi_ext /mi_ext ext4 ro wait,logical,first_stage_mount,nofail\n'
+    return data.rstrip(b'\n') + b'\nmi_ext /mnt/vendor/mi_ext ext4 ro wait,logical,first_stage_mount,nofail\n'
+
+
+def original_overlays(original_fstab):
+    """Retain only Xiaomi's software overlays, never its physical block devices."""
+    return b''.join(line for line in original_fstab.splitlines(keepends=True)
+                    if line.split() and (line.split()[0] == b'overlay'
+                        or line.split()[0] == b'/mnt/vendor/mi_ext'))
 
 
 def patch_ramdisk(path):
@@ -93,13 +103,25 @@ def check_metadata(metadata):
         raise RuntimeError('Use the supplied grasslte OS3.0.190.0 OTA.')
 
 
+def omit_physical_psm(system):
+    """Keep ranchu power management without the absent Qualcomm sleep HAL."""
+    from build_image import debugfs
+    data = debugfs(system, 'cat ' + PSM_PATH)
+    if hashlib.sha256(data).hexdigest() != PSM_SHA256:
+        raise RuntimeError('Unexpected PSMService APK; no package was removed.')
+    debugfs(system, 'rm ' + PSM_PATH, True)
+    return {'package': 'com.qualcomm.qti.powerstatemanagerservice',
+            'path': PSM_PATH, 'sha256': PSM_SHA256,
+            'reason': 'Requires vendor.qti.hardware.powerstateservice@1.0'}
+
+
 def build(archive, diagnostic_adb=False):
     from common import ROOT, sdk_path, sha256, tool, port_free, avd_home
     from lp_image import pack, unpack
     from build_image import debugfs, install
     from init_userdata import create
     from setup import configure
-    from watch5_native import support
+    from watch5_native import support, diagnostics
     port_free(PORT)
     registry = avd_home() / (NAME + '.ini')
     if registry.exists():
@@ -137,27 +159,50 @@ def build(archive, diagnostic_adb=False):
     shutil.copyfile(parts / 'system_ext.img', ext)
     prop = set_properties(prop, {
         'ro.sf.lcd_density': '320', 'ro.zygote': 'zygote32',
+        'ro.product.cpu.abi': 'armeabi-v7a',
+        'ro.product.cpu.abilist': 'armeabi-v7a,armeabi',
+        'ro.product.cpu.abilist32': 'armeabi-v7a,armeabi',
+        'ro.product.cpu.abilist64': '',
+        # Keep the OTA identity instead of inheriting the Wear donor's global
+        # properties. The generic Xiaomi partition fingerprints stay intact.
+        'ro.build.fingerprint': metadata['post-build'],
+        'ro.product.brand': 'xiaomi',
+        'ro.product.device': 'grasslte',
+        'ro.product.name': 'grasslte',
+        'ro.product.model': 'M2505W1',
+        'ro.product.manufacturer': 'Xiaomi',
         'debug.hwui.renderer': 'skiagl',
+        # Software CPU emulation needs finite but longer framework deadlines.
+        'ro.hw_timeout_multiplier': '10',
     })
     if diagnostic_adb:
         prop = set_properties(prop, {'ro.adb.secure': '0', 'ro.debuggable': '1'})
     install(system, '/system/build.prop', prop, '0100600',
             'u:object_r:system_file:s0', replace=True)
+    omitted_psm = omit_physical_psm(system)
     vendor_prop = set_properties(debugfs(vendor, 'cat /build.prop'), {
         'ro.zygote': 'zygote32', 'ro.bionic.arch': 'arm',
-        'ro.vendor.product.cpu.abilist': 'armeabi-v7a,armeabi',
-        'ro.vendor.product.cpu.abilist32': 'armeabi-v7a,armeabi',
-        'ro.vendor.product.cpu.abilist64': '',
+        'ro.product.vendor.cpu.abilist': 'armeabi-v7a,armeabi',
+        'ro.product.vendor.cpu.abilist32': 'armeabi-v7a,armeabi',
+        'ro.product.vendor.cpu.abilist64': '',
         'dalvik.vm.dex2oat64.enabled': 'false',
     })
     install(vendor, '/build.prop', vendor_prop, '0100600',
             'u:object_r:vendor_file:s0', replace=True)
-    install(vendor, '/etc/fstab.ranchu', add_mi_ext_fstab(debugfs(vendor,
-            'cat /etc/fstab.ranchu')), '0100644', 'u:object_r:vendor_configs_file:s0', replace=True)
+    fstab = add_mi_ext_fstab(debugfs(vendor, 'cat /etc/fstab.ranchu'))
+    fstab += original_overlays(debugfs(parts / 'vendor.img', 'cat /etc/fstab.qcom'))
+    install(vendor, '/etc/fstab.ranchu', fstab, '0100644', 'u:object_r:vendor_configs_file:s0', replace=True)
+    # Zygote preloads MediaProfiles using the original watch property. The Wear
+    # donor has no camera profiles, so preserve this metadata from the OTA.
+    install(vendor, '/etc/media_profiles_vendor.xml',
+            debugfs(parts / 'vendor.img', 'cat /etc/media_profiles_vendor.xml'),
+            '0100644', 'u:object_r:vendor_configs_file:s0')
     init_rc = (b'on post-fs-data\n    setprop persist.sys.usb.config adb\n'
                b'    setprop sys.usb.config adb\n')
     install(ext, '/etc/init/init.watch5_avd.rc', init_rc, '0100644', 'u:object_r:system_file:s0')
     native = support(system, vendor, ROOT / 'work/base/system.img')
+    if diagnostic_adb:
+        diagnostics(vendor, ext)
     for path in base.iterdir():
         if path.is_file() and path.name not in ('system.img', 'package.xml'):
             shutil.copy2(path, ROOT / 'images' / path.name)
@@ -180,6 +225,8 @@ def build(archive, diagnostic_adb=False):
                 'userspace_abi': 'armeabi-v7a', 'kernel_arch': 'arm64', 'acceleration': 'tcg',
                 'physical_ppi': 312, 'logical_density': 320, 'diagnostic_adb': diagnostic_adb,
                 'experimental': True, 'hardware_base': 'android-34/android-wear/arm64-v8a',
+                'framework_timeout_multiplier': 10,
+                'omitted_hardware_packages': [omitted_psm],
                 'ota_metadata': metadata, 'native_support': native}
     (ROOT / 'local/build.json').write_text(json.dumps(manifest, indent=2) + '\n')
     configure(sdk_path(), NAME, PORT)
@@ -189,7 +236,7 @@ def build(archive, diagnostic_adb=False):
 def start():
     from common import ROOT, runtime, port_free
     from setup import configure
-    from manage import resize, validate_userdata
+    from manage import resize, validate_userdata, data_size
     config = runtime()
     if config.get('name') != NAME or config.get('port') != PORT:
         raise RuntimeError('Build the isolated Watch5 candidate first.')
@@ -206,14 +253,27 @@ def start():
     if not userdata.exists():
         shutil.copyfile(ROOT / 'images/userdata.img', userdata)
     validate_userdata(sdk, avd)
-    resize(sdk, avd, 32)
+    # Do not repeatedly rewrite or hash an already provisioned test disk.
+    # Guest-visible filesystem capacity is verified after Android boots.
+    layers = [userdata, avd / 'userdata-qemu.img.qcow2']
+    if any(data_size(sdk, path)['virtual-size'] < 32 * 1024**3
+           for path in layers if path.exists()):
+        resize(sdk, avd, 32)
     # Invoke the ARM64 core directly: the kernel is ARM64, but every original
     # watch process is ARM32. The generic launcher may select the ARM32 core.
     command = [str(sdk / 'emulator/qemu/darwin-aarch64/qemu-system-aarch64'),
                '-avd', NAME, '-sysdir', str(ROOT / 'images'), '-port', str(PORT),
                '-no-snapshot-load', '-no-snapshot-save', '-accel', 'off', '-gpu', 'host',
                '-memory', '2048', '-cores', '4', '-show-kernel', '-verbose',
-               '-crash-report-mode', 'never', '-qemu', '-cpu', 'cortex-a53', '-m', '2048']
+               '-crash-report-mode', 'never']
+    if os.environ.get('WATCH5_DIAGNOSTIC_CONSOLE') == '1':
+        console = Path('/tmp/hyperos-watch5-5576.sock')
+        # The owned emulator is stopped and both reserved endpoints are free.
+        # This socket is restricted to the local experiment, not any other AVD.
+        if console.exists():
+            console.unlink()
+        command.extend(['-shell-serial', 'unix:' + str(console) + ',server,nowait'])
+    command.extend(['-qemu', '-cpu', 'cortex-a53', '-m', '2048'])
     environment = os.environ.copy()
     environment['DYLD_LIBRARY_PATH'] = str(sdk / 'emulator/lib64') + ':' + str(sdk / 'emulator/lib64/qt/lib')
     log = ROOT / 'logs' / ('watch-' + datetime.now().strftime('%Y%m%d-%H%M%S') + '.log')
@@ -228,9 +288,9 @@ def start():
     print(f'Started {NAME}: emulator-{PORT}, PID {process.pid}. Log: {log}')
 
 
-def stop():
-    """Stop only the owned Watch5 process, refusing a recycled PID."""
-    from common import ROOT, runtime, adb
+def owned_runtime():
+    """Resolve the live local Watch5 instance without targeting other AVDs."""
+    from common import ROOT, runtime
     config = runtime()
     if config.get('name') != NAME or config.get('port') != PORT:
         raise RuntimeError('Unexpected Watch5 runtime identity.')
@@ -240,12 +300,78 @@ def stop():
     found = subprocess.run(['ps', '-p', str(pid), '-o', 'command='],
                            capture_output=True, text=True)
     if found.returncode:
-        print('Owned Watch5 process is already stopped.')
-        return
+        return config, state, False
     if (f'-avd {NAME} ' not in found.stdout or f'-port {PORT} ' not in found.stdout
             or str(Path(config['sdk']) / 'emulator/qemu/darwin-aarch64/qemu-system-aarch64')
             not in found.stdout):
         raise RuntimeError('PID does not identify the owned Watch5 emulator; preserved.')
+    return config, state, True
+
+
+def guest_command(config, *arguments):
+    """Propagate command failures, including cmd's zero-exit activity errors."""
+    from common import adb
+    result = adb(config, 'exec-out', '/system/bin/cmd', *arguments,
+                 capture_output=True, timeout=30)
+    output = result.stdout.decode(errors='replace').strip()
+    if result.returncode or any(line.startswith(('Error:', 'Error type', 'Exception'))
+                                for line in output.splitlines()):
+        raise RuntimeError(result.stderr.decode(errors='replace').strip() or output
+                           or 'Watch5 command failed.')
+    return output
+
+
+def control(action):
+    """Expose the original watch face and physical crown for local testing."""
+    from common import adb
+    config, _, running = owned_runtime()
+    if not running:
+        raise RuntimeError('Start the owned Watch5 AVD first.')
+    result = adb(config, 'exec-out', '/system/bin/getprop', 'sys.boot_completed',
+                 capture_output=True, timeout=15)
+    if result.returncode or result.stdout.strip() != b'1':
+        raise RuntimeError('Watch5 has not completed Android boot yet.')
+    if action in ('standalone', 'pairing'):
+        standalone = action == 'standalone'
+        target = ('com.xiaomi.miwear.home/.mainui.activity.SysUiActivity' if standalone
+                  else 'com.xiaomi.miwear.setupwizard/.WizardEnterActivity')
+        # The unpaired wizard has a higher-priority HOME intent filter. Shell
+        # cannot disable this protected component alone, so toggle the package
+        # for user 0 while retaining its APK and all pairing data.
+        guest_command(config, 'package', 'disable-user' if standalone else 'enable',
+                      '--user', '0', 'com.xiaomi.miwear.setupwizard')
+        resolved = guest_command(config, 'package', 'resolve-activity', '--brief',
+                                 '-a', 'android.intent.action.MAIN',
+                                 '-c', 'android.intent.category.HOME')
+        if target not in resolved.splitlines():
+            raise RuntimeError('Watch5 HOME did not resolve to ' + target + ': ' + resolved)
+        complete = '1' if standalone else '0'
+        guest_command(config, 'settings', 'put', 'global', 'device_provisioned', complete)
+        guest_command(config, 'settings', 'put', 'secure', 'user_setup_complete', complete)
+        output = guest_command(config, 'activity', 'start-activity', '-n', target)
+        from common import ROOT
+        (ROOT / 'local/test-mode.json').write_text(json.dumps({'mode': action}) + '\n')
+        print(output)
+        print('Local test mode updated. Phone pairing data and original APKs were retained.')
+        return
+    if action == 'home':
+        command = ('activity', 'start-activity', '-n',
+                   'com.xiaomi.miwear.home/.mainui.activity.SysUiActivity')
+    else:
+        command = ('input', 'keyevent', '264' if action == 'crown' else '4')
+    output = guest_command(config, *command)
+    print(output or f'Sent {action} to the owned Watch5 AVD.')
+
+
+def stop():
+    """Stop only the owned Watch5 process, refusing a recycled PID."""
+    from common import ROOT, adb
+    config, state, running = owned_runtime()
+    if not running:
+        print('Owned Watch5 process is already stopped.')
+        return
+    record = ROOT / 'local/watch-process.json'
+    pid = state['pid']
     result = adb(config, 'emu', 'kill', capture_output=True, timeout=5)
     if result.returncode:
         os.kill(pid, signal.SIGTERM)
@@ -261,7 +387,8 @@ def stop():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('build', 'start', 'stop'))
+    parser.add_argument('action', choices=('build', 'start', 'stop', 'home', 'crown', 'back',
+                                          'standalone', 'pairing'))
     parser.add_argument('--zip', type=Path, default=REPO / ARCHIVE)
     parser.add_argument('--diagnostic-adb', action='store_true')
     args = parser.parse_args()
@@ -272,6 +399,8 @@ def main():
         build(args.zip.resolve(), args.diagnostic_adb)
     elif args.action == 'start':
         start()
+    elif args.action in ('home', 'crown', 'back', 'standalone', 'pairing'):
+        control(args.action)
     else:
         stop()
 

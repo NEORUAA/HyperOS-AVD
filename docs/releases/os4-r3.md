@@ -1,4 +1,4 @@
-# HyperOS 4 · v0.2.2 · Apple Silicon · r3
+# HyperOS 4.0.18.0 · v0.2.2 · Apple Silicon · r3
 
 Tag：`v0.2.2-a17-hyperos4-hongkong-r3`，**Pre-release**。基包升级为小米 18 Pro（hongkong）官方 **OS4.0.18.0.XFRCNXM / Android 17**，由原厂系统分区移植，保留系统应用与完整首次开机引导。
 
