@@ -15,10 +15,74 @@ from os4_defaults import (AOD_INIT, GRADIENT_BLUR_INIT, REFRESH_INIT, REFRESH_SC
                           display_template, identity_properties, production_properties)
 from os4_defaults import apply_gradient_blur_runtime, apply_sensor_defaults
 from os4_defaults import LOG_SCRIPT, LOG_TAGS, log_properties
+from os4_defaults import AWAKE_STAMP, AWAKE_SCRIPT, SCREEN_TIMEOUT
+from os4_defaults import apply_runtime, COMPONENT
 from apply_navigation_fix import simulated_serial
 
 
 class OS4DefaultsTests(unittest.TestCase):
+    def test_runtime_keeps_ac_supply_without_overwriting_seeded_awake_choices(self):
+        import common
+        import os4_defaults
+        from phone_profile import profile
+        selected = profile('4.0.18.0.XFRCNXM')
+        config = {'name': 'Renamed-phone', 'port': 5584}
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / 'local').mkdir()
+            (folder / 'local/defaults-before.json').write_text('{}')
+            stamp, events = folder / 'stamp', folder / 'events'
+            stamp.touch()
+            events.write_text('timeout=123456\nsleep=654321\nstay=0\n')
+            for name, code in (('am', 'exit 0'), ('settings', 'echo "$*" >> "$TEST_EVENTS"')):
+                path = folder / name
+                path.write_text('#!/bin/sh\n' + code + '\n')
+                path.chmod(0o755)
+            def root(device, command):
+                self.assertEqual(device, config)
+                if command == 'getprop ro.boot.hardware':
+                    return 'ranchu'
+                if command.startswith('pm path '):
+                    return 'package:/product/priv-app/FindDevice.apk'
+                if command.startswith('sha256sum '):
+                    return selected['pins']['finddevice_apk'] + '  apk'
+                if command == 'pm disable --user 0 ' + COMPONENT:
+                    return 'Component ' + COMPONENT + ' new state: disabled'
+                if AWAKE_SCRIPT in command:
+                    subprocess.run(['sh', '-e'], input=command.replace(AWAKE_STAMP, str(stamp)),
+                        text=True, check=True, env=dict(os.environ,
+                            PATH=str(folder) + ':' + os.environ['PATH'], TEST_EVENTS=str(events)))
+                return ''
+            with patch.object(common, 'ROOT', folder), patch('apply_flutter_fix.official'), \
+                    patch('phone_profile.profile_from_build', return_value=selected), \
+                    patch('apply_flutter_fix.root', side_effect=root), patch('common.adb') as adb, \
+                    patch.object(os4_defaults, 'apply_color_runtime'), \
+                    patch.object(os4_defaults, 'apply_refresh_runtime'), \
+                    patch.object(os4_defaults, 'apply_gradient_blur_runtime'):
+                apply_runtime(config)
+            self.assertEqual(events.read_text(), 'timeout=123456\nsleep=654321\nstay=0\n')
+            self.assertEqual(adb.call_args.args, (config, 'emu', 'power', 'ac', 'on'))
+
+    def test_awake_defaults_seed_once_and_preserve_later_user_choices(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            stamp, events = folder / 'seeded', folder / 'events'
+            settings = folder / 'settings'
+            settings.write_text('#!/bin/sh\necho "$*" >> "$TEST_EVENTS"\n')
+            settings.chmod(0o755)
+            env = dict(os.environ, PATH=str(folder) + ':' + os.environ['PATH'], TEST_EVENTS=str(events))
+            script = AWAKE_SCRIPT.replace(AWAKE_STAMP, str(stamp))
+            subprocess.run(['sh', '-e'], input=script, text=True, env=env, check=True)
+            self.assertEqual(events.read_text().splitlines(), [
+                f'put system screen_off_timeout {SCREEN_TIMEOUT}',
+                'put secure sleep_timeout -1', 'put global stay_on_while_plugged_in 7'])
+            self.assertTrue(stamp.is_file())
+            # A retained-user migration already marks this stamp and keeps the
+            # user's timeout/sleep/plugged choices, regardless of their values.
+            events.write_text('user timeout 123456\nuser sleep 654321\nuser stay 0\n')
+            subprocess.run(['sh', '-e'], input=script, text=True, env=env, check=True)
+            self.assertEqual(events.read_text(), 'user timeout 123456\nuser sleep 654321\nuser stay 0\n')
+
     def test_supplied_log_filter_changes_only_its_selected_tags(self):
         self.assertEqual(hashlib.sha256(LOG_SCRIPT).hexdigest(),
                          'b3dc26dc1ace9121ff4f9e71fe6526af933148e4a0e7d9f962b42395f294d6c7')

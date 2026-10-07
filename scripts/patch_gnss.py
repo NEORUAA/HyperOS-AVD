@@ -13,6 +13,8 @@ from common import ROOT
 
 SOURCE_SHA256 = '49d5d9175d398656c4db3854f72e040ffcccbbd08371dc3bf6e9a3afcb1d96a0'
 OS4_SHA256 = 'e60bfa83c50060666c9c157c558f4a88449b3697c45a2895a1069b9d59e32df0'
+OS4_18_SHA256 = '9e823fe6df680c05bed72b20b45783aaf0be6aa15e70d69880f1849107954c09'
+PAD_SHA256 = '8aa1303fd24261d1a36592b39bf07f42ff6725660f4078f1d3783578836f5ede'
 ARTIFACTS = {'baksmali': ('org/smali/baksmali/2.5.2/baksmali-2.5.2.jar',
               '1ed236266d7dc4907aade0b19a34f77efac25342b63c8ace52e579039941b389'),
  'smali': ('org/smali/smali/2.5.2/smali-2.5.2.jar',
@@ -44,8 +46,8 @@ def java():
 def patch(source, destination):
     source, destination = Path(source), Path(destination)
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
-    if digest not in (SOURCE_SHA256, OS4_SHA256):
-        raise RuntimeError('Unsupported services.jar. Supported images: HyperOS 3.0.2.0 fuxi and official 4.0.17.0 hongkong.')
+    if digest not in (SOURCE_SHA256, OS4_SHA256, OS4_18_SHA256, PAD_SHA256):
+        raise RuntimeError('Unsupported services.jar; use a verified fuxi, hongkong or yingtian image.')
     cache = ROOT / 'tools/smali'
     cache.mkdir(parents=True, exist_ok=True)
     for name, (coordinate, expected) in ARTIFACTS.items():
@@ -69,7 +71,7 @@ def patch(source, destination):
     callbacks = {'reportStatus(I)V': 2,
                  'reportSvStatus(I[I[F[F[F[F[F)V': 8,
                  'reportLocation(ZLandroid/location/Location;)V': 3}
-    if digest == OS4_SHA256:
+    if digest in (OS4_SHA256, OS4_18_SHA256, PAD_SHA256):
         del callbacks['reportSvStatus(I[I[F[F[F[F[F)V']
         callbacks['reportSvStatus(I[I[I[I[F[F[F[F[F[Ljava/lang/String;[J[D)V'] = 13
     original = 'invoke-static {v0}, Landroid/os/Binder;->withCleanCallingIdentity(Lcom/android/internal/util/FunctionalUtils$ThrowingRunnable;)V'

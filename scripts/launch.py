@@ -15,7 +15,61 @@ from setup import configure
 
 def is_os4():
     build = ROOT / 'local/build.json'
-    return build.is_file() and json.loads(build.read_text()).get('source') == 'official-hongkong-ota'
+    return build.is_file() and json.loads(build.read_text()).get('source') in (
+        'official-hongkong-ota', 'official-yingtian-ota')
+
+
+def vulkan_features(build):
+    """Select image-specific descriptor and presentation workarounds."""
+    if build.get('source') == 'official-yingtian-ota':
+        return ['-feature', 'VulkanBatchedDescriptorSetUpdate']
+    if (build.get('source') == 'official-hongkong-ota'
+            and build.get('hyperos') == '4.0.18.0.XFRCNXM'):
+        from phone_profile import profile_from_build
+        from patch_pad_hwui import PHONE_BEFORE, PHONE_AFTER, PHONE_PROFILE
+        profile = profile_from_build(build)
+        expected = {'before': PHONE_BEFORE, 'after': PHONE_AFTER, 'profile': PHONE_PROFILE}
+        if (profile['pins']['hwui'] == PHONE_BEFORE and build.get('hwui') == expected
+                and build.get('hwui_renderer') == 'skiavk'):
+            # Keep the verified presentation workaround. The separately baked
+            # sync driver bounds command bursts when both panels are active.
+            return ['-feature', 'VulkanBatchedDescriptorSetUpdate,-GLAsyncSwap']
+    return []
+
+
+def prepare_userdata(config):
+    """Repair disk/filesystem mismatches before the owned Emulator can open them."""
+    avd = ROOT / 'avd' / (config['name'] + '.avd')
+    properties = dict(line.split('=', 1) for line in (avd / 'config.ini').read_text().splitlines()
+                      if '=' in line)
+    storage = config.get('hardware', {}).get('disk.dataPartition.size',
+                                             properties.get('disk.dataPartition.size'))
+    if (not isinstance(storage, str) or not storage.endswith('G') or not storage[:-1].isdigit()
+            or not 6 <= int(storage[:-1]) <= 1024):
+        raise RuntimeError('Missing or invalid userdata capacity in this AVD configuration.')
+    from manage import resize, validate_userdata
+    from userdata_resize import PENDING
+    pending = avd / PENDING
+    recovered = None
+    if pending.exists() or pending.is_symlink():
+        # An interrupted activation can temporarily have no active base. Its
+        # original chain must be recovered before considering a fresh template.
+        recovered = resize(Path(config['sdk']), avd, int(storage[:-1]), allow_guest=True)
+    userdata = avd / 'userdata-qemu.img'
+    if not userdata.exists():
+        from userdata_resize import check_dependencies
+        check_dependencies(Path(config['sdk']))
+        print('Creating fresh userdata from the clean release template.', flush=True)
+        shutil.copyfile(ROOT / 'images/userdata.img', userdata)
+    validate_userdata(Path(config['sdk']), avd)
+    result = recovered if recovered is not None else resize(
+        Path(config['sdk']), avd, int(storage[:-1]), allow_guest=True)
+    if isinstance(result, dict) and result.get('guest_required'):
+        from manage import backup, prepare_storage
+        folder = backup(ROOT, config['name'])
+        result = prepare_storage(ROOT, config['name'], config['port'],
+                                 Path(config['sdk']), int(storage[:-1]), folder)
+    return result
 
 
 def skip_oobe(config):
@@ -41,7 +95,7 @@ def skip_oobe(config):
     print('OOBE skipped. Existing userdata was preserved.', flush=True)
 
 
-def initialize(config, bypass_oobe=False):
+def initialize(config, bypass_oobe=False, rotate_window=True):
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
         try:
@@ -92,18 +146,47 @@ def initialize(config, bypass_oobe=False):
         install_weather(config)
         from apply_assistant_fix import install as install_assistant
         install_assistant(config)
+        if json.loads(build.read_text()).get('rear_display_wake_fix'):
+            from apply_rear_display_fix import install as install_rear_display
+            install_rear_display(config)
         from apply_xiaomi_camera_fix import MODULE, install as install_xiaomi_camera
         installed = adb(config, 'shell', 'su -W -c ' + shlex.quote(
             f'if [ -f {MODULE}/manifest.json ]; then echo yes; fi'),
             capture_output=True, text=True, check=True, timeout=10).stdout.strip()
         if installed == 'yes' or config.get('camera_bridge', False):
             install_xiaomi_camera(config, rebuild=installed == 'yes')
+    elif build.is_file() and json.loads(build.read_text()).get('source') == 'official-yingtian-ota':
+        from os4_pad import apply_runtime, align_window
+        apply_runtime(config)
+        if rotate_window:
+            align_window(config)
+        from apply_flutter_fix import install
+        install(config, sources=('official-yingtian-ota',))
+        from apply_weather_fix import install as install_weather
+        install_weather(config, sources=('official-yingtian-ota',),
+                        angle_folder=ROOT / 'tools/weather-angle')
+        from apply_assistant_fix import install as install_assistant
+        install_assistant(config, sources=('official-yingtian-ota',))
+        from apply_pad_camera_fix import install as install_pad_camera
+        install_pad_camera(config)
+        from apply_pad_camera_native_fix import install as install_pad_camera_native
+        install_pad_camera_native(config)
     if bypass_oobe:
         skip_oobe(config)
     manager = adb(config, 'shell', 'pm path me.weishu.kernelsu', capture_output=True, text=True, timeout=15)
     if 'package:' not in manager.stdout:
-        adb(config, 'install', '--no-incremental', str(ROOT / 'tools/KernelSU_v3.3.0_32601-release.apk'),
-            check=True, timeout=60)
+        apk = ROOT / 'tools/KernelSU_v3.3.0_32601-release.apk'
+        if build.is_file() and json.loads(build.read_text()).get('source') == 'official-yingtian-ota':
+            # MIUI's fresh tablet setup rejects shell installs; use verified KernelSU root.
+            remote = '/data/local/tmp/hyperos-avd-ksu.apk'
+            adb(config, 'push', str(apk), remote, check=True, capture_output=True, timeout=30)
+            try:
+                adb(config, 'shell', 'su -W -c ' + shlex.quote('pm install -r ' + remote),
+                    check=True, timeout=60)
+            finally:
+                adb(config, 'shell', 'rm -f ' + remote, timeout=15)
+        else:
+            adb(config, 'install', '--no-incremental', str(apk), check=True, timeout=60)
     adb(config, 'shell', 'rm -f /data/local/tmp/hyperos-avd-ksud', timeout=15)
     (ROOT / 'local').mkdir(exist_ok=True)
     (ROOT / 'local/last-boot.json').write_text(json.dumps(
@@ -128,16 +211,7 @@ def main():
     # Refresh relocated paths before every cold start; collision checks protect other AVDs.
     configure(Path(config['sdk']), config['name'], config['port'])
     fetch_ksu(['ksud-aarch64-linux-android', 'KernelSU_v3.3.0_32601-release.apk'])
-    userdata = ROOT / 'avd' / (config['name'] + '.avd') / 'userdata-qemu.img'
-    if not userdata.exists():
-        print('Creating fresh userdata from the clean release template.', flush=True)
-        shutil.copyfile(ROOT / 'images/userdata.img', userdata)
-    from manage import resize, validate_userdata
-    validate_userdata(Path(config['sdk']), userdata.parent)
-    hardware = config.get('hardware', {})
-    storage = hardware.get('disk.dataPartition.size')
-    if storage:
-        resize(Path(config['sdk']), userdata.parent, int(storage.rstrip('G')))
+    prepare_userdata(config)
     logs = ROOT / 'logs'
     logs.mkdir(exist_ok=True)
     log = logs / 'emulator-current.log'
@@ -146,6 +220,7 @@ def main():
     avd_config = ROOT / 'avd' / (config['name'] + '.avd') / 'config.ini'
     properties = dict(line.split('=', 1) for line in avd_config.read_text().splitlines() if '=' in line)
     memory = str(int(properties.get('hw.ramSize', '2560')))
+    build = ROOT / 'local/build.json'
     cores = str(int(properties.get('hw.cpu.ncore', '2')))
     command = [str(Path(config['sdk']) / 'emulator/emulator'), '-avd', config['name'],
                '-sysdir', str(ROOT / 'images'), '-port', str(config['port']),
@@ -153,6 +228,13 @@ def main():
                '-memory', memory, '-cores', cores, '-show-kernel', '-verbose']
     if is_os4():
         command += ['-crash-report-mode', 'never']
+    if build.is_file():
+        # The guest supports batched updates; gfxstream also masks inline uniform
+        # blocks in this mode, avoiding the observed MoltenVK descriptor crash.
+        image_build = json.loads(build.read_text())
+        command += vulkan_features(image_build)
+        from rear_display_config import runtime_options
+        command += runtime_options(image_build)
     if args.headless:
         command += ['-no-window']
     from host_color import environment
@@ -163,7 +245,7 @@ def main():
                                    stderr=subprocess.STDOUT, start_new_session=True)
     print(f"Starting {config['name']} (PID {process.pid}). Log: {log}", flush=True)
     # The emulator stays running if setup fails; evidence and userdata are retained.
-    initialize(config, bypass_oobe=args.skip_oobe)
+    initialize(config, bypass_oobe=args.skip_oobe, rotate_window=not args.headless)
 
 
 if __name__ == '__main__':

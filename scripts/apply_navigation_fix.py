@@ -13,7 +13,7 @@ import zipfile
 from common import ROOT, adb, runtime
 from apply_flutter_fix import official, root
 from patch_flutter import digest
-from os4_defaults import PHONE_IDENTITY
+from os4_defaults import THERMAL_LABEL_SCRIPT
 
 MODULE = '/data/adb/modules/hyperos_avd_navigation'
 PROPERTY = 'ro.miui.product.home'
@@ -25,6 +25,8 @@ AOT_OFFSET = 0xe68c7c
 WATCHDOG_BEFORE = '4dc9fa82371dda8a0a8b9eff48301469d2f84752b52b71635b84e5fc0c47fa6e'
 WATCHDOG_AFTER = 'adf0bd94b88463669bebecb61ce301b614a974e28367a281ea1f81504062d3ed'
 WATCHDOG_OFFSET = 0x61f878
+REVISION = 11
+FIRMWARE_GUARD = '[ "$(getprop ro.mi.os.version.incremental)" = OS4.0.17.0.XFRCNXM ] || exit 0\n'
 
 
 def simulated_serial(previous):
@@ -91,6 +93,25 @@ def patch_watchdog(data):
     return bytes(result)
 
 
+def image_replacements(apk, firmware):
+    """Apply the same audited store deadlines to its identical factory AOT code."""
+    if firmware['hyperos'] != '4.0.18.0.XFRCNXM' or digest(apk) != firmware['pins']['home_apk']:
+        raise RuntimeError('Unsupported factory launcher APK for native deadlines.')
+    import io
+    edits, marker = {}, {'revision': 1, 'apk_sha256': digest(apk), 'libraries': {}}
+    with zipfile.ZipFile(io.BytesIO(apk)) as archive:
+        for name, before, after, patcher in (
+                ('libapp.so', AOT_BEFORE, AOT_AFTER, patch_aot),
+                ('libapp_launcher.so', WATCHDOG_BEFORE, WATCHDOG_AFTER, patch_watchdog)):
+            body = archive.read('lib/arm64-v8a/' + name)
+            if digest(body) != before:
+                raise RuntimeError('Unsupported factory launcher ABI: ' + name)
+            edits['product/priv-app/MiuiHome/lib/arm64/' + name] = (
+                patcher(body), 0o644, 'u:object_r:system_lib_file:s0')
+            marker['libraries'][name] = {'before': before, 'after': after}
+    return edits, marker
+
+
 AOT_SCRIPT = r'''
 BB=/data/adb/ksu/bin/busybox
 changed=0
@@ -121,6 +142,8 @@ fi
 EARLY_SCRIPT = r'''#!/system/bin/sh
 MODDIR=${0%/*}
 [ -f "$MODDIR/disable" ] && exit 0
+[ "$(getprop ro.boot.hardware)" = ranchu ] || exit 1
+[ "$(getprop ro.mi.os.version.incremental)" = OS4.0.17.0.XFRCNXM ] || exit 0
 exec >> "$MODDIR/navigation.log" 2>&1
 echo "$(date +%s) Applying early launcher identity"
 old=$(getprop ro.miui.product.home)
@@ -147,19 +170,12 @@ while IFS='=' read -r key value; do
     /data/adb/ksud resetprop -n "$key" "$value" || exit 1
 done < "$MODDIR/identity.prop"
 echo "$(date +%s) Enabled original Xiaomi launcher resource overlay" >> "$MODDIR/navigation.log"
-# The ranchu kernel's virtual thermal nodes otherwise receive generic sysfs
-# labels. Xiaomi PowerKeeper requires the dedicated thermal label and crashes
-# repeatedly when reading the generic one under enforcing SELinux.
-for node in /sys/devices/virtual/thermal/thermal_zone0/type /sys/devices/virtual/thermal/thermal_zone0/temp; do
-    [ -f "$node" ] || continue
-    case "$(ls -Z "$node")" in
-        *u:object_r:sysfs:s0*) chcon u:object_r:sysfs_thermal:s0 "$node" || exit 1 ;;
-    esac
-done
-''' + AOT_SCRIPT
+''' + THERMAL_LABEL_SCRIPT + AOT_SCRIPT
 BOOT_SCRIPT = r'''#!/system/bin/sh
 MODDIR=${0%/*}
 [ -f "$MODDIR/disable" ] && exit 0
+[ "$(getprop ro.boot.hardware)" = ranchu ] || exit 1
+[ "$(getprop ro.mi.os.version.incremental)" = OS4.0.17.0.XFRCNXM ] || exit 0
 count=0
 while [ "$(getprop sys.boot_completed)" != 1 ]; do
     count=$((count+1)); [ "$count" -lt 300 ] || exit 1; sleep 1
@@ -170,8 +186,20 @@ echo "$(date +%s) Recents component: $component" >> "$MODDIR/navigation.log"
 ''' + AOT_SCRIPT
 
 
+def startup_script(script, profile):
+    """Never apply cached public identities to another OTA version."""
+    if script.count(FIRMWARE_GUARD) != 1:
+        raise RuntimeError('Unexpected navigation firmware guard.')
+    replacement = '[ "$(getprop ro.mi.os.version.incremental)" = ' + shlex.quote(profile['incremental']) + ' ] || exit 0\n'
+    return script.replace(FIRMWARE_GUARD, replacement)
+
+
 def install(config, enable=False):
     official(config)
+    from phone_profile import profile_from_build
+    firmware = profile_from_build()
+    if root(config, 'getprop ro.mi.os.version.incremental') != firmware['incremental']:
+        raise RuntimeError('Navigation identity refused a different OTA version.')
     if root(config, f'if [ -f {MODULE}/disable ]; then echo yes; fi') == 'yes':
         if not enable:
             print('Navigation module is disabled; keeping this choice.', flush=True)
@@ -187,17 +215,19 @@ def install(config, enable=False):
         raise RuntimeError('Refused to replace an unrelated navigation module.')
     old_text = root(config, f'if [ -f {MODULE}/manifest.json ]; then cat {MODULE}/manifest.json; fi')
     old = json.loads(old_text) if old_text else None
-    if old and old.get('revision') not in (2, 3, 4, 5, 6, 7, 8, 9, 10):
+    if old and old.get('revision') not in range(2, REVISION + 1):
         raise RuntimeError('Unknown navigation module revision.')
     folder = ROOT / 'work/navigation-fix'
     folder.mkdir(parents=True, exist_ok=True)
     serial = simulated_serial(old)
     # Xiaomi's DeviceIdentifiersPolicyService reads psno specifically for
     # Settings and Contacts; other callers use the standard serial property.
-    phone_identity = dict(PHONE_IDENTITY, **{'ro.serialno': serial,
+    phone_identity = dict(firmware['properties'], **{'ro.serialno': serial,
                                            'ro.boot.serialno': serial,
                                            'ro.ril.oem.psno': serial})
-    manifest = {'revision': 10, 'property': PROPERTY, 'value': 'com.miui.home', 'component': COMPONENT,
+    manifest = {'revision': REVISION, 'hyperos': firmware['hyperos'],
+                'incremental': firmware['incremental'],
+                'property': PROPERTY, 'value': 'com.miui.home', 'component': COMPONENT,
                 'animation_backend': 'stock-sf', 'sf_animation': True,
                 'phone_identity': phone_identity, 'serial_number': serial}
     apk = root(config, 'pm path com.miui.home').splitlines()[0].removeprefix('package:')
@@ -230,12 +260,12 @@ def install(config, enable=False):
                 payloads += [patched_name, original_name, kind + '.conf']
                 checksums += [(patched_name, after), (original_name, before)]
     (folder / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    (folder / 'post-fs-data.sh').write_text(EARLY_SCRIPT)
-    (folder / 'service.sh').write_text(BOOT_SCRIPT)
+    (folder / 'post-fs-data.sh').write_text(startup_script(EARLY_SCRIPT, firmware))
+    (folder / 'service.sh').write_text(startup_script(BOOT_SCRIPT, firmware))
     (folder / 'system.prop').write_text('ro.miui.product.home=com.miui.home\npersist.miui.home_sf_anim=true\n')
     (folder / 'identity.prop').write_text(''.join(key + '=' + value + '\n'
                                              for key, value in phone_identity.items()))
-    (folder / 'module.prop').write_text('id=hyperos_avd_navigation\nname=HyperOS AVD native Quickstep\nversion=10\nversionCode=10\nauthor=HyperOS-AVD\ndescription=Original phone and launcher identity, persistent Xiaomi-style simulated serial and stock SF transitions\n')
+    (folder / 'module.prop').write_text(f'id=hyperos_avd_navigation\nname=HyperOS AVD native Quickstep\nversion={REVISION}\nversionCode={REVISION}\nauthor=HyperOS-AVD\ndescription=Original phone and launcher identity, persistent Xiaomi-style simulated serial and stock SF transitions\n')
     if old and old['revision'] == 2:
         # Remove only this project's experimental directory bind. Original
         # overlay files remain untouched on the read-only system partition.

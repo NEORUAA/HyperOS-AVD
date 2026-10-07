@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -22,7 +23,8 @@ import common
 import setup
 from common import REPO_ROOT, avd_home, host_check, port_free, sdk_path, sha256
 
-VERSION = '1.0.0'
+VERSION = '1.2.0'
+MODULE_UPGRADE_PREFLIGHT = 'phone-owned-module-guards-v1'
 REPOSITORY = 'NEORUAA/HyperOS-AVD'
 HOME = Path(os.environ.get('HYPEROS_AVD_HOME', Path.home() / 'HyperOS-AVD')).expanduser().resolve()
 LANG = 'zh'
@@ -98,13 +100,18 @@ def release_variant(release):
     tag = release.get('tag_name', '').lower()
     if tag in ('v0.1.0', 'v0.1.0-a16-hyperos3-fuxi-r1') or re.fullmatch(r'v\d+\.\d+\.\d+-a\d+-hyperos3-.+', tag):
         return 'os3'
+    if re.fullmatch(r'pad-v\d+\.\d+\.\d+-a17-hyperos4-yingtian-r\d+', tag):
+        return 'os4-pad'
+    # Unpublished shared-version Pad tags must not appear as phone images.
+    if re.fullmatch(r'v\d+\.\d+\.\d+-a\d+-hyperos4-yingtian-.+', tag):
+        return None
     if re.fullmatch(r'v\d+\.\d+\.\d+-a\d+-hyperos4-.+', tag):
         return 'os4-official'
     return None
 
 
 def version_key(tag):
-    match = re.match(r'v?(\d+)\.(\d+)\.(\d+)', tag)
+    match = re.match(r'(?:pad-)?v?(\d+)\.(\d+)\.(\d+)', tag)
     return tuple(map(int, match.groups())) if match else (0, 0, 0)
 
 
@@ -256,16 +263,19 @@ def instances():
             installed = root / 'local/installed-release.json'
             metadata = json.loads(installed.read_text()) if installed.is_file() else {}
             build = root / 'local/build.json'
-            official = build.is_file() and json.loads(build.read_text()).get('source') == common.OS4_SOURCE
+            source = json.loads(build.read_text()).get('source') if build.is_file() else None
+            if source is None:
+                source = metadata.get('build', {}).get('source', metadata.get('source'))
+            variant = {common.OS4_SOURCE: 'os4-official',
+                       'official-yingtian-ota': 'os4-pad'}.get(source)
             template = root / 'config/avd.ini'
-            legacy_os3 = (runtime['name'] == common.DEFAULT_NAME
-                          and (root / 'scripts/build_image.py').is_file() and template.is_file()
+            legacy_os3 = ((root / 'scripts/build_image.py').is_file() and template.is_file()
                           and properties(template).get('target') == 'android-36'
                           and properties(template).get('hw.cpu.arch') == 'arm64')
-            if not official and metadata.get('project') != 'HyperOS-AVD' and not legacy_os3:
+            if not variant and metadata.get('project') != 'HyperOS-AVD' and not legacy_os3:
                 continue
             results.append({'root': root, 'runtime': runtime, 'version': metadata.get('version', 'legacy'),
-                            'variant': 'os4-official' if official else 'os3'})
+                            'variant': variant or 'os3'})
         except (OSError, ValueError, KeyError):
             continue
     return results
@@ -375,31 +385,120 @@ def validate_userdata(sdk, avd):
             raise RuntimeError('Unexpected userdata/key backing chain; preserved without booting: ' + str(overlay))
 
 
-def resize(sdk, avd, gib):
-    """Grow both layers; never shrink or replace encrypted userdata."""
-    wanted = gib * 1024**3
-    paths = [avd / name for name in ('userdata-qemu.img', 'userdata-qemu.img.qcow2') if (avd / name).is_file()]
-    info = [(path, data_size(sdk, path)) for path in paths]
-    if any(item['virtual-size'] > wanted for _, item in info):
-        raise RuntimeError('Storage cannot be reduced without erasing data; choose a larger size.')
-    for path, item in info:
-        if item['virtual-size'] < wanted:
-            subprocess.run([str(sdk / 'emulator/qemu-img'), 'resize', '-f', item['format'], str(path), str(wanted)], check=True)
-        if item['format'] == 'qcow2':
-            subprocess.run([str(sdk / 'emulator/qemu-img'), 'check', str(path)], check=True, capture_output=True)
-        if data_size(sdk, path)['virtual-size'] != wanted:
-            raise RuntimeError('Userdata resize failed.')
+def resize(sdk, avd, gib, *, allow_guest=False):
+    """Grow and verify the effective ext4, even when its virtual disk is already larger."""
+    from userdata_resize import resize_userdata
+    if allow_guest:
+        return resize_userdata(sdk, avd, gib * 1024**3, allow_guest=True)
+    return resize_userdata(sdk, avd, gib * 1024**3)
 
 
-def hardware(ram, storage, cores):
+def prepare_storage(root, name, port, sdk, gib, folder):
+    """Repair legacy encrypted capacity only through the owned decrypted guest."""
+    root, sdk, folder = Path(root), Path(sdk), Path(folder)
+    validate_name(name)
+    owner(root, name)
+    idle(root, name, port)
+    avd = root / 'avd' / (name + '.avd')
+    result = resize(sdk, avd, gib, allow_guest=True)
+    if not result.get('guest_required'):
+        return result
+    manifest = json.loads((root / 'local/installed-release.json').read_text())
+    if manifest.get('variant') not in ('os3', 'os4-official', 'os4-pad'):
+        raise RuntimeError('Guest storage repair requires a known installed release.')
+    saved = json.loads((root / 'local/runtime.json').read_text())
+    if saved.get('name') != name or saved.get('port') != port:
+        raise RuntimeError('Guest storage repair belongs to a different instance.')
+    for relative in ('images/system.img', 'images/vendor.img', 'images/kernel-ranchu',
+                     'images/ramdisk.img', 'tools/ksud-aarch64-linux-android'):
+        expected = manifest.get('files', {}).get(relative, {}).get('sha256')
+        if not expected or sha256(root / relative) != expected:
+            raise RuntimeError('Storage repair firmware differs from the installed release: ' + relative)
+    current = properties(avd / 'config.ini')
+    config = {**saved, 'sdk': str(sdk), 'userdata_capacity_token': result['userdata_capacity_token']}
+    command = [str(sdk / 'emulator/emulator'), '-avd', name, '-sysdir', str(root / 'images'),
+               '-port', str(port), '-no-window', '-no-snapshot-load', '-no-snapshot-save',
+               '-accel', 'on', '-gpu', 'host', '-memory', current.get('hw.ramSize', '4096'),
+               '-cores', current.get('hw.cpu.ncore', '2'), '-crash-report-mode', 'never']
+    from launch import vulkan_features
+    from rear_display_config import runtime_options
+    command += vulkan_features(manifest.get('build', {}))
+    command += runtime_options(manifest.get('build', {}))
+    say('正在检查加密用户分区的实际容量；完整备份已保存。',
+        'Checking the decrypted userdata filesystem; a full backup is saved.')
+    log = folder / 'storage-repair-emulator.log'
+    process, validated_guest, record = None, False, None
+    try:
+        with log.open('wb') as output:
+            process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT,
+                                       start_new_session=True)
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise RuntimeError('Storage repair emulator exited; inspect ' + str(log))
+            try:
+                state = common.adb(config, 'get-state', capture_output=True, text=True, timeout=10)
+                if 'unauthorized' in state.stderr:
+                    raise RuntimeError('Authorize this AVD computer connection before retrying storage repair.')
+                if state.returncode == 0 and state.stdout.strip() == 'device':
+                    identity = common.adb(config, 'emu', 'avd', 'name', capture_output=True,
+                                          text=True, check=True, timeout=15)
+                    if identity.stdout.splitlines()[:1] != [name]:
+                        raise RuntimeError('Storage repair connected to a different AVD.')
+                    validated_guest = True
+                    boot = common.adb(config, 'shell', 'getprop sys.boot_completed',
+                                      capture_output=True, text=True, timeout=15)
+                    if boot.returncode == 0 and boot.stdout.strip() == '1':
+                        break
+            except subprocess.TimeoutExpired:
+                pass
+            time.sleep(2)
+        else:
+            raise RuntimeError('Storage repair guest did not finish booting; inspect ' + str(log))
+        from userdata_guest import verify_and_grow
+        record = verify_and_grow(config, gib * 1024**3, backup=folder)
+        common.adb(config, 'shell', 'su -W -c sync', check=True, timeout=30)
+    finally:
+        if process is not None and process.poll() is None:
+            if validated_guest:
+                try:
+                    identity = common.adb(config, 'emu', 'avd', 'name', capture_output=True,
+                                          text=True, timeout=15)
+                    if identity.returncode == 0 and identity.stdout.splitlines()[:1] == [name]:
+                        stopped = common.adb(config, 'emu', 'kill', capture_output=True, timeout=15)
+                        if stopped.returncode:
+                            process.terminate()
+                    else:
+                        process.terminate()
+                except (OSError, subprocess.SubprocessError):
+                    process.terminate()
+            else:
+                process.terminate()
+            try:
+                process.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError('Storage repair guest is still running. Close only ' + name
+                                   + ' before restoring its saved backup.') from None
+    idle(root, name, port)
+    from userdata_resize import publish_guest_capacity
+    published = publish_guest_capacity(sdk, avd, gib * 1024**3, record)
+    json_write(folder / 'storage-repair.json', record)
+    return published
+
+
+def hardware(ram, storage, cores, variant=None):
     if not 2 <= ram <= 64 or not 6 <= storage <= 1024 or not 1 <= cores <= (os.cpu_count() or 1):
         raise RuntimeError('Use RAM 2-64 GiB, storage 6-1024 GiB, and available host CPU cores.')
-    return {'hw.ramSize': str(round(ram * 1024)), 'hw.cpu.ncore': str(cores), 'disk.dataPartition.size': f'{storage}G'}
+    values = {'hw.ramSize': str(round(ram * 1024)), 'hw.cpu.ncore': str(cores), 'disk.dataPartition.size': f'{storage}G'}
+    return values
 
 
 def family(manifest):
     if manifest.get('format') == 3:
-        return manifest.get('compatibility', {}).get('userdata_family')
+        declared = manifest.get('compatibility', {}).get('userdata_family')
+        expected = {'os4-official': 'os4-hongkong-api37-ranchu-4k',
+                    'os4-pad': setup.PAD_FAMILY}.get(manifest.get('variant'))
+        return declared if declared == expected else None
     if manifest.get('format') == 2 and manifest.get('variant') == 'os4-official' and manifest.get('android_api') == 37:
         return 'os4-hongkong-api37-ranchu-4k'
     if manifest.get('format') == 1 and manifest.get('android_api', 36) == 36:
@@ -417,6 +516,232 @@ def compatible(old, new):
             raise RuntimeError('Encryption template changed; automatic data migration is unsafe.')
     if version_key(new['version']) < version_key(old['version']):
         raise RuntimeError('Data-preserving downgrades are not supported. Use a separate AVD.')
+    migration = new.get('compatibility', {}).get('module_upgrade_preflight')
+    if migration:
+        if migration != MODULE_UPGRADE_PREFLIGHT:
+            raise RuntimeError('Unknown release module migration; update the installer.')
+        allowed = new['compatibility'].get('upgrade_from', [])
+        if old['version'] != new['version'] and old['version'] not in allowed:
+            raise RuntimeError('This source release has not been validated for this data-preserving upgrade.')
+
+
+def firmware_change(old, new):
+    return (new.get('compatibility', {}).get('module_upgrade_preflight') == MODULE_UPGRADE_PREFLIGHT
+            and old.get('hyperos') != new.get('hyperos'))
+
+
+def upgrade_transaction(root, folder, name, port):
+    """Record rollback paths before staging may write retained userdata."""
+    paths, real = {}, {}
+    for key in ('images', 'tools', 'config'):
+        path = root / key
+        real[key] = path.exists() and not path.is_symlink()
+        paths[key] = (str(root / 'versions' / ('legacy-' + folder.name) / key)
+                      if real[key] else str(path.resolve()) if path.exists() else None)
+    transaction = {'name': name, 'port': port, 'paths': paths, 'real': real, 'backup': str(folder)}
+    json_write(folder / 'transaction.json', transaction)
+    json_write(root / 'local/upgrade-pending.json', transaction)
+    return transaction
+
+
+def migration_guard(script, incremental):
+    """Keep old module code usable on rollback, but inactive on new firmware."""
+    if not script.startswith('#!/system/bin/sh\n') or '\x00' in script:
+        raise RuntimeError('Unexpected owned module startup script.')
+    gate = ('# HyperOS-AVD firmware upgrade guard; original payload retained.\n'
+            '[ "$(getprop ro.mi.os.version.incremental)" = '
+            + shlex.quote(incremental) + ' ] || exit 0\n')
+    if script.startswith('#!/system/bin/sh\n' + gate):
+        return script
+    return '#!/system/bin/sh\n' + gate + script[len('#!/system/bin/sh\n'):]
+
+
+def validate_owned_module(module_id, prop, manifest, system_prop='', has_system=False):
+    """Validate only the known project modules; unrelated modules are untouched."""
+    values = dict(line.split('=', 1) for line in prop.splitlines() if '=' in line)
+    if values.get('id') != module_id or values.get('author') != 'HyperOS-AVD' or has_system:
+        raise RuntimeError('Refused unknown module ownership or automatic mount tree: ' + module_id)
+    revision = manifest.get('revision')
+    if type(revision) is not int:
+        raise RuntimeError('Unknown owned module revision: ' + module_id)
+    if module_id == 'hyperos_avd_navigation':
+        valid = (revision in range(2, 12) and manifest.get('property') == 'ro.miui.product.home'
+                 and manifest.get('value') == 'com.miui.home'
+                 and manifest.get('component') == 'com.miui.home/com.miui.home.recents.RecentsActivity')
+        allowed = {'ro.miui.product.home=com.miui.home', 'persist.miui.home_sf_anim=true',
+                   'persist.miui.home_sf_anim=false'}
+        if set(system_prop.splitlines()) - allowed:
+            valid = False
+    elif module_id == 'hyperos_avd_flutter_render':
+        from phone_profile import LEGACY_PINS
+        from patch_flutter import PROFILES
+        native = manifest.get('system', {})
+        valid = (revision in (6, 7) and isinstance(manifest.get('packages'), dict)
+                 and set(manifest['packages']) <= {'com.miui.home', 'com.miui.weather2'}
+                 and native.get('target') == '/system_ext/lib64/libhyper_os_flutter.so'
+                 and native.get('before') == LEGACY_PINS['flutter']
+                 and native.get('after') == PROFILES[LEGACY_PINS['flutter']]['output'])
+        if system_prop.strip():
+            valid = False
+    elif module_id == 'hyperos_avd_xiaomi_camera':
+        from phone_profile import LEGACY_PINS
+        valid = (revision in (1, 2) and manifest.get('experimental') is True
+                 and manifest.get('apk_sha256') == LEGACY_PINS['camera_apk']
+                 and manifest.get('runtime_sha256') == LEGACY_PINS['android_runtime']
+                 and len(manifest.get('targets', [])) == 2
+                 and {item.get('target') for item in manifest.get('targets', [])} == {
+                     '/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google',
+                     '/vendor/lib64/libgooglecamerahwl_impl.so'})
+        if system_prop.strip():
+            valid = False
+    else:
+        valid = False
+    if not valid:
+        raise RuntimeError('Unknown owned module schema: ' + module_id)
+
+
+def guarded_modules(config, directory, incremental, target_hyperos=None):
+    """Gate stale early mounts without removing manifests, serials or flags."""
+    def guest(command):
+        return common.adb(config, 'shell', 'su -W -c ' + shlex.quote('set -e\n' + command),
+                          capture_output=True, text=True, check=True, timeout=30).stdout.strip()
+    staged, receipt = [], []
+    for module_id in ('hyperos_avd_navigation', 'hyperos_avd_flutter_render', 'hyperos_avd_xiaomi_camera'):
+        module = '/data/adb/modules/' + module_id
+        if guest(f'if [ -d {module} ]; then echo yes; fi') != 'yes':
+            continue
+        prop = guest(f'cat {module}/module.prop')
+        saved = json.loads(guest(f'cat {module}/manifest.json'))
+        auto = guest(f'if [ -e {module}/system ]; then echo yes; fi') == 'yes'
+        properties = guest(f'if [ -f {module}/system.prop ]; then cat {module}/system.prop; fi')
+        validate_owned_module(module_id, prop, saved, properties, auto)
+        if (module_id == 'hyperos_avd_xiaomi_camera' and saved['revision'] == 1
+                and target_hyperos == '4.0.18.0.XFRCNXM'):
+            raise RuntimeError('XiaomiCamera revision 1 cannot migrate to OS4.0.18.0. '
+                               'Recover or start the existing r2 firmware and update its camera '
+                               'bridge to revision 2 before retrying Upgrade. '
+                               'Firmware and module disable/remove flags were not changed.')
+        flags = guest(f'for flag in disable remove; do [ ! -e {module}/$flag ] || echo "$flag"; done')
+        scripts = []
+        for name in ('post-fs-data.sh', 'service.sh'):
+            original = common.adb(config, 'exec-out', 'su -W -c ' + shlex.quote(f'cat {module}/{name}'),
+                                  capture_output=True, text=True, check=True, timeout=30).stdout
+            guarded = migration_guard(original, incremental)
+            local = directory / (module_id + '-' + name)
+            local.write_text(guarded)
+            staged.append((module, name, local, hashlib.sha256(guarded.encode()).hexdigest()))
+            scripts.append({'name': name, 'before': hashlib.sha256(original.encode()).hexdigest(),
+                            'guarded': hashlib.sha256(guarded.encode()).hexdigest()})
+        receipt.append({'id': module_id, 'revision': saved['revision'], 'flags': flags.splitlines(),
+                        'manifest_sha256': hashlib.sha256(json.dumps(saved, sort_keys=True).encode()).hexdigest(),
+                        'scripts': scripts})
+    # Validate every module before replacing any of their startup scripts.
+    for module, name, local, checksum in staged:
+        remote = '/data/local/tmp/' + local.name
+        common.adb(config, 'push', str(local), remote, check=True, capture_output=True, timeout=30)
+        guest(f'cp {remote} {module}/{name}.next\nchmod 755 {module}/{name}.next\n'
+              f'sh -n {module}/{name}.next\n'
+              f'test "$(sha256sum {module}/{name}.next | cut -d " " -f 1)" = {checksum}\n'
+              f'mv {module}/{name}.next {module}/{name}\nrm {remote}')
+    for saved in receipt:
+        module = '/data/adb/modules/' + saved['id']
+        actual = json.loads(guest(f'cat {module}/manifest.json'))
+        checksum = hashlib.sha256(json.dumps(actual, sort_keys=True).encode()).hexdigest()
+        flags = guest(f'for flag in disable remove; do [ ! -e {module}/$flag ] || echo "$flag"; done')
+        if checksum != saved['manifest_sha256'] or flags.splitlines() != saved['flags']:
+            raise RuntimeError('Owned module metadata or user flags changed during migration: ' + saved['id'])
+    return receipt
+
+
+def validate_upgrade_guest(config, incremental):
+    """Reject recovery/safe-mode boots before snapshotting module choices."""
+    probe = common.adb(config, 'shell', 'su -W -c ' + shlex.quote(
+        'id; getenforce; getprop ro.mi.os.version.incremental'),
+        capture_output=True, text=True, check=True, timeout=30).stdout.splitlines()
+    if (not probe or 'uid=0(' not in probe[0] or probe[1:] != ['Enforcing', incremental]):
+        raise RuntimeError('Previous firmware root, SELinux or version does not match the release.')
+    for key in ('persist.sys.safemode', 'ro.sys.safemode'):
+        value = common.adb(config, 'shell', 'getprop', key, capture_output=True, text=True,
+                           check=True, timeout=15).stdout.strip()
+        if value not in ('', '0'):
+            raise RuntimeError('Previous firmware is in safe mode; refusing to adopt forced module disable flags.')
+
+
+def prepare_module_upgrade(root, old, new, name, port, sdk, folder):
+    """Boot only the old registered guest to neutralize stale owned early code."""
+    from phone_profile import profile_from_build
+    old_build = old.get('build', {})
+    profile = profile_from_build(old_build)
+    if (old.get('variant') != 'os4-official' or profile['hyperos'] != '4.0.17.0.XFRCNXM'
+            or new.get('hyperos') != '4.0.18.0.XFRCNXM'):
+        raise RuntimeError('Unsupported firmware pair for owned module migration.')
+    # Never execute modified old firmware/tool inputs as an upgrade helper.
+    for relative in ('images/system.img', 'images/kernel-ranchu', 'images/ramdisk.img',
+                     'tools/ksud-aarch64-linux-android'):
+        expected = old.get('files', {}).get(relative, {}).get('sha256')
+        if not expected or sha256(root / relative) != expected:
+            raise RuntimeError('Installed staging input differs from its release: ' + relative)
+    idle(root, name, port)
+    config = {'sdk': str(sdk), 'name': name, 'port': port}
+    current = properties(root / 'avd' / (name + '.avd') / 'config.ini')
+    command = [str(sdk / 'emulator/emulator'), '-avd', name, '-sysdir', str(root / 'images'),
+               '-port', str(port), '-no-window', '-no-snapshot-load', '-no-snapshot-save',
+               '-accel', 'on', '-gpu', 'host', '-memory', current.get('hw.ramSize', '6144'),
+               '-cores', current.get('hw.cpu.ncore', '4'), '-crash-report-mode', 'never']
+    say('正在启动升级前镜像，隔离旧补丁；完整用户数据备份已保存。',
+        'Starting the previous firmware to gate old patches; full userdata backup is saved.')
+    log = folder / 'module-upgrade-emulator.log'
+    process = None
+    validated_guest = False
+    try:
+        with log.open('wb') as output:
+            process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise RuntimeError('Previous firmware staging emulator exited; inspect ' + str(log))
+            try:
+                state = common.adb(config, 'get-state', capture_output=True, text=True, timeout=10)
+            except subprocess.TimeoutExpired:
+                continue
+            if 'unauthorized' in state.stderr:
+                raise RuntimeError('Authorize this AVD computer connection, then retry the upgrade. Firmware was not switched.')
+            if state.returncode == 0 and state.stdout.strip() == 'device':
+                break
+            time.sleep(2)
+        else:
+            raise RuntimeError('Previous firmware ADB did not become ready; inspect ' + str(log))
+        avd = common.adb(config, 'emu', 'avd', 'name', capture_output=True, text=True, check=True, timeout=15)
+        if avd.stdout.splitlines()[:1] != [name]:
+            raise RuntimeError('Upgrade staging connected to a different AVD.')
+        validated_guest = True
+        validate_upgrade_guest(config, profile['incremental'])
+        staging = folder / 'module-guards'
+        staging.mkdir()
+        receipt = guarded_modules(config, staging, profile['incremental'], new['hyperos'])
+        # Retained users may have changed all three awake settings. Declare
+        # them seeded before the new runtime boots; never rewrite their values.
+        from os4_defaults import AWAKE_STAMP
+        common.adb(config, 'shell', 'su -W -c ' + shlex.quote(
+            f'touch {AWAKE_STAMP}\ntest -f {AWAKE_STAMP}'), check=True, timeout=30)
+        json_write(folder / 'module-upgrade.json', {'schema': 1, 'name': name, 'port': port,
+            'from': old['version'], 'to': new['version'], 'guarded_modules': receipt,
+            'preserved_defaults': {'awake_stamp': AWAKE_STAMP}})
+        common.adb(config, 'shell', 'su -W -c sync', check=True, timeout=30)
+    finally:
+        if process is not None and process.poll() is None:
+            # Only a validated guest receives a console stop; otherwise signal
+            # our own child PID rather than risking a concurrent port claimant.
+            if validated_guest:
+                common.adb(config, 'emu', 'kill', capture_output=True, timeout=15)
+            else:
+                process.terminate()
+            try:
+                process.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError('Upgrade staging AVD is still running. Close only ' + name
+                                   + ' before using Recover; no firmware was switched.') from None
+    idle(root, name, port)
 
 
 def json_write(path, data):
@@ -498,6 +823,10 @@ def restore(root, folder):
         if data.exists():
             data.rename(root / 'backups' / ('failed-data-' + str(time.time_ns())))
         shutil.copytree(folder / 'avd', data, copy_function=clone, symlinks=True)
+    elif data.exists() and saved.get('fresh_userdata') is True:
+        # Retain even partially initialized images for inspection, while
+        # allowing a failed clean install to be retried without adopting them.
+        data.rename(root / 'backups' / ('failed-data-' + str(time.time_ns())))
     elif data.exists() and not any(data.glob('*userdata*')) and not any(data.glob('*encryptionkey*')):
         # A failed fresh configuration created only generated files, not user data.
         shutil.rmtree(data)
@@ -524,17 +853,8 @@ def restore(root, folder):
 
 def switch(root, target, manifest, name, port, sdk, options, folder, camera=False):
     """Persist recovery instructions before the first active-path change."""
-    paths, real = {}, {}
-    for key in ('images', 'tools', 'config'):
-        path = root / key
-        real[key] = path.exists() and not path.is_symlink()
-        if real[key]:
-            paths[key] = str(root / 'versions' / ('legacy-' + folder.name) / key)
-        else:
-            paths[key] = str(path.resolve()) if path.exists() else None
-    transaction = {'name': name, 'port': port, 'paths': paths, 'real': real, 'backup': str(folder)}
-    json_write(folder / 'transaction.json', transaction)
-    json_write(root / 'local/upgrade-pending.json', transaction)
+    transaction = upgrade_transaction(root, folder, name, port)
+    paths, real = transaction['paths'], transaction['real']
     try:
         for key in paths:
             path = root / key
@@ -549,7 +869,21 @@ def switch(root, target, manifest, name, port, sdk, options, folder, camera=Fals
         json_write(root / 'local/runtime.json', {'sdk': str(sdk), 'name': name, 'port': port, 'hardware': options, 'camera_bridge': camera})
         with scope(root):
             setup.configure(sdk, name, port)
-        resize(sdk, root / 'avd' / (name + '.avd'), int(options['disk.dataPartition.size'][:-1]))
+        data = root / 'avd' / (name + '.avd')
+        capacity = int(options['disk.dataPartition.size'][:-1])
+        resize(sdk, data, capacity)
+        userdata = data / 'userdata-qemu.img'
+        if not userdata.exists():
+            # Frozen release runtimes may grow only the virtual disk. Prepare
+            # its real ext4 before handing control to any bundled launcher.
+            for path in (data / 'userdata-qemu.img.qcow2', data / '.userdata-resize-pending'):
+                if path.exists() or path.is_symlink():
+                    raise RuntimeError('Refused to initialize userdata over an orphan overlay or pending resize.')
+            transaction['fresh_userdata'] = True
+            json_write(folder / 'transaction.json', transaction)
+            json_write(root / 'local/upgrade-pending.json', transaction)
+            clone(root / 'images/userdata.img', userdata)
+            resize(sdk, data, capacity)
         runtime = target / 'runtime' if (target / 'runtime/scripts/launch.py').is_file() else REPO_ROOT
         json_write(root / 'local/manager.json', {'schema': 1, 'version': manifest['version'],
             'runtime': os.path.relpath(runtime, root), 'backup': str(folder)})
@@ -564,9 +898,13 @@ def install(root, manifest_path, name, port, sdk, options, camera=False):
     root = Path(root).expanduser().resolve()
     validate_name(name)
     manifest, _ = setup.read_manifest(str(manifest_path))
+    hardware(int(options['hw.ramSize']) / 1024,
+             int(options['disk.dataPartition.size'][:-1]), int(options['hw.cpu.ncore']))
     minimum = manifest.get('compatibility', {}).get('minimum_installer', '0.2.1')
     if version_key(minimum) > version_key(VERSION):
         raise RuntimeError('This release needs a newer installer; download the latest stable Installer Release.')
+    from userdata_resize import check_dependencies
+    check_dependencies(sdk)
     owner(root, name)
     if (root / 'local/runtime.json').exists():
         saved_runtime = json.loads((root / 'local/runtime.json').read_text())
@@ -578,6 +916,7 @@ def install(root, manifest_path, name, port, sdk, options, camera=False):
             raise RuntimeError('An interrupted upgrade needs recovery first: use the Recover menu.')
         data = root / 'avd' / (name + '.avd')
         old_path = root / 'local/installed-release.json'
+        old = None
         if data.exists():
             if not old_path.exists():
                 raise RuntimeError('Existing userdata has no release manifest; migration refused.')
@@ -606,6 +945,25 @@ def install(root, manifest_path, name, port, sdk, options, camera=False):
                     raise RuntimeError('Cached firmware differs from the release manifest.')
         idle(root, name, port)
         folder = backup(root, name)
+        if old is not None:
+            upgrade_transaction(root, folder, name, port)
+            try:
+                prepare_storage(root, name, port, sdk,
+                                int(options['disk.dataPartition.size'][:-1]), folder)
+            except BaseException:
+                idle(root, name, port)
+                restore(root, folder)
+                raise
+        if old is not None and firmware_change(old, manifest):
+            upgrade_transaction(root, folder, name, port)
+            try:
+                prepare_module_upgrade(root, old, manifest, name, port, sdk, folder)
+            except BaseException:
+                # A still-running staging guest keeps the transaction pending;
+                # Recover is safe only after the user closes that owned AVD.
+                idle(root, name, port)
+                restore(root, folder)
+                raise
         switch(root, target, manifest, name, port, sdk, options, folder, camera)
     print(tr('安装完成：', 'Installed: ') + str(root / 'Start.command'), flush=True)
     return folder
@@ -628,17 +986,17 @@ def pick_instance():
     entries = instances()
     if not entries:
         raise RuntimeError(tr('未找到本项目 AVD，请先安装。', 'No project AVD found. Install one first.'))
-    labels = [f"[{'OS4' if item['variant'] == 'os4-official' else 'OS3'}] "
+    labels = [f"[{variant_label(item['variant'])}] "
               f"{item['runtime']['name']} | {item['version']}\n    {item['root']}" for item in entries]
     return entries[choose(tr('选择已安装实例', 'Select an installed instance'), labels)]
 
 
 def pick_release(variant='all'):
-    say('正在查询 OS3 / OS4 镜像发布...', 'Checking OS3 / OS4 image releases...')
+    say('正在查询 OS3 / OS4 / OS4 Pad 镜像发布...', 'Checking OS3 / OS4 / OS4 Pad image releases...')
     releases = catalog(variant)
     if not releases:
         raise RuntimeError('No published compatible release found.')
-    labels = [f"[{'OS4' if release_variant(r) == 'os4-official' else 'OS3'}] {r['tag_name']}"
+    labels = [f"[{variant_label(release_variant(r))}] {r['tag_name']}"
               + (' | Pre-release' if r.get('prerelease') else ' | Stable') for r in releases]
     return releases[choose(tr('镜像仓库 / 新版本优先', 'Image library / newest first'), labels)]
 
@@ -646,19 +1004,30 @@ def pick_release(variant='all'):
 def options_for(instance=None, variant='os4-official'):
     values = {}
     if instance:
+        variant = instance['variant']
         values = properties(instance['root'] / 'avd' / (instance['runtime']['name'] + '.avd') / 'config.ini')
-    default_ram = int(values.get('hw.ramSize', 6144 if variant == 'os4-official' else 2560)) / 1024
+    default_ram = int(values.get('hw.ramSize', {'os4-official': 6144, 'os4-pad': 4096}.get(variant, 2560))) / 1024
     disk = values.get('disk.dataPartition.size', '32G')
     match = re.fullmatch(r'(\d+)(G|GB)', disk)
     storage = int(match[1]) if match else 32
-    panel(tr('资源配置', 'Hardware settings'), [
-        tr('OS4 建议 6 GiB / 32 GiB / 4 核；OS3 默认 2.5 GiB / 2 核。',
-           'OS4: 6 GiB / 32 GiB / 4 cores. OS3: 2.5 GiB / 2 cores.'),
-        tr('OS4 完整负一屏模糊建议 8 GiB；已有存储只支持扩容。',
-           'OS4 full App Vault blur: 8 GiB. Existing storage only grows.')])
+    if variant == 'os4-pad':
+        rows = [tr('OS4 Pad 默认 4 GiB / 4 核。',
+                   'OS4 Pad: 4 GiB / 4 cores.'),
+                tr('已有存储只支持扩容。', 'Existing storage only grows.')]
+    else:
+        rows = [tr('OS4 建议 6 GiB / 32 GiB / 4 核；OS3 默认 2.5 GiB / 2 核。',
+                   'OS4: 6 GiB / 32 GiB / 4 cores. OS3: 2.5 GiB / 2 cores.'),
+                tr('OS4 完整负一屏模糊建议 8 GiB；已有存储只支持扩容。',
+                   'OS4 full App Vault blur: 8 GiB. Existing storage only grows.')]
+    panel(tr('资源配置', 'Hardware settings'), rows)
     return hardware(float(ask('RAM (GiB)', 'RAM (GiB)', default_ram)),
         int(ask('存储 (GiB)', 'Storage (GiB)', storage)),
-        int(ask('CPU 核心', 'CPU cores', values.get('hw.cpu.ncore', 4 if variant == 'os4-official' else 2))))
+        int(ask('CPU 核心', 'CPU cores', values.get('hw.cpu.ncore', 4 if variant in ('os4-official', 'os4-pad') else 2))),
+        variant=variant)
+
+
+def variant_label(variant):
+    return {'os4-official': 'OS4', 'os4-pad': 'OS4 Pad'}.get(variant, 'OS3')
 
 
 def dashboard(entries):
@@ -666,7 +1035,7 @@ def dashboard(entries):
         print('\033[2J\033[H', end='')
     panel('H Y P E R O S - A V D   /   INSTALLER ' + VERSION, [
         'Apple Silicon / ARM64 / Android Studio',
-        tr('镜像：OS4 官方 OTA  |  OS3 GSI', 'Images: OS4 official OTA  |  OS3 GSI'),
+        tr('镜像：OS4 手机 / Pad 官方 OTA  |  OS3 GSI', 'Images: OS4 phone / Pad official OTA  |  OS3 GSI'),
         tr('安装器：正式 Release  |  镜像：包含 Pre-release',
            'Installer: stable releases  |  Images: prereleases included')])
     panel(tr('主菜单', 'Dashboard'), [
@@ -674,17 +1043,17 @@ def dashboard(entries):
         tr('[3] 启动已有实例           [4] RAM / 存储 / CPU', '[3] Start an instance      [4] RAM / storage / CPU'),
         tr('[5] 镜像浏览 / 检查更新    [6] 恢复 / 回滚', '[5] Browse images / updates [6] Recover / rollback'),
         tr('[7] 安装器检查更新         [0] 退出', '[7] Installer updates      [0] Exit')])
-    rows = [f"[{'OS4' if e['variant'] == 'os4-official' else 'OS3'}] {e['runtime']['name']} | "
+    rows = [f"[{variant_label(e['variant'])}] {e['runtime']['name']} | "
             + (tr('源码旧实例', 'Source workspace') if e['version'] == 'legacy' else e['version'])
             for e in entries]
     panel(tr(f'已安装实例 ({len(entries)})', f'Installed instances ({len(entries)})'),
-          rows or [tr('尚未安装，选择 [1] 浏览 OS3 / OS4。', 'No instances yet. Choose [1] for OS3 / OS4.')])
+          rows or [tr('尚未安装，选择 [1] 浏览 OS3 / OS4 / OS4 Pad。', 'No instances yet. Choose [1] for OS3 / OS4 / OS4 Pad.')])
 
 
 def image_updates(entries):
     rows = catalog('all')
     details = []
-    for kind, label in (('os4-official', 'OS4'), ('os3', 'OS3')):
+    for kind, label in (('os4-official', 'OS4'), ('os4-pad', 'OS4 Pad'), ('os3', 'OS3')):
         matches = [r for r in rows if release_variant(r) == kind]
         installed = [e['runtime']['name'] + ': ' + e['version'] for e in entries if e['variant'] == kind]
         details.append(label + ' | ' + tr('最新：', 'Latest: ') +
@@ -692,7 +1061,7 @@ def image_updates(entries):
         details.extend('  ' + v for v in installed)
         if matches:
             details.append('  ' + matches[0].get('html_url', ''))
-    panel(tr('OS3 / OS4 镜像更新', 'OS3 / OS4 image updates'), details)
+    panel(tr('OS3 / OS4 / OS4 Pad 镜像更新', 'OS3 / OS4 / OS4 Pad image updates'), details)
 
 
 def installer_updates():
@@ -730,7 +1099,8 @@ def tui(language=None):
                         'This source workspace has no release manifest; start/hardware work, automatic firmware migration is refused.'))
                 release = pick_release(item['variant'] if item else 'all')
                 variant = release_variant(release)
-                name = item['runtime']['name'] if item else ask('AVD 名称', 'AVD name', 'HyperOS_4' if variant == 'os4-official' else 'HyperOS_3')
+                default_name = {'os4-official': 'HyperOS_4', 'os4-pad': 'HyperOS_4_Pad'}.get(variant, 'HyperOS_3')
+                name = item['runtime']['name'] if item else ask('AVD 名称', 'AVD name', default_name)
                 root = item['root'] if item else Path(ask('安装目录', 'Installation folder', str(HOME / 'instances' / name))).expanduser().resolve()
                 port = item['runtime']['port'] if item else choose_port()
                 settings = options_for(item, variant)
@@ -758,11 +1128,13 @@ def tui(language=None):
                     paths = {key: str((root / key).resolve()) for key in ('images', 'tools', 'config')}
                     json_write(folder / 'transaction.json', {'name': run['name'], 'port': run['port'], 'paths': paths, 'real': dict.fromkeys(paths, False)})
                     try:
-                        resize(Path(run['sdk']), root / 'avd' / (run['name'] + '.avd'), int(settings['disk.dataPartition.size'][:-1]))
+                        prepare_storage(root, run['name'], run['port'], Path(run['sdk']),
+                                        int(settings['disk.dataPartition.size'][:-1]), folder)
                         json_write(root / 'local/runtime.json', {**run, 'hardware': settings})
                         with scope(root):
                             setup.configure(Path(run['sdk']), run['name'], run['port'])
                     except BaseException:
+                        idle(root, run['name'], run['port'])
                         restore(root, folder)
                         raise
                 say('硬件配置已保存，下次冷启动生效。', 'Hardware saved; changes apply on the next cold boot.')
@@ -793,19 +1165,19 @@ def main():
     parser.add_argument('--language', choices=('zh', 'en'))
     commands = parser.add_subparsers(dest='command')
     listing = commands.add_parser('releases')
-    listing.add_argument('--variant', choices=('all', 'os3', 'os4-official'), default='all')
+    listing.add_argument('--variant', choices=('all', 'os3', 'os4-official', 'os4-pad'), default='all')
     listing.add_argument('--stable-only', action='store_true')
     commands.add_parser('list')
     commands.add_parser('installer-updates')
     installing = commands.add_parser('install')
     installing.add_argument('--bundle', type=Path)
     installing.add_argument('--release', default='latest')
-    installing.add_argument('--variant', choices=('os3', 'os4-official'), default='os4-official')
+    installing.add_argument('--variant', choices=('os3', 'os4-official', 'os4-pad'), default='os4-official')
     installing.add_argument('--root', type=Path, required=True)
     installing.add_argument('--name', required=True)
     installing.add_argument('--port', type=int)
     installing.add_argument('--sdk', type=Path)
-    installing.add_argument('--ram', type=float, default=6)
+    installing.add_argument('--ram', type=float)
     installing.add_argument('--storage', type=int, default=32)
     installing.add_argument('--cores', type=int, default=4)
     installing.add_argument('--start', action='store_true')
@@ -829,9 +1201,12 @@ def main():
         start({'root': args.root.expanduser().resolve()}, args.headless, args.skip_oobe)
     elif args.command == 'install':
         root = args.root.expanduser().resolve()
+        variant = (setup.read_manifest(str(args.bundle.expanduser().resolve()))[0].get('variant', 'os3')
+                   if args.bundle else args.variant)
+        ram = args.ram if args.ram is not None else {'os4-pad': 4, 'os4-official': 6}.get(variant, 2.5)
+        settings = hardware(ram, args.storage, args.cores, variant=variant)
         previous = root / 'local/runtime.json'
         port = args.port or (json.loads(previous.read_text())['port'] if previous.exists() else choose_port())
-        settings = hardware(args.ram, args.storage, args.cores)
         if port % 2 or not 5556 <= port <= 5682:
             parser.error('Use an even console port between 5556 and 5682.')
         if args.bundle:

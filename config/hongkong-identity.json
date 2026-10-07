@@ -10,7 +10,8 @@
     "odm.build.prop": "618296c1a212696d303c3ddf24de81986ac4e68bd5ac3b3a6e1481b8a7847228",
     "system_dlkm.build.prop": "4835760c01e1509fa5142dd14d5debf0801281d3b685a2f09c40add380c500fa",
     "vendor_dlkm.build.prop": "291dfe4b0740399191feab952da1fa534243f89f8aa66d230ee0e501d0adf689",
-    "ota.metadata": "5d24b11e6f583cb0885da2ec3666ac234b9a7b1853d5977ba692f44f85523047"
+    "ota.metadata": "5d24b11e6f583cb0885da2ec3666ac234b9a7b1853d5977ba692f44f85523047",
+    "mi_ext.build.prop": "8bb55acc2dbb7d3f55d18d1d049ed021ef066315bfe513ad4f67e3e8e4921f82"
   },
   "properties": {
     "ro.board.platform": "art",
@@ -68,5 +69,8 @@
     "ro.system_ext.build.fingerprint": "Xiaomi/missi/missi:17/CP2A.260605.016/17OS4.0.260925.013226048.QCPECN.S:user/release-keys",
     "ro.vendor.build.fingerprint": "Xiaomi/mivendor/mivendor:17/CQ2A.260712.001-CP2A.260605.016/OS4.0.17.0.XFRCN:user/release-keys",
     "ro.vendor_dlkm.build.fingerprint": "Xiaomi/hongkong/hongkong:17/CQ2A.260712.001-CP2A.260605.016/OS4.0.17.0.XFRCN:user/release-keys"
+  },
+  "source_partition_sha256": {
+    "mi_product": "e224c9129325c5fbb63431062daff821d797ddfd9ed2955b56e45c0414663e58"
   }
 }

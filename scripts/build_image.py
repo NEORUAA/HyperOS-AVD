@@ -160,7 +160,7 @@ def main():
     pack(args.base / 'system.img', ROOT / 'images/system.img', [
         ('system', image), ('vendor', vendor), ('system_dlkm', ROOT / 'work/base/system_dlkm.img')])
     assert {p['name'] for p in read_lp(ROOT / 'images/system.img')[1]} == {'system', 'vendor', 'system_dlkm'}
-    print('Image ready. Start-HyperOS.command launches only HyperOS_3_API_36.', flush=True)
+    print('Image ready. Start-HyperOS.command launches the configured project AVD.', flush=True)
 
 
 if __name__ == '__main__':

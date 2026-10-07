@@ -7,6 +7,66 @@ from pathlib import Path
 # Offsets are file offsets, not virtual addresses. Each profile is pinned to the
 # complete input and output ELF hashes; never pattern-patch an unknown update.
 PROFILES = {
+    '7f88d7f4d9a464fdd56fb255642c9d300f28f50272ccf5fd31f082c1a52e17f4': {
+        'name': 'system-hongkong-4.0.18',
+        'output': '439bb47881f64431ba43dc4de5788e7f0a3a0c4e78102b47cc8f0daa6229b91b',
+        'shadow_sites': (0xd3d9c0, 0xd3e61c, 0xd3e630),
+        # Re-audited against this OTA's .gnu_debugdata, not a global offset.
+        # GetEnabledDeviceFeatures, PipelineVK::Create, both HostBuffer::Emplace
+        # overloads and MiDispersionShadowContents::Render retain their layout.
+        # RenderPassVK's constructor grew; its clear and default viewport sites
+        # moved independently. Both viewports load [0,1] at rodata 0x125100;
+        # the existing [1,0] pair is at 0x125110, sixteen bytes later.
+        # The 24-byte trampoline uses executable assembly padding between the
+        # aes_gcm_dec_kernel RET and bn_mul_mont_words, outside both symbols.
+        'sites': [
+            (0xdae1c8, '184a9e52', '184a8152'),
+            (0xdae1d8, 'f873a772', '9873a772'),
+            (0xdae22c, 'ffbb02b9', 'ff5f01f9'),
+            (0xdae370, '1f0500f9', '1f2003d5'),
+            (0xdae3e4, 'ff5b01b9', 'ffaf00f9'),
+            (0xdae524, '60010054', '1f2003d5'),
+            (0xdae550, 'e9830091', 'f6ffff17'),
+            (0xdd97e8, 'ac596cb8', '6c008052'),
+            (0xde01a8, '0040621e', '00102e1e'),
+            (0xde0630, '0a8140fd', '0a8940fd'),
+            (0xde25d0, '008140fd', '008940fd'),
+            (0x68a968, '000000000000000000000000000000000000000000000000', 'f30300aa304440f9103e009110ee7c92304400f9c0035fd6'),
+            (0xb436d0, 'f30300aa', 'a61ced97'),
+            (0xb43c64, 'f30300aa', '411bed97'),
+            (0xd3d9c0, '3800c0f2', 'b800c0f2'),
+            (0xd3e61c, '2009a00e', '2021022e'),
+            (0xd3e630, '4108a00e', '4120092e'),
+        ],
+    },
+    '9caf8bd3413b3093ae0855f86369f31ddf45b46c7ddbaa4c2f656e4f67bb5009': {
+        'name': 'tablet-yingtian',
+        'output': '30ab4c6adb2f0c6193e503a97f9e5f6407e902677c54db6f3896426812ddd509',
+        'shadow_sites': (0xc9ecc4, 0xc9f794, 0xc9f7a8),
+        # Audited against this engine's .gnu_debugdata function symbols.
+        # The 24-byte trampoline occupies assembly alignment padding between
+        # aes_gcm_dec_kernel's RET and bn_mul_mont_words, outside both symbols.
+        # The viewport's reversed [1,0] pair is at 0x123790, not 0x123788.
+        'sites': [
+            (0xd0ded4, '184a9e52', '184a8152'),
+            (0xd0dee4, 'f873a772', '9873a772'),
+            (0xd0df38, 'ffbb02b9', 'ff5f01f9'),
+            (0xd0e07c, '1f0500f9', '1f2003d5'),
+            (0xd0e0f0, 'ff5b01b9', 'ffaf00f9'),
+            (0xd0e230, '60010054', '1f2003d5'),
+            (0xd0e25c, 'e9830091', 'f6ffff17'),
+            (0xd38f6c, 'ac596cb8', '6c008052'),
+            (0xd3f838, '0040621e', '00102e1e'),
+            (0xd3fc84, '0ac143fd', '0ac943fd'),
+            (0xd41b5c, '00c143fd', '00c943fd'),
+            (0x613ca8, '000000000000000000000000000000000000000000000000', 'f30300aa304440f9103e009110ee7c92304400f9c0035fd6'),
+            (0xac3db8, 'f30300aa', 'bc3fed97'),
+            (0xac434c, 'f30300aa', '573eed97'),
+            (0xc9ecc4, '3800c0f2', 'b800c0f2'),
+            (0xc9f794, '2009a00e', '2021022e'),
+            (0xc9f7a8, '4108a00e', '4120092e'),
+        ],
+    },
     '71caea24a7fec06ae7c1b7cdb93c99f45288154a9ca21bb634d8181a97dcef62': {
         'name': 'system-v3',
         'output': 'f3d11ed83da4840c2ab31462529044ea5b2a95b08f18b8114618bc8fbd6759fb',

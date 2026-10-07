@@ -30,13 +30,18 @@ static void srgbViewDidMoveToWindow(id object, SEL selector) {
 __attribute__((constructor)) static void installSrgbTag(void) {
     const char *enabled = getenv("HYPEROS_AVD_SRGB");
     if (!enabled || strcmp(enabled, "1")) return;
+    const char *expected = getenv("HYPEROS_AVD_SRGB_AVD");
+    if (!expected || !*expected) return;
+    NSString *expectedName = [NSString stringWithUTF8String:expected];
+    if (!expectedName.length) return;
     NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
     NSUInteger index = [arguments indexOfObject:@"-avd"];
     if (index == NSNotFound || index + 1 >= arguments.count ||
-        ![arguments[index + 1] isEqualToString:@"HyperOS_4_Official_API_37"]) return;
+        ![arguments[index + 1] isEqualToString:expectedName]) return;
     Method method = class_getInstanceMethod(NSView.class, @selector(viewDidMoveToWindow));
     if (!method) return;
     originalViewDidMoveToWindow = (void (*)(id, SEL))method_getImplementation(method);
     method_setImplementation(method, (IMP)srgbViewDidMoveToWindow);
-    fprintf(stderr, "HyperOSAVDColor: sRGB tagging enabled for the owned OS4 AVD\n");
+    fprintf(stderr, "HyperOSAVDColor: sRGB tagging enabled for the owned OS4 AVD %s\n",
+            expected);
 }
