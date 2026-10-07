@@ -29,6 +29,24 @@ AFTER = {
 }
 PROBE_SHA256 = 'af7486c1f98e01641c10d5089fd46348ce612c6fbf15c1581f50a6bacb6f402a'
 PROBE_SOURCE_SHA256 = 'd5a1290eaeb63b1f3f9e5b2f72b12dd14239ba4441604d4dd1bff85d895d2fa0'
+BOOT_SEPOLICY = b'''
+; Fixed capability helper remains enforcing; grant only its observed interfaces.
+(allow init su (process (transition)))
+(allow su shell_exec (file (entrypoint)))
+(allow su default_prop (file (read open getattr map)))
+(allow su system_file (file (read open getattr map execute execute_no_trans)))
+(allow su system_lib_file (file (read open getattr map execute)))
+(allow su toolbox_exec (file (read open getattr map execute execute_no_trans)))
+(allow su property_socket (sock_file (write)))
+(allow su su (unix_stream_socket (create connect write read getattr getopt setopt shutdown)))
+(allow su init (unix_stream_socket (connectto)))
+(allow su su (netlink_socket (create)))
+(allow su system_prop (property_service (set)))
+(allow su ctl_stop_prop (property_service (set)))
+(allow su servicemanager (binder (call)))
+(allow su hal_gnss_service (service_manager (find)))
+'''
+
 BOOT_INIT = b'''
 # Avoid restarting hardware-only daemons on kernels without their interfaces.
 service hyperos-kernel-services /system/bin/sh /system/etc/hyperos-kernel-services.sh
@@ -48,6 +66,7 @@ on property:ro.persistent_properties.ready=true
 on property:sys.boot_completed=1
     start hyperos-kernel-services
 '''
+
 
 
 def zip_directory(data):

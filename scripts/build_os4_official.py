@@ -350,7 +350,7 @@ def main():
     put('system/framework/services.jar', fixed_services)
     boot_service_manifest = None
     if profile['hyperos'] == '4.0.18.0.XFRCNXM':
-        from patch_boot_services import image_replacements as service_replacements
+        from patch_boot_services import BOOT_SEPOLICY, image_replacements as service_replacements
         service_edits, boot_service_manifest = service_replacements({
             'services': fixed_services,
             'miui-services': erofs(partitions / 'system_ext.img', '/framework/miui-services.jar'),
@@ -358,6 +358,8 @@ def main():
             'registration': erofs(partitions / 'product.img', '/priv-app/AutoRegistration/AutoRegistration.apk'),
         }, ROOT / 'work/boot-service-fixes')
         replacements.update(service_edits)
+        put('system_ext/etc/selinux/system_ext_sepolicy.cil', erofs(
+            partitions / 'system_ext.img', '/etc/selinux/system_ext_sepolicy.cil') + BOOT_SEPOLICY)
     app_edits, app_manifest = app_replacements(app_bundle, system, ROOT / 'work/preinstalled-native', sdk_path())
     replacements.update(app_edits)
     default_edits, default_manifest = default_replacements(sdk_path(), ROOT / 'work/defaults-overlay',

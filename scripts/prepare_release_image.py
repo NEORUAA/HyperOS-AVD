@@ -36,7 +36,7 @@ def prepare_boot_services(source, output):
     """Bake r4 repairs from the verified packed r3 image, never guest userdata."""
     from phone_profile import profile_from_build
     from package_release import release_metadata, verify_os4_image
-    from patch_boot_services import TARGETS, BOOT_INIT, image_replacements as service_replacements
+    from patch_boot_services import TARGETS, BOOT_INIT, BOOT_SEPOLICY, image_replacements as service_replacements
     source, output = Path(source).resolve(), Path(output).resolve()
     if source == output or source in output.parents or output in source.parents or output.exists():
         raise RuntimeError('Use a new separate sibling workspace for release preparation.')
@@ -63,6 +63,9 @@ def prepare_boot_services(source, output):
     if b'service hyperos-kernel-services ' in init:
         raise RuntimeError('Source image already contains a kernel capability policy.')
     edits[init_path] = (init + BOOT_INIT, 0o644, 'u:object_r:system_file:s0')
+    policy_path = 'system_ext/etc/selinux/system_ext_sepolicy.cil'
+    edits[policy_path] = (erofs(raw, '/' + policy_path) + BOOT_SEPOLICY,
+                          0o644, 'u:object_r:system_file:s0')
     candidate = work / 'hyperos-system.img'
     build(candidate, [('', raw)], work / 'tree', edits)
     for path, (content, _, _) in edits.items():

@@ -187,7 +187,7 @@ def verify_boot_services(build, read):
     marker = build.get('boot_service_fix')
     if marker is None:
         return 0
-    from patch_boot_services import TARGETS, AFTER, PROBE_SHA256, BOOT_INIT
+    from patch_boot_services import TARGETS, AFTER, PROBE_SHA256, BOOT_INIT, BOOT_SEPOLICY
     expected = {'schema': 1, 'firmware': 'OS4.0.18.0.XFRCNXM',
                 'targets': {name: {'path': path, 'before': before, 'after': AFTER[name]}
                             for name, (path, before, _) in TARGETS.items()},
@@ -203,7 +203,9 @@ def verify_boot_services(build, read):
             raise RuntimeError('Baked boot service checksum mismatch: ' + path)
     if read('/system_ext/etc/init/init.hyperos_avd.rc').count(BOOT_INIT) != 1:
         raise RuntimeError('Missing boot service kernel capability initialization.')
-    return len(paths)
+    if read('/system_ext/etc/selinux/system_ext_sepolicy.cil').count(BOOT_SEPOLICY) != 1:
+        raise RuntimeError('Missing boot service init domain transition policy.')
+    return len(paths) + 1
 
 
 def verify_os4_image(root, metadata):

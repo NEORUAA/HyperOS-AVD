@@ -37,6 +37,11 @@ def signed_fixture(data):
 
 
 class BootServiceTests(unittest.TestCase):
+    def test_boot_service_requires_a_narrow_init_transition(self):
+        self.assertIn(b'seclabel u:r:su:s0', fixes.BOOT_INIT)
+        self.assertIn(b'(allow init su (process (transition)))', fixes.BOOT_SEPOLICY)
+        self.assertNotIn(b'permissive', fixes.BOOT_SEPOLICY)
+
     def test_unknown_input_rejected_before_tools_and_outputs(self):
         with tempfile.TemporaryDirectory() as directory:
             source, output = Path(directory) / 'source.apk', Path(directory) / 'output.apk'
