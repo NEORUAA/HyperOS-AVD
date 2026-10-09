@@ -36,7 +36,7 @@ class AssistantGuardTest(unittest.TestCase):
         self.assertEqual(profile(), MANIFEST)
         self.assertEqual(profile(PHONE_SOURCE), MANIFEST)
         self.assertEqual(profile(PAD_SOURCE), {**MANIFEST, 'apk_sha256': PAD_APK_SHA256})
-        self.assertEqual(boot_script(), BOOT_SCRIPT)
+        self.assertEqual(apply_assistant_fix.legacy_boot_script(), BOOT_SCRIPT)
         self.assertEqual(hashlib.sha256(BOOT_SCRIPT.encode()).hexdigest(),
                          'a07892d0f08ac8e35c87929c2a7114998ee880bfdcef89137a96d060468ddd1f')
         script = boot_script(PAD_SOURCE)
@@ -70,13 +70,12 @@ class AssistantGuardTest(unittest.TestCase):
             (folder / 'local/build.json').write_text(json.dumps({'source': PAD_SOURCE}))
             with mock_patch.object(apply_assistant_fix, 'ROOT', folder), \
                     mock_patch.object(apply_assistant_fix, 'official') as official, \
-                    mock_patch.object(apply_assistant_fix, 'root', side_effect=[
-                        config['name'], 'package:' + APK, PAD_APK_SHA256 + '  ' + APK,
-                        json.dumps(selected), 'yes']) as root, \
+                    mock_patch.object(apply_assistant_fix, 'root', return_value='disable') as root, \
                     mock_patch.object(apply_assistant_fix, 'adb') as adb:
-                self.assertEqual(apply_assistant_fix.install(config, sources=(PAD_SOURCE,)), selected)
+                self.assertEqual(apply_assistant_fix.install(config, sources=(PAD_SOURCE,)),
+                                 {'preserved': True, 'lifecycle': ['disable']})
                 official.assert_called_once_with(config, sources=(PAD_SOURCE,))
-                self.assertEqual(root.call_count, 5)
+                self.assertEqual(root.call_count, 1)
                 adb.assert_not_called()
                 self.assertFalse((folder / 'work').exists())
 
@@ -91,13 +90,14 @@ class AssistantGuardTest(unittest.TestCase):
             with mock_patch.object(apply_assistant_fix, 'ROOT', folder), \
                     mock_patch.object(apply_assistant_fix, 'official'), \
                     mock_patch.object(apply_assistant_fix, 'root', side_effect=[
-                        config['name'], 'package:' + APK, PAD_APK_SHA256 + '  ' + APK,
-                        json.dumps(selected), '', AFTER + '  ' + NATIVE,
+                        '', config['name'], 'package:' + APK, PAD_APK_SHA256 + '  ' + APK,
+                        json.dumps(selected), AFTER + '  ' + NATIVE,
+                        script_hash + '  post-fs-data.sh', script_hash + '  service.sh',
                         script_hash + '  service.sh', '', '']) as root, \
                     mock_patch.object(apply_assistant_fix, 'adb') as adb:
                 self.assertEqual(apply_assistant_fix.install(config, sources=(PAD_SOURCE,)), selected)
-                self.assertEqual(root.call_args_list[-2].args[1],
-                                 'sh ' + apply_assistant_fix.MODULE + '/service.sh')
+                self.assertTrue(root.call_args_list[-2].args[1].endswith(
+                                 'sh ' + apply_assistant_fix.MODULE + '/service.sh'))
                 command = root.call_args_list[-1].args[1]
                 self.assertIn('for pid in 1 ', command)
                 self.assertIn('init.svc_debug_pid.hyos_spawner', command)

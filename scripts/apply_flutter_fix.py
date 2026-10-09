@@ -8,6 +8,9 @@ import subprocess
 import zipfile
 import hashlib
 
+from module_lifecycle import (preserved as lifecycle_preserved, mutation_guard,
+                              enable_owned, guarded_hook, verify_hooks, refresh_hooks,
+                              refresh_receipt, UnreviewedHook)
 from common import ROOT, adb, runtime, sha256
 from patch_flutter import digest, patch, profile
 
@@ -153,8 +156,8 @@ def guarded_boot_script(script, source, firmware):
     return script
 
 
-def boot_script(source='official-hongkong-ota', firmware=None):
-    """Keep the phone script exact; restore only the audited factory Pad engine."""
+def legacy_boot_script(source='official-hongkong-ota', firmware=None):
+    """Reviewed pre-lifecycle hooks, used only to authenticate migrations."""
     if source == 'official-hongkong-ota':
         return guarded_boot_script(BOOT_SCRIPT, source, firmware)
     if source != PAD_SOURCE:
@@ -219,6 +222,33 @@ def boot_script(source='official-hongkong-ota', firmware=None):
     return guarded_boot_script(script, source, firmware)
 
 
+def boot_script(source='official-hongkong-ota', firmware=None):
+    """Retain verified engine guards and restore only the audited factory Pad engine."""
+    return guarded_hook(legacy_boot_script(source, firmware))
+
+
+def reviewed_boot_scripts(source, firmware):
+    """Enumerate exact generated hooks from the source-pinned OTA catalog."""
+    contexts = [None, firmware]
+    if source == 'official-hongkong-ota':
+        from phone_profile import ARCHIVES
+        contexts.extend(firmware_context({'source': source, 'hyperos': version,
+                                          'archive_sha256': checksum})
+                        for version, checksum in ARCHIVES.items())
+    elif source == PAD_SOURCE:
+        contexts.append(firmware_context({'source': source}))
+    else:
+        raise RuntimeError('Unsupported Flutter firmware profile.')
+    return tuple(dict.fromkeys(script for context in contexts for script in
+                               (legacy_boot_script(source, context), boot_script(source, context))))
+
+
+def hook_versions(source, firmware):
+    current = boot_script(source, firmware)
+    reviewed = reviewed_boot_scripts(source, firmware)
+    return {name: (reviewed, current) for name in ('post-fs-data.sh', 'service.sh')}
+
+
 def root(config, command, **kwargs):
     result = adb(config, 'shell', 'su -W -c ' + shlex.quote('set -e\n' + command),
                  capture_output=True, text=True, timeout=60, **kwargs)
@@ -258,14 +288,7 @@ def rewrite_apk(source, destination, engine):
 
 
 def refresh_scripts(config, source='official-hongkong-ota', firmware=None):
-    folder = ROOT / 'work/flutter-render-fix'
-    folder.mkdir(parents=True, exist_ok=True)
-    for name in ('post-fs-data.sh', 'service.sh'):
-        local = folder / name
-        local.write_text(boot_script(source, firmware))
-        remote = '/data/local/tmp/hyperos-render-' + name
-        adb(config, 'push', str(local), remote, check=True, capture_output=True, timeout=30)
-        root(config, f'cp {remote} {MODULE}/{name}.next\nchmod 755 {MODULE}/{name}.next\nmv {MODULE}/{name}.next {MODULE}/{name}\nrm {remote}')
+    refresh_hooks(root, config, MODULE, hook_versions(source, firmware))
 
 
 def old_targets(manifest):
@@ -289,7 +312,7 @@ def detach(config, manifest, preserve_paths=()):
                 f"awk '$4 ~ /^\\/adb\\/modules\\/{MODULE_ID}\\// && $5 == \"{path}\" {{ found=1 }} END {{exit !found}}' /proc/self/mountinfo || break; "
                 f'/data/adb/ksu/bin/busybox umount -l {shlex.quote(path)} || exit 1; done')
         commands.append('nsenter -t "$pid" -m -- sh -c ' + shlex.quote(loop))
-    root(config, 'for pid in 1 $(getprop init.svc_debug_pid.hyos_spawner) $(pidof zygote64); do\n'
+    root(config, 'set -e\n' + mutation_guard(MODULE) + 'for pid in 1 $(getprop init.svc_debug_pid.hyos_spawner) $(pidof zygote64); do\n'
          '[ -d "/proc/$pid" ] || continue\n' + '\n'.join(commands) + '\ndone')
     for item in old_targets(manifest):
         if ((item.get('placeholder') or item.get('external')) and not item.get('preserve_original')
@@ -298,11 +321,12 @@ def detach(config, manifest, preserve_paths=()):
             root(config, f'if [ -f {path} ] && [ "$(sha256sum {path} | cut -d " " -f 1)" = {item["before"]} ]; then rm {path}; fi')
 
 
-def reusable_manifest(saved, targets, firmware, apk_hashes, system_hash, script_hash):
+def reusable_manifest(saved, targets, firmware, apk_hashes, system_hash, script_hash,
+                      *, reviewed_script_hashes=()):
     """Paths alone do not prove that an OTA or app update kept its native code."""
     if (saved.get('revision') != REVISION or saved.get('firmware') != firmware
             or saved.get('packages') != targets
-            or saved.get('startup_script_sha256') != script_hash
+            or saved.get('startup_script_sha256') not in {script_hash, *reviewed_script_hashes}
             or set(saved.get('apk_hashes', {})) != set(targets)):
         return False
     system = saved.get('system', {})
@@ -320,6 +344,9 @@ def reusable_manifest(saved, targets, firmware, apk_hashes, system_hash, script_
 
 def install(config, enable=False, sources=('official-hongkong-ota',)):
     official(config, sources=sources)
+    lifecycle = lifecycle_preserved(root, config, MODULE, enable=enable)
+    if lifecycle:
+        return lifecycle
     build = json.loads((ROOT / 'local/build.json').read_text())
     source = build['source']
     firmware = firmware_context(build)
@@ -340,10 +367,13 @@ def install(config, enable=False, sources=('official-hongkong-ota',)):
     old = json.loads(old_text) if old_text else None
     if old:
         old_targets(old)  # Validate revision before changing anything.
-        disabled = root(config, f'if [ -f {MODULE}/disable ]; then echo disabled; fi')
-        if disabled and not enable:
-            print('Native Flutter overlay is disabled; keeping this choice.', flush=True)
-            return old
+        try:
+            verify_hooks(root, config, MODULE, hook_versions(source, firmware), allow_disabled=enable)
+        except UnreviewedHook as error:
+            print(str(error) + '; existing Flutter module retained.', flush=True)
+            return {'preserved': True, 'reason': 'unreviewed-startup-hook', 'hook': error.name}
+        if enable:
+            enable_owned(root, config, MODULE)
         pad_legacy = source == PAD_SOURCE and any(
             i.get('package') == 'com.miui.weather2' and i.get('apk_target') == PAD_WEATHER_APK
             and not (i.get('external') and i.get('preserve_original'))
@@ -353,7 +383,10 @@ def install(config, enable=False, sources=('official-hongkong-ota',)):
             current_apks = {package: root(config, 'sha256sum ' + shlex.quote(target)).split()[0]
                             for package, target in targets.items()}
             current_system = root(config, 'sha256sum ' + SYSTEM_LIB).split()[0]
-            reuse = reusable_manifest(old, targets, firmware, current_apks, current_system, script_hash)
+            reviewed_hashes = {digest(legacy_boot_script(source, firmware).encode()),
+                               digest(legacy_boot_script(source).encode()), digest(boot_script(source).encode())}
+            reuse = reusable_manifest(old, targets, firmware, current_apks, current_system, script_hash,
+                                      reviewed_script_hashes=reviewed_hashes)
         if reuse:
             for item in old_targets(old):
                 current = root(config, 'if [ -f ' + shlex.quote(item['target']) + ' ]; then sha256sum ' + shlex.quote(item['target']) + '; fi')
@@ -369,7 +402,12 @@ def install(config, enable=False, sources=('official-hongkong-ota',)):
             if not all('apk_target' in i for i in old['apks']):
                 raise RuntimeError('Overlay schema requires rebuilding this module.')
             refresh_scripts(config, source, firmware)
-            root(config, f'rm -f {MODULE}/disable\nsh {MODULE}/service.sh')
+            if old.get('startup_script_sha256') != script_hash:
+                old['startup_script_sha256'] = script_hash
+                receipt = json.dumps(old, indent=2) + '\n'
+                refresh_receipt(root, config, MODULE, old_text, receipt)
+                (ROOT / 'local/flutter-render-fix.json').write_text(receipt)
+            root(config, 'set -e\n' + mutation_guard(MODULE) + f'sh {MODULE}/service.sh')
             for pkg, reason in old.get('skipped_apks', {}).items():
                 print('Private Flutter engine ' + pkg + ': ' + reason + '; original code retained.', flush=True)
             print('Native Flutter overlays are ready.', flush=True)
@@ -497,25 +535,26 @@ def install(config, enable=False, sources=('official-hongkong-ota',)):
     pending = root(config, f'if [ -d {stage} ]; then cat {stage}/manifest.json; fi')
     if pending and json.loads(pending) != manifest:
         raise RuntimeError('An unrelated Flutter staging directory exists.')
-    root(config, f'mkdir -p /data/adb/modules {stage}')
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'mkdir -p /data/adb/modules {stage}')
     originals = [(i['payload'] + '.original', i['before']) for i in apks if i.get('external')]
     files = ['flutter.so', 'targets.conf', 'apks.conf', 'manifest.json', 'module.prop', 'post-fs-data.sh', 'service.sh', *[i['payload'] for i in apks], *[name for name, _ in originals]]
     for name in files:
         remote = '/data/local/tmp/hyperos-render-' + name
         adb(config, 'push', str(folder / name), remote, check=True, capture_output=True, timeout=60)
         mode = '755' if name.endswith('.sh') else '644'
-        root(config, f'cp {shlex.quote(remote)} {stage}/{name}\nchmod {mode} {stage}/{name}\nrm {shlex.quote(remote)}')
-    root(config, f'chcon u:object_r:system_lib_file:s0 {stage}/flutter.so\n' + '\n'.join(f'chcon u:object_r:apk_data_file:s0 {stage}/{i["payload"]}' for i in apks))
+        root(config, 'set -e\n' + mutation_guard(MODULE) + f'cp {shlex.quote(remote)} {stage}/{name}\nchmod {mode} {stage}/{name}\nrm {shlex.quote(remote)}')
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'chcon u:object_r:system_lib_file:s0 {stage}/flutter.so\n' + '\n'.join(f'chcon u:object_r:apk_data_file:s0 {stage}/{i["payload"]}' for i in apks))
     for name, _ in originals:
-        root(config, f'chcon u:object_r:apk_data_file:s0 {stage}/{name}')
+        root(config, 'set -e\n' + mutation_guard(MODULE) + f'chcon u:object_r:apk_data_file:s0 {stage}/{name}')
     for name, checksum in [('flutter.so', system['after']), *[(i['payload'], i['after']) for i in apks], *originals]:
         if root(config, f'sha256sum {stage}/{name}').split()[0] != checksum:
             raise RuntimeError('Staged overlay checksum mismatch: ' + name)
     if old:
+        verify_hooks(root, config, MODULE, hook_versions(source, firmware))
         preserved = {item['target'] for item in old.get('apks', ()) if item.get('package') in skipped}
         detach(config, old, preserve_paths=preserved)
-        root(config, f'mv {MODULE} /data/adb/hyperos-render-backup-$(date +%s)')
-    root(config, f'test ! -e {MODULE}\nmv {stage} {MODULE}\nsh {MODULE}/service.sh')
+        root(config, 'set -e\n' + mutation_guard(MODULE) + f'mv {MODULE} /data/adb/hyperos-render-backup-$(date +%s)')
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'test ! -e {MODULE}\nmv {stage} {MODULE}\nsh {MODULE}/service.sh')
     (ROOT / 'local/flutter-render-fix.json').write_text(json.dumps(manifest, indent=2) + '\n')
     print('Native Flutter shared engine and ' + str(len(apks)) +
           ' verified private overlays installed. Original APKs and userdata were preserved.', flush=True)

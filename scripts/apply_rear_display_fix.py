@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 
+from module_lifecycle import preserved as lifecycle_preserved, mutation_guard, refresh_hooks, BLOCKED_FUNCTION
 from common import ROOT, adb, runtime
 from apply_flutter_fix import official, root
 import rear_display_config as rear
@@ -105,7 +106,7 @@ def display_ready(text):
                for line in text.splitlines())
 
 
-def boot_script(manifest):
+def legacy_boot_script(manifest):
     """Start only verified baked code; never mount files or change user state."""
     wake = manifest['wake']
     values = {'JAR': wake['jar_path'],
@@ -190,6 +191,85 @@ exit 1
 '''
 
 
+def boot_script(manifest):
+    """Use a kernel lease; retire only authenticated, dead legacy owner records."""
+    script = legacy_boot_script(manifest)
+    legacy_gate = 'blocked() { [ -e "$MODDIR/disable" ] || [ -L "$MODDIR/disable" ] || [ -e "$MODDIR/remove" ] || [ -L "$MODDIR/remove" ]; }\n'
+    if script.count(legacy_gate) != 1:
+        raise RuntimeError('Unexpected rear display lifecycle guard.')
+    script = script.replace(legacy_gate, BLOCKED_FUNCTION)
+    script = script.replace('guard() {\n', 'guard() {\n'
+                            '    [ -d "$MODDIR" ] && [ ! -L "$MODDIR" ] || return 1\n'
+                            '    for asset in manifest.json module.prop skip_mount; do\n'
+                            '        [ -f "$MODDIR/$asset" ] && [ ! -L "$MODDIR/$asset" ] || return 1\n'
+                            '    done\n', 1)
+    start = script.index('LOCK="$MODDIR/startup.lock"\n')
+    end = script.index('blocked && exit 0\nguard || exit 1\npid=$(find_owned)', start)
+    lease = r'''LOCK="$MODDIR/startup.lock"
+LEASE="$MODDIR/startup.guard"
+boot=$(cat "$PROC/sys/kernel/random/boot_id") || exit 1
+[ -n "$boot" ] || exit 1
+[ ! -L "$LEASE" ] && { [ ! -e "$LEASE" ] || [ -f "$LEASE" ]; } || exit 1
+if [ -e "$LEASE" ]; then
+    [ ! -s "$LEASE" ] && [ "$("$BB" stat -c %u "$LEASE")" = 0 ] &&
+        [ "$("$BB" stat -c %h "$LEASE")" = 1 ] || exit 1
+fi
+# flock is released by the kernel on an interrupted startup. Keep its inode
+# stable; deleting it would let concurrent services acquire different leases.
+umask 077
+exec 9>>"$LEASE" || exit 1
+if ! "$BB" flock -n 9; then exec 9>&-; exit 0; fi
+trap 'exec 9>&-' EXIT
+chmod 600 "$LEASE" || exit 1
+legacy_safe() {
+    local entry
+    [ -d "$LOCK" ] && [ ! -L "$LOCK" ] || return 1
+    [ "$("$BB" stat -c %u "$LOCK")" = 0 ] || return 1
+    for entry in "$LOCK"/* "$LOCK"/.[!.]* "$LOCK"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        case "$entry" in "$LOCK/pid"|"$LOCK/boot") ;; *) return 1 ;; esac
+        [ -f "$entry" ] && [ ! -L "$entry" ] || return 1
+        [ "$("$BB" stat -c %u "$entry")" = 0 ] &&
+            [ "$("$BB" stat -c %h "$entry")" = 1 ] || return 1
+    done
+}
+legacy_owner_live() {
+    local directory pid
+    for directory in "$PROC"/[0-9]*; do
+        pid=${directory##*/}; [ "$pid" != "$$" ] || continue
+        [ -r "$directory/cmdline" ] && [ -r "$directory/status" ] || continue
+        "$BB" tr '\000' '\n' < "$directory/cmdline" |
+            "$BB" grep -Fxq "$MODDIR/service.sh" || continue
+        "$BB" awk '$1 == "Uid:" { found=1; if ($2 != 0 || $3 != 0 || $4 != 0 || $5 != 0) exit 1 }
+            END { if (!found) exit 1 }' "$directory/status" && return 0
+    done
+    return 1
+}
+if [ -e "$LOCK" ] || [ -L "$LOCK" ]; then
+    legacy_safe || exit 1
+    # A legacy service may still be between mkdir and recording its PID.
+    sleep 1
+    legacy_safe || exit 1
+    legacy_owner_live && exit 0
+    oldpid=$(cat "$LOCK/pid" 2>/dev/null)
+    oldboot=$(cat "$LOCK/boot" 2>/dev/null)
+    case "$oldpid" in *[!0-9]*) exit 1 ;; esac
+    [ -z "$oldboot" ] || [ "$(printf '%s' "$oldboot" | "$BB" tr -d 'A-Za-z0-9_-')" = '' ] || exit 1
+    # Empty or missing receipts are an authenticated crash window once all
+    # legacy owners are gone. Foreign entries, aliases and malformed records
+    # remain untouched and fail closed.
+    blocked && exit 0
+    guard || exit 1
+    rm -f "$LOCK/pid" "$LOCK/boot" || exit 1
+    rmdir "$LOCK" || exit 1
+fi
+'''
+    script = script[:start] + lease + script[end:]
+    # The Java daemon must not inherit the startup lease after the service exits.
+    return script.replace('"$BB" nohup "$LAUNCHER" >> "$MODDIR/wake.log" 2>&1 < /dev/null &',
+                          '"$BB" nohup "$LAUNCHER" >> "$MODDIR/wake.log" 2>&1 < /dev/null 9>&- &')
+
+
 def _hashes(config, expected):
     output = root(config, 'sha256sum ' + ' '.join(shlex.quote(path) for path in expected))
     actual = {}
@@ -243,6 +323,9 @@ def install(config, build=None):
             or any(c in config['name'] for c in '\n\r\0')):
         raise RuntimeError('Invalid configured AVD name.')
     official(config)
+    lifecycle = lifecycle_preserved(root, config, MODULE)
+    if lifecycle:
+        return lifecycle
     properties = root(config, '\n'.join('getprop ' + key for key in (
         'ro.boot.hardware', 'ro.product.device', 'ro.mi.os.version.incremental', 'ro.boot.qemu.avd_name')))
     if properties.splitlines() != ['ranchu', 'hongkong', 'OS' + rear.VERSION, config['name']]:
@@ -271,7 +354,8 @@ def install(config, build=None):
             raise RuntimeError('Refused an invalid existing rear-display manifest.') from error
         if not same(previous, manifest) or root(config, f'cat {MODULE}/module.prop') != MODULE_PROP.strip():
             raise RuntimeError('Refused a foreign existing rear-display module.')
-        _hashes(config, {MODULE + '/' + name: digest(data) for name, data in files.items()})
+        _hashes(config, {MODULE + '/' + name: digest(data) for name, data in files.items() if name != 'service.sh'})
+        refresh_hooks(root, config, MODULE, {'service.sh': (legacy_boot_script(manifest), boot_script(manifest))})
         flags = root(config, f'for flag in disable remove; do if [ -e {MODULE}/$flag ] || [ -L {MODULE}/$flag ]; then echo "$flag"; fi; done')
         if flags:
             print('Rear display module is disabled or marked for removal; preserving this choice.', flush=True)
@@ -287,7 +371,7 @@ def install(config, build=None):
     folder.mkdir(parents=True, exist_ok=True)
     for name, data in files.items():
         (folder / name).write_bytes(data)
-    root(config, f'set -e\nmkdir -p /data/adb/modules\nmkdir {stage}')
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'mkdir -p /data/adb/modules\nmkdir {stage}')
     for name, data in files.items():
         target = remote + name
         adb(config, 'push', str(folder / name), target, check=True, capture_output=True, timeout=30)
@@ -295,7 +379,7 @@ def install(config, build=None):
         root(config, f'set -e\ntest "$(sha256sum {target} | cut -d " " -f 1)" = {digest(data)}\n'
                      f'cp {target} {stage}/{name}\nchmod {mode} {stage}/{name}\nrm {target}')
     _hashes(config, {stage + '/' + name: digest(data) for name, data in files.items()})
-    root(config, f'set -e\nif [ -e {MODULE} ] || [ -L {MODULE} ]; then exit 1; fi\n'
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'if [ -e {MODULE} ] || [ -L {MODULE} ]; then exit 1; fi\n'
                  f'mv {stage} {MODULE}\nsync')
     _start(config)
     return manifest

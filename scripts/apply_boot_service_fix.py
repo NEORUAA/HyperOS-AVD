@@ -7,6 +7,8 @@ from pathlib import Path
 import shlex
 import uuid
 
+from module_lifecycle import (preserved as lifecycle_preserved, mutation_guard,
+                              guarded_hook, refresh_hooks)
 from common import ROOT, adb, runtime, sha256
 from apply_flutter_fix import official, root
 from patch_boot_services import TARGETS, AFTER, PROBE_SHA256
@@ -43,7 +45,7 @@ def receipt():
             'probe_sha256': PROBE_SHA256}
 
 
-def boot_script():
+def boot_script(*, lifecycle=True):
     rows = '\n'.join(' '.join((name, path, before, AFTER[name]))
                      for name, (path, before, _) in TARGETS.items())
     script = r'''#!/system/bin/sh
@@ -82,12 +84,13 @@ done
 [ "$($BB sha256sum "$MODDIR/kernel-probe" | $BB cut -d ' ' -f 1)" = PROBE_HASH ] || exit 1
 sh "$MODDIR/check-kernel-services.sh" "$MODDIR/kernel-probe"
 '''
-    return script.replace('PROBE_HASH', PROBE_SHA256), rows + '\n'
+    return (guarded_hook(script.replace('PROBE_HASH', PROBE_SHA256)) if lifecycle
+            else script.replace('PROBE_HASH', PROBE_SHA256)), rows + '\n'
 
 
 def _module_asset_hashes():
     """Authenticate legacy assets against host-reviewed bytes, not their receipt."""
-    script, targets = boot_script()
+    script, targets = boot_script(lifecycle=False)
     if hashlib.sha256(script.encode()).hexdigest() != LEGACY_BOOT_HOOK_SHA256:
         raise RuntimeError('Legacy boot hooks need an explicitly audited migration profile.')
     files = {'module.prop': MODULE_PROPERTIES,
@@ -137,7 +140,10 @@ def _migration_guard(expected_helper=None):
         path = shlex.quote(MODULE + '/' + name)
         commands.extend((f'[ -f {path} ] && [ ! -L {path} ] || exit 1',
                          f'[ "$("$BB" stat -c %u {path})" = 0 ] || exit 1',
-                         f'[ "$("$BB" sha256sum {path} | "$BB" cut -d " " -f 1)" = {expected} ] || exit 1'))
+                         (f'case "$("$BB" sha256sum {path} | "$BB" cut -d " " -f 1)" in {expected}|'
+                          + hashlib.sha256(boot_script()[0].encode()).hexdigest() + ') ;; *) exit 1 ;; esac'
+                          if name in ('post-fs-data.sh', 'service.sh') else
+                          f'[ "$("$BB" sha256sum {path} | "$BB" cut -d " " -f 1)" = {expected} ] || exit 1')))
     commands.append(f'[ -x {MODULE}/kernel-probe ] || exit 1')
     helper = shlex.quote(MODULE + '/check-kernel-services.sh')
     commands.extend((f'[ -f {helper} ] && [ ! -L {helper} ] || exit 1',
@@ -253,8 +259,24 @@ fi''')
     return {'migrated': True, 'present': True}
 
 
+def migrate_lifecycle_hooks(config):
+    """Upgrade only exact authenticated legacy hooks without executing them."""
+    choice = _preserved_state(config)
+    if choice is not None:
+        return choice
+    root(config, _migration_guard())
+    legacy = boot_script(lifecycle=False)[0]
+    current = boot_script()[0]
+    refresh_hooks(root, config, MODULE, {name: (legacy, current)
+                                       for name in ('post-fs-data.sh', 'service.sh')})
+    return {'present': True, 'lifecycle_verified': True}
+
+
 def install(config, payload):
     official(config)
+    lifecycle = lifecycle_preserved(root, config, MODULE)
+    if lifecycle:
+        return lifecycle
     if profile_from_build()['hyperos'] != '4.0.18.0.XFRCNXM':
         raise RuntimeError('Boot service fixes require the pinned 4.0.18 phone firmware.')
     payload = Path(payload)
@@ -289,6 +311,7 @@ def install(config, payload):
     if previous == receipt():
         result = migrate_kernel_helper(config)
         result['uninstall_hook'] = migrate_uninstall_hook(config)
+        result['lifecycle_hooks'] = migrate_lifecycle_hooks(config)
         print('Verified boot service helper migrated.' if result.get('migrated')
               else 'Verified boot service module is already staged; lifecycle is preserved.')
         return result
@@ -306,7 +329,7 @@ def install(config, payload):
              'post-fs-data.sh': script, 'service.sh': script, 'targets.conf': targets,
              'skip_mount': '', 'uninstall.sh': UNINSTALL_SCRIPT,
              'check-kernel-services.sh': PERF_SCRIPT.read_text()}
-    root(config, f'mkdir -p {stage}/payload; chmod 777 {stage} {stage}/payload')
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'mkdir -p {stage}/payload; chmod 777 {stage} {stage}/payload')
     for name, content in files.items():
         path = folder / name
         path.write_text(content)

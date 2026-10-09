@@ -15,6 +15,7 @@ from unittest.mock import patch
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'scripts'))
 import apply_rear_display_fix as fix
+import module_lifecycle as lifecycle
 import rear_display_config as rear
 from patch_goldfish_sync import MANIFEST as SYNC
 from patch_rear_display import MANIFEST as COMPOSER
@@ -85,7 +86,11 @@ class Guest:
 
     def root(self, config, command):
         self.commands.append(command)
-        code = command.removeprefix('set -e\n')
+        if command == lifecycle.state_script(fix.MODULE):
+            return '\n'.join(self.flags)
+        code = command.removeprefix('set -e\n').removeprefix(lifecycle.mutation_guard(fix.MODULE))
+        if 'sha256sum ' + fix.MODULE + '/service.sh' in code.splitlines():
+            return fix.digest(self.files[fix.MODULE + '/service.sh']) + '  service.sh'
         lines = code.splitlines()
         if code.startswith('getprop '):
             return '\n'.join(self.properties)
@@ -271,7 +276,8 @@ class RearInstallTests(unittest.TestCase):
         self.assertFalse(temporary_target.exists())
 
         activation = self.guest.mutations[-1]
-        stage = shlex.split(activation.splitlines()[2])[1]
+        stripped = activation.removeprefix('set -e\n').removeprefix(lifecycle.mutation_guard(fix.MODULE))
+        stage = shlex.split(stripped.splitlines()[1])[1]
         staged = self.folder / 'stage'
         foreign = self.folder / 'foreign-module'
         staged.mkdir()
@@ -307,7 +313,8 @@ class RearInstallTests(unittest.TestCase):
         original = dict(self.guest.files)
         for flags in (['disable'], ['remove'], ['disable', 'remove']):
             self.guest.flags = flags
-            self.assertEqual(fix.install(self.config, self.build), self.manifest)
+            self.assertEqual(fix.install(self.config, self.build),
+                             {'preserved': True, 'lifecycle': flags})
         self.assertEqual(self.guest.files, original)
         self.assertEqual(self.guest.confirmations, 0)
         self.unchanged()
@@ -376,9 +383,14 @@ class StartupTests(unittest.TestCase):
         self.tools.mkdir()
         self.busybox = self.tools / 'busybox'
         self.busybox.write_text('#!' + sys.executable + '\n'
-            'import hashlib, os, pathlib, sys\n'
+            'import fcntl, hashlib, os, pathlib, sys\n'
             'if sys.argv[1] == "sha256sum":\n'
             '    p=sys.argv[2]; print(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()+"  "+p)\n'
+            'elif sys.argv[1] == "stat":\n'
+            '    value=os.stat(sys.argv[-1]); print(0 if sys.argv[3] == "%u" else value.st_nlink)\n'
+            'elif sys.argv[1] == "flock":\n'
+            '    try: fcntl.flock(int(sys.argv[-1]), fcntl.LOCK_EX | fcntl.LOCK_NB)\n'
+            '    except BlockingIOError: raise SystemExit(1)\n'
             'elif sys.argv[1] == "nohup":\n'
             '    raise SystemExit("unexpected daemon launch")\n'
             'else:\n'
@@ -525,6 +537,111 @@ class StartupTests(unittest.TestCase):
             self.assertEqual(set(self.module.iterdir()), baseline)
             self.assertTrue(flag.is_symlink())
             flag.unlink()
+
+    def test_legacy_empty_missing_and_dead_boot_records_recover(self):
+        self.process()
+        lock = self.module / 'startup.lock'
+        for files in ({}, {'pid': ''}, {'boot': ''}, {'pid': '999\n'},
+                      {'pid': '999\n', 'boot': 'previous-boot\n'}):
+            with self.subTest(files=files):
+                lock.mkdir()
+                for name, value in files.items():
+                    (lock / name).write_text(value)
+                result = self.run_service()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(lock.exists())
+                self.assertEqual((self.module / 'daemon.pid').read_text(), '123\n')
+                self.assertTrue((self.module / 'startup.guard').is_file())
+
+    def test_legacy_live_owner_even_without_receipts_preserves_lock(self):
+        self.process()
+        self.process(pid=456)
+        (self.proc / '456/cmdline').write_bytes(b'sh\0' + str(self.service).encode() + b'\0')
+        lock = self.module / 'startup.lock'
+        for records in ({}, {'pid': '456\n', 'boot': 'fixture-boot\n'}):
+            lock.mkdir()
+            for name, content in records.items():
+                (lock / name).write_text(content)
+            result = self.run_service()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(lock.is_dir())
+            self.assertEqual({p.name: p.read_text() for p in lock.iterdir()}, records)
+            self.assertFalse((self.module / 'daemon.pid').exists())
+            for entry in lock.iterdir():
+                entry.unlink()
+            lock.rmdir()
+
+    def test_legacy_alias_foreign_content_and_malformed_records_are_preserved(self):
+        self.process()
+        lock = self.module / 'startup.lock'
+        for name, content in (('foreign', 'keep'), ('pid', 'not-a-pid'), ('boot', 'invalid/boot')):
+            lock.mkdir()
+            (lock / name).write_text(content)
+            result = self.run_service()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((lock / name).read_text(), content)
+            (lock / name).unlink()
+            lock.rmdir()
+        foreign = self.folder / 'foreign-lock'
+        foreign.mkdir()
+        (foreign / 'pid').write_text('999\n')
+        lock.symlink_to(foreign, target_is_directory=True)
+        result = self.run_service()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(lock.is_symlink())
+        self.assertEqual((foreign / 'pid').read_text(), '999\n')
+
+    def test_kernel_lease_serializes_concurrency_and_recovers_after_crash(self):
+        self.process()
+        guard = self.module / 'startup.guard'
+        code = ('import fcntl, sys, time; '
+                'f=open(sys.argv[1], "a"); fcntl.flock(f, fcntl.LOCK_EX); '
+                'print("locked", flush=True); time.sleep(60)')
+        owner = subprocess.Popen([sys.executable, '-c', code, str(guard)],
+                                 stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(owner.stdout.readline().strip(), 'locked')
+            result = self.run_service()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((self.module / 'daemon.pid').exists())
+            owner.kill()
+            owner.wait(timeout=5)
+            result = self.run_service()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((self.module / 'daemon.pid').read_text(), '123\n')
+        finally:
+            if owner.poll() is None:
+                owner.kill()
+                owner.wait(timeout=5)
+            owner.stdout.close()
+
+    def test_guard_foreign_content_and_hardlink_are_preserved(self):
+        self.process()
+        guard = self.module / 'startup.guard'
+        guard.write_text('foreign lease content')
+        result = self.run_service()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(guard.read_text(), 'foreign lease content')
+        guard.unlink()
+        foreign = self.folder / 'foreign-empty-file'
+        foreign.touch()
+        guard.hardlink_to(foreign)
+        original_mode = foreign.stat().st_mode
+        result = self.run_service()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(foreign.stat().st_mode, original_mode)
+        self.assertTrue(guard.exists())
+
+    def test_guard_alias_is_never_opened_or_replaced(self):
+        self.process()
+        target = self.folder / 'foreign-guard'
+        target.write_text('keep')
+        guard = self.module / 'startup.guard'
+        guard.symlink_to(target)
+        result = self.run_service()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(guard.is_symlink())
+        self.assertEqual(target.read_text(), 'keep')
 
 
 if __name__ == '__main__':

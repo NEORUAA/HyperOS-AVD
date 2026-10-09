@@ -12,6 +12,9 @@ import subprocess
 import uuid
 import zipfile
 
+from patch_outcome import UnsupportedPatch
+from module_lifecycle import (preserved as lifecycle_preserved, mutation_guard,
+                              guarded_hook, refresh_hooks)
 from common import ROOT, REPO_ROOT, adb, runtime, sha256
 from apply_flutter_fix import official, root
 from apply_xiaomi_camera_fix import patch_provider
@@ -216,7 +219,7 @@ for pid in $pids; do
 done'''
 
 
-def write_scripts(folder):
+def write_scripts(folder, *, lifecycle=True):
     values = {key: value for key, value in globals().items()
               if isinstance(value, str) and key.isupper()}
     values['PROPS'] = '\n'.join('[ "$(getprop ' + key + ')" = ' + value + ' ] || exit 1'
@@ -228,8 +231,8 @@ def write_scripts(folder):
         script = script.replace('@' + key + '@', value)
     if re.search(r'@[A-Z_]+@', script):
         raise RuntimeError('Unexpanded Pad camera mount script.')
-    (folder / 'post-fs-data.sh').write_text(script)
-    (folder / 'service.sh').write_text('''#!/system/bin/sh
+    (folder / 'post-fs-data.sh').write_text(guarded_hook(script) if lifecycle else script)
+    service = '''#!/system/bin/sh
 set -eu
 MODDIR=${0%/*}
 if [ -e "$MODDIR/disable" ] || [ -L "$MODDIR/disable" ]; then exit 0; fi
@@ -238,7 +241,8 @@ while [ "$(getprop sys.boot_completed)" != 1 ]; do
     count=$((count+1)); [ "$count" -lt 300 ] || exit 1; sleep 1
 done
 sh "$MODDIR/post-fs-data.sh"
-''')
+'''
+    (folder / 'service.sh').write_text(guarded_hook(service) if lifecycle else service)
     (folder / 'targets.conf').write_text(targets_text())
     (folder / 'module.prop').write_text('id=hyperos_avd_pad_camera\nname=HyperOS AVD Pad camera bridge\n'
         'version=1\nversionCode=1\nauthor=HyperOS-AVD\n'
@@ -251,17 +255,18 @@ def _hash(config, path):
     return value[0] if value else ''
 
 
-def _preflight(config):
-    official(config, sources=(SOURCE,))
+def _preflight(config, *, ownership=True):
+    if ownership:
+        official(config, sources=(SOURCE,))
     for key, value in PROPERTIES.items():
         if root(config, 'getprop ' + key) != value:
             raise RuntimeError('Pad camera native fix refused this device: ' + key)
     if root(config, 'pm path com.android.camera') != 'package:' + APK:
-        raise RuntimeError('Unsupported Pad camera update; existing files were preserved.')
+        raise UnsupportedPatch('Unsupported Pad camera update; existing files were preserved.')
     for path, allowed in ((APK, (APK_HASH,)), (CPP, (CPP_HASH,)), (RUNTIME, (RUNTIME_HASH,)),
                           (PROVIDER, (PROVIDER_BEFORE, PROVIDER_AFTER)), (HWL, (HWL_BEFORE, HWL_AFTER))):
         if _hash(config, path) not in allowed:
-            raise RuntimeError('Unsupported Pad camera native input: ' + path)
+            raise UnsupportedPatch('Unsupported Pad camera native input: ' + path)
     native = root(config, '/data/adb/ksu/bin/busybox nsenter -t 1 -m -- '
                   '/data/adb/ksu/bin/busybox sh -c ' + shlex.quote(
                       'if [ -e "$1" ] || [ -L "$1" ]; then sha256sum "$1"; fi') +
@@ -273,7 +278,7 @@ def _preflight(config):
 def publish(config, folder):
     token = uuid.uuid4().hex
     stage = '/data/adb/hyperos-pad-camera-stage-' + token
-    root(config, f'test ! -e {stage}\ntest ! -L {stage}\ntest ! -e {MODULE}\ntest ! -L {MODULE}\nmkdir {stage}')
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'test ! -e {stage}\ntest ! -L {stage}\ntest ! -e {MODULE}\ntest ! -L {MODULE}\nmkdir {stage}')
     uploads = []
     try:
         for name in ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'post-fs-data.sh',
@@ -282,7 +287,7 @@ def publish(config, folder):
             root(config, f'test ! -e {temporary}\ntest ! -L {temporary}')
             uploads.append(temporary)
             adb(config, 'push', str(folder / name), temporary, check=True, capture_output=True, timeout=60)
-            root(config, f'cp {temporary} {stage}/{name}\nrm {temporary}')
+            root(config, 'set -e\n' + mutation_guard(MODULE) + f'cp {temporary} {stage}/{name}\nrm {temporary}')
         checks = '\n'.join(f'test "$(sha256sum {stage}/{name} | cut -d \' \' -f 1)" = {sha256(folder / name)}'
                            for name in ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'post-fs-data.sh',
                                         'service.sh', 'targets.conf', 'module.prop'))
@@ -323,22 +328,27 @@ def publish(config, folder):
 
 def install(config):
     """Publish a new module atomically; never overwrite a mounted payload inode."""
-    _preflight(config)
+    official(config, sources=(SOURCE,))
+    lifecycle = lifecycle_preserved(root, config, MODULE)
+    if lifecycle:
+        return lifecycle
+    _preflight(config, ownership=False)
     existing = root(config, f'if [ -e {MODULE} ] || [ -L {MODULE} ]; then echo yes; fi')
     folder = ROOT / 'work/pad-camera-native'
     if existing:
         saved = validate_manifest(json.loads(root(config, f'cat {MODULE}/manifest.json')))
-        if root(config, f'if [ -e {MODULE}/disable ] || [ -L {MODULE}/disable ]; then echo yes; fi'):
-            print('Pad camera native bridge remains disabled.', flush=True)
-            return saved
         write_scripts_local = folder / 'script-check'
         write_scripts_local.mkdir(parents=True, exist_ok=True)
         write_scripts(write_scripts_local)
-        for name in ('post-fs-data.sh', 'service.sh', 'targets.conf'):
-            expected = sha256(write_scripts_local / name)
-            if root(config, f'sha256sum {MODULE}/{name}').split()[0] != expected:
-                raise RuntimeError('Saved Pad camera script changed: ' + name)
-        root(config, f'sh {MODULE}/post-fs-data.sh')
+        legacy = folder / 'legacy-script-check'
+        legacy.mkdir(parents=True, exist_ok=True)
+        write_scripts(legacy, lifecycle=False)
+        if root(config, f'sha256sum {MODULE}/targets.conf').split()[0] != sha256(write_scripts_local / 'targets.conf'):
+            raise RuntimeError('Saved Pad camera targets changed.')
+        refresh_hooks(root, config, MODULE, {name: ((legacy / name).read_text(),
+                                                   (write_scripts_local / name).read_text())
+                                           for name in ('post-fs-data.sh', 'service.sh')})
+        root(config, 'set -e\n' + mutation_guard(MODULE) + f'sh {MODULE}/post-fs-data.sh')
         print('Existing Pad camera native bridges verified.', flush=True)
         return saved
     originals = folder / 'original'

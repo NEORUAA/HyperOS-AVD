@@ -4,6 +4,7 @@ import argparse
 import shlex
 import subprocess
 
+from patch_outcome import UnsupportedPatch
 from common import runtime
 from apply_flutter_fix import official, root
 
@@ -72,11 +73,11 @@ def install(config):
         if root(config, 'getprop ' + key) != expected:
             raise RuntimeError('Pad camera ANGLE fix refused this device: ' + key)
     if root(config, 'pm path ' + PACKAGE) != 'package:' + APK:
-        raise RuntimeError('Unsupported Pad camera update; no settings changed.')
+        raise UnsupportedPatch('Unsupported Pad camera update; no settings changed.')
     for path, expected in HASHES.items():
         actual = root(config, 'sha256sum ' + shlex.quote(path)).split()
         if not actual or actual[0] != expected:
-            raise RuntimeError('Unsupported Pad camera ANGLE input: ' + path)
+            raise UnsupportedPatch('Unsupported Pad camera ANGLE input: ' + path)
     previous = _read_settings(config)
     desired = angle_settings(*previous)
     attempted = []

@@ -12,6 +12,7 @@ import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import patch_flutter
 import apply_flutter_fix
+import module_lifecycle
 import apply_navigation_fix
 
 
@@ -58,6 +59,10 @@ class FlutterPatchTests(unittest.TestCase):
                 return 'package:' + packages[command.removeprefix('pm path ')]
             if command.startswith('if [ -f ' + apply_flutter_fix.MODULE + '/manifest.json'):
                 return json.dumps(legacy) if old else ''
+            if any('sha256sum ' + apply_flutter_fix.MODULE + '/' + name in command
+                   for name in ('post-fs-data.sh', 'service.sh')):
+                return hashlib.sha256(apply_flutter_fix.legacy_boot_script(
+                    apply_flutter_fix.PAD_SOURCE).encode()).hexdigest() + '  owned-hook'
             if command.startswith('if [ -e ' + apply_flutter_fix.PAD_WEATHER_ENGINE):
                 return native_hash
             if command.startswith('sha256sum /data/adb/hyperos-render-stage-'):
@@ -100,7 +105,9 @@ class FlutterPatchTests(unittest.TestCase):
             if wrong_apk or unknown_engine or native_hash and native_hash.split()[0] not in (before, after):
                 self.assertEqual(result['apks'], [])
                 self.assertIn('com.miui.weather2', result['skipped_apks'])
-                self.assertTrue(any(command.startswith('mkdir ') for command in commands))
+                self.assertTrue(any(command.removeprefix('set -e\n').removeprefix(
+                    module_lifecycle.mutation_guard(apply_flutter_fix.MODULE)).startswith('mkdir ')
+                    for command in commands))
                 if old:
                     self.assertIn(apply_flutter_fix.PAD_WEATHER_ENGINE, detach.call_args.kwargs['preserve_paths'])
             rewrite.assert_not_called()
@@ -147,7 +154,7 @@ class FlutterPatchTests(unittest.TestCase):
             bb = folder / 'bb'
             bb.touch(); bb.chmod(0o700)
             script = apply_flutter_fix.BOOT_SCRIPT
-            body = script[script.index('[ -f "$MODDIR/disable" ] && exit 0\n'):]
+            body = module_lifecycle.BLOCKED_FUNCTION + script[script.index('[ -x "$BB" ] || exit 1\n'):]
             log = folder / 'log'
             program = ('MODDIR=' + str(folder) + '\nBB=' + str(bb) + '\n'
                        'log() { echo "$*" >> ' + str(log) + '; }\n'
@@ -172,7 +179,7 @@ class FlutterPatchTests(unittest.TestCase):
                 for package, apk, target in rows))
             with mock_patch.object(apply_flutter_fix, 'PAD_WEATHER_APK', str(weather)):
                 script = apply_flutter_fix.boot_script(apply_flutter_fix.PAD_SOURCE)
-            body = script[script.index('[ -f "$MODDIR/disable" ] && exit 0\n'):]
+            body = module_lifecycle.BLOCKED_FUNCTION + script[script.index('[ -x "$BB" ] || exit 1\n'):]
             output = folder / 'binds.txt'
             program = ('MODDIR=' + str(folder) + '\nBB=' + str(executable) + '\n'
                        'bind_target() { printf "%s\\n" "$3" >> ' + str(output) + '; }\n'
@@ -181,7 +188,7 @@ class FlutterPatchTests(unittest.TestCase):
             self.assertEqual(output.read_text().splitlines(), [apply_flutter_fix.SYSTEM_LIB, '/owned/home-engine.so'])
 
     def test_pad_boot_script_restoration_is_pinned_atomic_and_phone_unchanged(self):
-        self.assertEqual(apply_flutter_fix.boot_script(), apply_flutter_fix.BOOT_SCRIPT)
+        self.assertEqual(apply_flutter_fix.boot_script(), module_lifecycle.guarded_hook(apply_flutter_fix.BOOT_SCRIPT))
         script = apply_flutter_fix.boot_script(apply_flutter_fix.PAD_SOURCE)
         subprocess.run(['sh', '-n'], input=script, text=True, check=True, capture_output=True)
         for checksum in (apply_flutter_fix.PAD_WEATHER_APK_SHA256, apply_flutter_fix.PAD_WEATHER_BEFORE,

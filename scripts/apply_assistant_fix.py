@@ -7,6 +7,9 @@ from pathlib import Path
 import shlex
 import subprocess
 
+from patch_outcome import UnsupportedPatch
+from module_lifecycle import (preserved as lifecycle_preserved, mutation_guard,
+                              guarded_hook, refresh_hooks)
 from common import ROOT, adb, runtime, sha256
 from apply_flutter_fix import official, root
 from patch_assistant import (APK, APK_SHA256, NATIVE, AFTER, PHONE_SOURCE,
@@ -54,7 +57,7 @@ fi
 '''
 
 
-def boot_script(source=PHONE_SOURCE, firmware=None):
+def legacy_boot_script(source=PHONE_SOURCE, firmware=None):
     """Keep the legacy phone script exact; pin the Pad APK and firmware."""
     selected = profile(source, firmware)
     if source == PHONE_SOURCE and selected['apk_sha256'] == APK_SHA256:
@@ -69,6 +72,10 @@ def boot_script(source=PHONE_SOURCE, firmware=None):
                 f'[ "$(getprop ro.mi.os.version.incremental)" = {incremental} ] || exit 1\n')
     return BOOT_SCRIPT.replace(checksum, 'APK_HASH=' + selected['apk_sha256'] + '\n').replace(
         gate, gate + pad_gate)
+
+
+def boot_script(source=PHONE_SOURCE, firmware=None):
+    return guarded_hook(legacy_boot_script(source, firmware))
 
 
 def _verify_pad_namespaces(config, selected):
@@ -87,6 +94,9 @@ done''')
 
 def install(config, sources=(PHONE_SOURCE,)):
     official(config, sources=sources)
+    lifecycle = lifecycle_preserved(root, config, MODULE)
+    if lifecycle:
+        return lifecycle
     source = json.loads((ROOT / 'local/build.json').read_text())['source']
     from phone_profile import profile_from_build
     firmware = profile_from_build() if source == PHONE_SOURCE else None
@@ -95,39 +105,45 @@ def install(config, sources=(PHONE_SOURCE,)):
     if root(config, 'getprop ro.boot.qemu.avd_name') != config['name']:
         raise RuntimeError('XiaoAI overlay is restricted to the official OS4 AVD.')
     if root(config, 'pm path com.miui.voiceassist') != 'package:' + APK:
-        raise RuntimeError('Unsupported XiaoAI update; no files were changed.')
+        raise UnsupportedPatch('Unsupported XiaoAI update; no files were changed.')
     if root(config, 'sha256sum ' + APK).split()[0] != checksum:
-        raise RuntimeError('Unsupported XiaoAI APK; no files were changed.')
+        raise UnsupportedPatch('Unsupported XiaoAI APK; no files were changed.')
     saved = root(config, f'if [ -d {MODULE} ]; then cat {MODULE}/manifest.json; fi')
     legacy_baked = (saved and source == PHONE_SOURCE and firmware['hyperos'] == '4.0.18.0.XFRCNXM'
                     and json.loads(saved) == profile(PHONE_SOURCE)
                     and root(config, 'if [ -f ' + NATIVE + ' ]; then sha256sum ' + NATIVE + '; fi').split()[:1] == [AFTER])
     if saved and json.loads(saved) != selected and not legacy_baked:
         raise RuntimeError('An unrelated XiaoAI module exists.')
-    if root(config, f'if [ -f {MODULE}/disable ]; then echo yes; fi') == 'yes':
-        print('XiaoAI module is disabled; preserving this choice.', flush=True)
-        return dict(selected)
+    def refresh_saved():
+        if not saved:
+            return
+        original_hook = legacy_boot_script(PHONE_SOURCE) if legacy_baked else legacy_boot_script(source, firmware)
+        refresh_hooks(root, config, MODULE, {name: (original_hook,
+                                                   boot_script(source, firmware))
+                                           for name in ('post-fs-data.sh', 'service.sh')})
     existing = root(config, 'if [ -f ' + NATIVE + ' ]; then sha256sum ' + NATIVE + '; fi')
     if existing:
         if existing.split()[0] != AFTER:
             raise RuntimeError('Refused to replace an unrelated XiaoAI native library.')
+        refresh_saved()
         if source == PAD_SOURCE:
             if saved:
                 script_hash = hashlib.sha256(boot_script(source).encode()).hexdigest()
                 if root(config, f'sha256sum {MODULE}/service.sh').split()[0] != script_hash:
                     raise RuntimeError('Unsupported saved tablet XiaoAI service script.')
-                root(config, f'sh {MODULE}/service.sh')
+                root(config, 'set -e\n' + mutation_guard(MODULE) + f'sh {MODULE}/service.sh')
             _verify_pad_namespaces(config, selected)
         print('Verified XiaoAI MGL fix is already present.', flush=True)
         return dict(selected)
     if source == PAD_SOURCE and root(config, 'ls -A ' + str(Path(APK).parent)) != Path(APK).name:
-        raise RuntimeError('Unsupported XiaoAI package layout; no files were changed.')
+        raise UnsupportedPatch('Unsupported XiaoAI package layout; no files were changed.')
     if saved:
+        refresh_saved()
         if source == PAD_SOURCE:
             script_hash = hashlib.sha256(boot_script(source).encode()).hexdigest()
             if root(config, f'sha256sum {MODULE}/service.sh').split()[0] != script_hash:
                 raise RuntimeError('Unsupported saved tablet XiaoAI service script.')
-        root(config, f'sh {MODULE}/service.sh')
+        root(config, 'set -e\n' + mutation_guard(MODULE) + f'sh {MODULE}/service.sh')
         if root(config, 'sha256sum ' + NATIVE).split()[0] != AFTER:
             raise RuntimeError('Saved XiaoAI overlay failed verification.')
         if source == PAD_SOURCE:
@@ -143,7 +159,7 @@ def install(config, sources=(PHONE_SOURCE,)):
     stage = '/data/adb/hyperos-assistant-stage-' + AFTER[:12]
     if root(config, f'if [ -e {stage} ]; then echo yes; fi'):
         raise RuntimeError('A XiaoAI staging directory already exists.')
-    root(config, f'mkdir -p {stage}/payload/lib/arm64')
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'mkdir -p {stage}/payload/lib/arm64')
     files = {'manifest.json': json.dumps(selected, indent=2) + '\n',
              'module.prop': 'id=hyperos_avd_assistant_mgl\nname=HyperOS AVD XiaoAI MGL fix\nversion=1\nversionCode=1\nauthor=HyperOS-AVD\ndescription=Original wakeup light effect with GLSL 300 and EGL alpha compatibility\n',
              'post-fs-data.sh': boot_script(source, firmware), 'service.sh': boot_script(source, firmware)}
@@ -153,10 +169,10 @@ def install(config, sources=(PHONE_SOURCE,)):
         remote = '/data/local/tmp/hyperos-assistant-' + name
         adb(config, 'push', str(local), remote, check=True, capture_output=True, timeout=30)
         mode = '755' if name.endswith('.sh') else '644'
-        root(config, f'cp {shlex.quote(remote)} {stage}/{name}\nchmod {mode} {stage}/{name}\nrm {shlex.quote(remote)}')
+        root(config, 'set -e\n' + mutation_guard(MODULE) + f'cp {shlex.quote(remote)} {stage}/{name}\nchmod {mode} {stage}/{name}\nrm {shlex.quote(remote)}')
     remote = '/data/local/tmp/hyperos-assistant-mgl2.so'
     adb(config, 'push', str(fixed), remote, check=True, capture_output=True, timeout=30)
-    root(config, f'''cp {APK} {stage}/payload/VoiceAssistAndroidT.apk
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'''cp {APK} {stage}/payload/VoiceAssistAndroidT.apk
 cp {remote} {stage}/payload/lib/arm64/libmglnative2.so
 chmod 755 {stage}/payload {stage}/payload/lib {stage}/payload/lib/arm64
 chmod 644 {stage}/payload/VoiceAssistAndroidT.apk {stage}/payload/lib/arm64/libmglnative2.so

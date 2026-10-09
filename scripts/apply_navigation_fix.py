@@ -10,6 +10,9 @@ import shlex
 import subprocess
 import zipfile
 
+from module_lifecycle import (preserved as lifecycle_preserved, mutation_guard,
+                              enable_owned, guarded_hook, verify_hooks, refresh_hooks,
+                              UnreviewedHook)
 from common import ROOT, adb, runtime
 from apply_flutter_fix import official, root
 from patch_flutter import digest
@@ -241,25 +244,38 @@ echo "$(date +%s) Recents component: $component" >> "$MODDIR/navigation.log"
 ''' + AOT_SCRIPT
 
 
-def startup_script(script, profile):
-    """Never apply cached public identities to another OTA version."""
+def legacy_startup_script(script, profile):
+    """Reviewed pre-lifecycle hooks, used only to authenticate migrations."""
     if script.count(FIRMWARE_GUARD) != 1:
         raise RuntimeError('Unexpected navigation firmware guard.')
     replacement = '[ "$(getprop ro.mi.os.version.incremental)" = ' + shlex.quote(profile['incremental']) + ' ] || exit 0\n'
     return script.replace(FIRMWARE_GUARD, replacement)
 
 
+def startup_script(script, profile):
+    """Never apply cached public identities to another OTA version."""
+    return guarded_hook(legacy_startup_script(script, profile))
+
+
+def hook_versions(firmware):
+    """Authenticate exact previous hooks from known OTA profiles, not receipts."""
+    from phone_profile import ARCHIVES, profile
+    profiles = [firmware, *(profile(version) for version in ARCHIVES)]
+    return {name: (tuple(dict.fromkeys(version for selected in profiles for version in
+                                     (legacy_startup_script(script, selected), startup_script(script, selected)))),
+                   startup_script(script, firmware))
+            for name, script in (('post-fs-data.sh', EARLY_SCRIPT), ('service.sh', BOOT_SCRIPT))}
+
+
 def install(config, enable=False):
     official(config)
+    lifecycle = lifecycle_preserved(root, config, MODULE, enable=enable)
+    if lifecycle:
+        return lifecycle
     from phone_profile import profile_from_build
     firmware = profile_from_build()
     if root(config, 'getprop ro.mi.os.version.incremental') != firmware['incremental']:
         raise RuntimeError('Navigation identity refused a different OTA version.')
-    if root(config, f'if [ -f {MODULE}/disable ]; then echo yes; fi') == 'yes':
-        if not enable:
-            print('Navigation module is disabled; keeping this choice.', flush=True)
-            return
-        root(config, f'rm {MODULE}/disable')
     identity = root(config, 'getprop ' + PROPERTY)
     if identity not in ('', 'com.miui.home'):
         raise RuntimeError('Unexpected launcher identity: ' + identity)
@@ -272,6 +288,20 @@ def install(config, enable=False):
     old = json.loads(old_text) if old_text else None
     if old and old.get('revision') not in range(2, REVISION + 1):
         raise RuntimeError('Unknown navigation module revision.')
+    if previous and not old:
+        raise RuntimeError('Cannot replace a navigation module without its owned manifest.')
+    if old:
+        try:
+            verify_hooks(root, config, MODULE, hook_versions(firmware), allow_disabled=enable)
+        except UnreviewedHook as error:
+            print(str(error) + '; existing navigation module retained.', flush=True)
+            return {'preserved': True, 'reason': 'unreviewed-startup-hook', 'hook': error.name}
+    if enable and previous:
+        if not old:
+            raise RuntimeError('Cannot enable a navigation module without its owned manifest.')
+        enable_owned(root, config, MODULE)
+    if old:
+        refresh_hooks(root, config, MODULE, hook_versions(firmware))
     folder = ROOT / 'work/navigation-fix'
     folder.mkdir(parents=True, exist_ok=True)
     serial = simulated_serial(old)
@@ -329,33 +359,35 @@ def install(config, enable=False):
         # Remove only this project's experimental directory bind. Original
         # overlay files remain untouched on the read-only system partition.
         check = 'awk \'$4 == "/adb/modules/hyperos_avd_navigation/overlay" && $5 == "/product/overlay" {found=1} END {exit !found}\' /proc/self/mountinfo'
-        root(config, 'for pid in 1 $(getprop init.svc_debug_pid.hyos_spawner) $(pidof zygote64); do\n'
+        root(config, 'set -e\n' + mutation_guard(MODULE) + 'for pid in 1 $(getprop init.svc_debug_pid.hyos_spawner) $(pidof zygote64); do\n'
              '[ -d "/proc/$pid" ] || continue\n'
              'if nsenter -t "$pid" -m -- sh -c ' + shlex.quote(check) + '; then\n'
              'nsenter -t "$pid" -m -- /data/adb/ksu/bin/busybox umount -l /product/overlay || exit 1\nfi\ndone')
-        root(config, f'mv {MODULE} /data/adb/hyperos-navigation-backup-$(date +%s)')
-    root(config, f'mkdir -p {MODULE}')
-    names = ['manifest.json', 'module.prop', 'system.prop', 'identity.prop', 'post-fs-data.sh', 'service.sh']
+        root(config, 'set -e\n' + mutation_guard(MODULE) + f'mv {MODULE} /data/adb/hyperos-navigation-backup-$(date +%s)')
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'mkdir -p {MODULE}')
+    names = ['manifest.json', 'module.prop', 'system.prop', 'identity.prop']
+    if not old or old['revision'] == 2:
+        names += ['post-fs-data.sh', 'service.sh']
     names += payloads
     for name in names:
         remote = '/data/local/tmp/hyperos-nav-' + name
         adb(config, 'push', str(folder / name), remote, check=True, capture_output=True, timeout=30)
-        root(config, f'cp {remote} {MODULE}/{name}.next\nchmod {"755" if name.endswith(".sh") else "644"} {MODULE}/{name}.next\nmv {MODULE}/{name}.next {MODULE}/{name}\nrm {remote}')
+        root(config, 'set -e\n' + mutation_guard(MODULE) + f'cp {remote} {MODULE}/{name}.next\nchmod {"755" if name.endswith(".sh") else "644"} {MODULE}/{name}.next\nmv {MODULE}/{name}.next {MODULE}/{name}\nrm {remote}')
     if aot_supported:
         for filename, expected in checksums:
             if root(config, f'sha256sum {MODULE}/{filename}').split()[0] != expected:
                 raise RuntimeError('Staged launcher AOT checksum mismatch.')
-        root(config, f'chcon u:object_r:apk_data_file:s0 {MODULE}/launcher-aot.so {MODULE}/launcher-watchdog.so')
+        root(config, 'set -e\n' + mutation_guard(MODULE) + f'chcon u:object_r:apk_data_file:s0 {MODULE}/launcher-aot.so {MODULE}/launcher-watchdog.so')
         if identity == 'com.miui.home' and current == COMPONENT:
-            root(config, f'sh {MODULE}/service.sh')
+            root(config, 'set -e\n' + mutation_guard(MODULE) + f'sh {MODULE}/service.sh')
     else:
-        root(config, f'rm -f {MODULE}/aot.conf {MODULE}/watchdog.conf')
+        root(config, 'set -e\n' + mutation_guard(MODULE) + f'rm -f {MODULE}/aot.conf {MODULE}/watchdog.conf')
         print(deadline_note, flush=True)
     # A fresh userdata install happens after post-fs-data has already passed.
     # Apply thermal labels now; the baked identity handles the first RRO scan.
-    root(config, f'sh {MODULE}/post-fs-data.sh')
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'sh {MODULE}/post-fs-data.sh')
     # A previous diagnostic mutable overlay must not mask the original RRO.
-    root(config, 'cmd overlay disable --user 0 com.android.shell:hyperos_avd_recents 2>/dev/null || true')
+    root(config, 'set -e\n' + mutation_guard(MODULE) + 'cmd overlay disable --user 0 com.android.shell:hyperos_avd_recents 2>/dev/null || true')
     (ROOT / 'local/navigation-fix.json').write_text(json.dumps(manifest, indent=2) + '\n')
     if identity == 'com.miui.home' and current == COMPONENT:
         print('Original Xiaomi Quickstep identity is active.', flush=True)

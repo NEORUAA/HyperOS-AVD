@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import apply_pad_camera_native_fix as camera
+import module_lifecycle as lifecycle
 
 
 class PadCameraNativeTests(unittest.TestCase):
@@ -38,6 +39,16 @@ class PadCameraNativeTests(unittest.TestCase):
     def fake_root(self, config, command):
         self.assertEqual(config, self.config)
         self.calls.append(command)
+        if command == lifecycle.state_script(camera.MODULE):
+            return 'disable' if self.disabled else ''
+        command = command.removeprefix('set -e\n').removeprefix(lifecycle.mutation_guard(camera.MODULE))
+        hook = next((line for line in command.splitlines() if line in
+                     ('sha256sum ' + camera.MODULE + '/service.sh',
+                      'sha256sum ' + camera.MODULE + '/post-fs-data.sh')), None)
+        if hook:
+            name = hook.rsplit('/', 1)[1]
+            p = self.folder / 'work/pad-camera-native/script-check' / name
+            return hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + name
         if command.startswith('getprop '):
             return self.properties[command.split()[1]]
         if command == 'pm path com.android.camera':
@@ -108,7 +119,7 @@ class PadCameraNativeTests(unittest.TestCase):
 
     def test_disabled_owned_module_remains_disabled(self):
         self.existing = self.disabled = True
-        self.assertEqual(self.install(), camera.manifest())
+        self.assertEqual(self.install(), {'preserved': True, 'lifecycle': ['disable']})
         self.assert_no_guest_write()
         self.assertFalse((self.folder / 'work').exists())
 
@@ -125,7 +136,7 @@ class PadCameraNativeTests(unittest.TestCase):
         self.hashes[camera.PROVIDER] = camera.PROVIDER_AFTER
         self.native = camera.YUV_AFTER + '  ' + camera.YUV
         self.assertEqual(self.install(), camera.manifest())
-        self.assertEqual(self.calls[-1], 'sh ' + camera.MODULE + '/post-fs-data.sh')
+        self.assertTrue(self.calls[-1].endswith('sh ' + camera.MODULE + '/post-fs-data.sh'))
 
     def test_unknown_runtime_never_uses_private_offsets(self):
         with self.assertRaisesRegex(RuntimeError, 'Unsupported Pad ImageReader'):

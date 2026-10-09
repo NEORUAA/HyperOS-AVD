@@ -146,6 +146,9 @@ class BootServiceTests(unittest.TestCase):
         def root(config, command):
             self.assertEqual(config, device)
             calls.append(command)
+            import module_lifecycle
+            if command == module_lifecycle.state_script(installer.MODULE):
+                return ''
             if command.startswith('if [ -d '):
                 return json.dumps(installer.receipt())
             for name, (path, _, _) in fixes.TARGETS.items():

@@ -10,6 +10,9 @@ import shutil
 import subprocess
 import zipfile
 
+from patch_outcome import UnsupportedPatch
+from module_lifecycle import (preserved as lifecycle_preserved, mutation_guard,
+                              guarded_hook, refresh_hooks)
 from common import ROOT, REPO_ROOT, adb, runtime, sha256
 from apply_flutter_fix import official, root
 
@@ -240,7 +243,7 @@ esac
 '''
 
 
-def write_module_scripts(folder, manifest, firmware=None):
+def write_module_scripts(folder, manifest, firmware=None, *, lifecycle=True):
     selected = camera_inputs(firmware)
     if any(manifest.get(key) != selected[key] for key in ('apk_sha256', 'runtime_sha256')):
         raise RuntimeError('Camera startup profile differs from its payload manifest.')
@@ -249,8 +252,8 @@ def write_module_scripts(folder, manifest, firmware=None):
                        'APP': APP, 'APK_HASH': selected['apk_sha256'], 'YUV': manifest['yuv_sha256'],
                        'INCREMENTAL': selected['firmware']['incremental']}.items():
         script = script.replace('@' + key + '@', value)
-    (folder / 'post-fs-data.sh').write_text(script)
-    (folder / 'service.sh').write_text(ANGLE_SCRIPT)
+    (folder / 'post-fs-data.sh').write_text(guarded_hook(script) if lifecycle else script)
+    (folder / 'service.sh').write_text(guarded_hook(ANGLE_SCRIPT) if lifecycle else ANGLE_SCRIPT)
     (folder / 'targets.conf').write_text(''.join('|'.join(item[k] for k in
         ('payload', 'target', 'before', 'after')) + '\n' for item in manifest['targets']))
     (folder / 'module.prop').write_text('id=hyperos_avd_xiaomi_camera\nname=HyperOS AVD Xiaomi camera bridge\n'
@@ -332,16 +335,15 @@ def migrate_camera_app(config, saved, newer, folder, firmware):
     root(config, f'test ! -e {APP}/lib/arm64/libcamera_yuv_jni.so')
     write_module_scripts(folder, newer, firmware)
     stage = '/data/adb/hyperos-xiaomi-camera-upgrade-stage'
-    root(config, f'test ! -e {stage}\nmkdir -p {stage}')
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'test ! -e {stage}\nmkdir -p {stage}')
     for name in ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'module.prop',
                  'targets.conf', 'post-fs-data.sh', 'service.sh'):
         temporary = '/data/local/tmp/hyperos-camera-upgrade-' + name
         adb(config, 'push', str(folder / name), temporary, check=True, capture_output=True, timeout=60)
-        root(config, f'cp {shlex.quote(temporary)} {stage}/{name}\nrm {shlex.quote(temporary)}')
+        root(config, 'set -e\n' + mutation_guard(MODULE) + f'cp {shlex.quote(temporary)} {stage}/{name}\nrm {shlex.quote(temporary)}')
     checks = '\n'.join('test "$(sha256sum ' + stage + '/' + item['payload']
                        + ' | cut -d " " -f 1)" = ' + item['after'] for item in newer['targets'])
-    root(config, f'''set -eu
-am force-stop com.android.camera
+    root(config, 'set -eu\n' + mutation_guard(MODULE) + f'''am force-stop com.android.camera
 mkdir {stage}/app
 cp -a {APP}/. {stage}/app/
 mkdir -p {stage}/app/lib/arm64
@@ -373,6 +375,9 @@ sh {MODULE}/service.sh''')
 
 def install(config, rebuild=False):
     official(config)
+    lifecycle = lifecycle_preserved(root, config, MODULE)
+    if lifecycle:
+        return lifecycle
     from phone_profile import profile_from_build
     firmware = profile_from_build()
     selected = camera_inputs(firmware)
@@ -381,11 +386,11 @@ def install(config, rebuild=False):
         if root(config, 'getprop ' + key) != value:
             raise RuntimeError('Xiaomi camera bridge refused this device: ' + key)
     if root(config, 'pm path com.android.camera') != 'package:' + APK:
-        raise RuntimeError('Xiaomi camera update is unsupported; keep the original system version.')
+        raise UnsupportedPatch('Xiaomi camera update is unsupported; keep the original system version.')
     for path, checksum in ((APK, selected['apk_sha256']), ('/system/lib64/libandroid_runtime.so', selected['runtime_sha256']),
                            ('/vendor/lib64/libc++.so', CPP_HASH)):
         if root(config, 'sha256sum ' + path).split()[0] != checksum:
-            raise RuntimeError('Unsupported camera input: ' + path)
+            raise UnsupportedPatch('Unsupported camera input: ' + path)
     existing = root(config, f'if [ -d {MODULE} ]; then echo yes; fi')
     if existing:
         saved = json.loads(root(config, f'cat {MODULE}/manifest.json'))
@@ -403,9 +408,6 @@ def install(config, rebuild=False):
             folder = ROOT / 'work/xiaomi-camera-fix'
             newer = build(config['sdk'], folder, firmware)
             return migrate_camera_app(config, saved, newer, folder, firmware)
-        if root(config, f'if [ -f {MODULE}/disable ]; then echo yes; fi') == 'yes':
-            print('Xiaomi camera bridge remains disabled.', flush=True)
-            return saved
         for item in saved['targets']:
             if root(config, 'sha256sum ' + item['target']).split()[0] not in (item['before'], item['after']):
                 raise RuntimeError('Camera overlay target changed: ' + item['target'])
@@ -423,8 +425,8 @@ def install(config, rebuild=False):
             for name in names:
                 remote = '/data/local/tmp/hyperos-camera-update-' + name
                 adb(config, 'push', str(folder / name), remote, check=True, capture_output=True, timeout=60)
-                root(config, f'cp {shlex.quote(remote)} {MODULE}/{name}.next\nrm {shlex.quote(remote)}')
-            root(config, f'''am force-stop com.android.camera
+                root(config, 'set -e\n' + mutation_guard(MODULE) + f'cp {shlex.quote(remote)} {MODULE}/{name}.next\nrm {shlex.quote(remote)}')
+            root(config, 'set -e\n' + mutation_guard(MODULE) + f'''am force-stop com.android.camera
 {upgrade_provider_script() if update_provider else ''}
 test "$(sha256sum {MODULE}/yuv.so.next | cut -d ' ' -f 1)" = {newer['yuv_sha256']}
 chmod 644 {MODULE}/yuv.so.next
@@ -439,7 +441,16 @@ mv {MODULE}/manifest.json.next {MODULE}/manifest.json
 sh {MODULE}/post-fs-data.sh''')
             saved = newer
             (ROOT / 'local/xiaomi-camera-fix.json').write_text(json.dumps(saved, indent=2) + '\n')
-        root(config, f'sh {MODULE}/post-fs-data.sh\nsh {MODULE}/service.sh')
+        scripts = ROOT / 'work/xiaomi-camera-fix/script-check'
+        legacy = ROOT / 'work/xiaomi-camera-fix/legacy-script-check'
+        scripts.mkdir(parents=True, exist_ok=True)
+        legacy.mkdir(parents=True, exist_ok=True)
+        write_module_scripts(scripts, saved, firmware)
+        write_module_scripts(legacy, saved, firmware, lifecycle=False)
+        refresh_hooks(root, config, MODULE, {name: ((legacy / name).read_text(),
+                                                   (scripts / name).read_text())
+                                           for name in ('post-fs-data.sh', 'service.sh')})
+        root(config, 'set -e\n' + mutation_guard(MODULE) + f'sh {MODULE}/post-fs-data.sh\nsh {MODULE}/service.sh')
         print('Existing Xiaomi camera bridges verified.', flush=True)
         return saved
     folder = ROOT / 'work/xiaomi-camera-fix'
@@ -457,14 +468,14 @@ sh {MODULE}/post-fs-data.sh''')
     manifest = build(config['sdk'], folder, firmware)
     write_module_scripts(folder, manifest, firmware)
     stage = '/data/adb/hyperos-xiaomi-camera-stage'
-    root(config, f'test ! -e {stage}\nmkdir -p {stage}')
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'test ! -e {stage}\nmkdir -p {stage}')
     for name in ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'module.prop',
                  'targets.conf', 'post-fs-data.sh', 'service.sh'):
         temporary = '/data/local/tmp/hyperos-xiaomi-' + name
         adb(config, 'push', str(folder / name), temporary, check=True, capture_output=True, timeout=60)
-        root(config, f'cp {shlex.quote(temporary)} {stage}/{name}\nrm {shlex.quote(temporary)}')
+        root(config, 'set -e\n' + mutation_guard(MODULE) + f'cp {shlex.quote(temporary)} {stage}/{name}\nrm {shlex.quote(temporary)}')
     # Directory bind adds the private JNI wrapper while retaining original APK/AOT bytes.
-    root(config, f'''am force-stop com.android.camera
+    root(config, 'set -e\n' + mutation_guard(MODULE) + f'''am force-stop com.android.camera
 test ! -e {APP}/lib/arm64/libcamera_yuv_jni.so
 mkdir -p {stage}/app
 cp -a {APP}/. {stage}/app/
