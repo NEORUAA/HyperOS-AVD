@@ -35,8 +35,7 @@ def candidate_defaults(profile, repo):
 def validate_workspace_firmware(profile, workspace):
     """Keep retained userdata on its verified firmware before any build writes."""
     workspace = Path(workspace)
-    if (profile['hyperos'] != '4.0.18.0.XFRCNXM'
-            or not any(path.is_file() for path in (workspace / 'avd').glob('*.avd/userdata-qemu.img*'))):
+    if not any(path.is_file() for path in (workspace / 'avd').glob('*.avd/userdata-qemu.img*')):
         return
     from phone_profile import profile_from_build
     try:

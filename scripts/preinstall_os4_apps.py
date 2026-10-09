@@ -111,33 +111,25 @@ def replacements(bundle, system_image, folder, sdk):
 
 
 def prepare_image(bundle, sdk):
-    from common import ROOT, sha256
+    from common import ROOT
     from build_image import erofs
     from erofs_image import build
-    from lp_image import pack
+    from packed_source import packed_candidate
     from patch_flutter import patch
-    source = ROOT / 'work/hyperos-system.img'
     folder = ROOT / 'work/preinstalled-candidate'
-    edits, manifest = replacements(bundle, source, folder / 'native', sdk)
-    edits['system_ext/lib64/libhyper_os_flutter.so'] = (
-        patch(erofs(source, '/system_ext/lib64/libhyper_os_flutter.so')),
-        0o644, 'u:object_r:system_lib_file:s0')
-    raw = folder / 'hyperos-system.img'
-    packed = folder / 'system.img'
-    if source.resolve() == raw.resolve():
-        raise RuntimeError('Candidate must be separate from the active image.')
-    source_hash = sha256(source)
-    build(raw, [('', source)], folder / 'tree', edits, removals=REMOVALS)
-    # Verify content as well as the builder's full inode metadata comparison.
-    for path, (data, _, _) in edits.items():
-        if erofs(raw, '/' + path) != data:
-            raise RuntimeError('Preinstalled image content mismatch: ' + path)
-    pack(ROOT / 'images/system.img', packed, [
-        ('system', raw), ('vendor', ROOT / 'work/vendor.img'),
-        ('system_dlkm', ROOT / 'work/base/system_dlkm.img')])
-    (folder / 'manifest.json').write_text(json.dumps({
-        'source_raw_sha256': source_hash, 'raw_sha256': sha256(raw),
-        'system_sha256': sha256(packed), 'preinstalled_apps': manifest}, indent=2) + '\n')
+    with packed_candidate(ROOT, folder, 'official-hongkong-ota') as candidate:
+        source = candidate.raw
+        edits, manifest = replacements(bundle, source, candidate.work / 'native', sdk)
+        edits['system_ext/lib64/libhyper_os_flutter.so'] = (
+            patch(erofs(source, '/system_ext/lib64/libhyper_os_flutter.so')),
+            0o644, 'u:object_r:system_lib_file:s0')
+        raw = candidate.work / 'hyperos-system.img'
+        build(raw, [('', source)], candidate.work / 'tree', edits, removals=REMOVALS)
+        # Verify content as well as the builder's full inode metadata comparison.
+        for path, (data, _, _) in edits.items():
+            if erofs(raw, '/' + path) != data:
+                raise RuntimeError('Preinstalled image content mismatch: ' + path)
+        packed = candidate.finish(raw, {'preinstalled_apps': manifest})
     print('Verified candidate ready: ' + str(packed), flush=True)
     print('Stop only the official OS4 AVD before activating it. Userdata must be retained.', flush=True)
 

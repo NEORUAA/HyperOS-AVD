@@ -110,7 +110,7 @@ class PhoneBuilderIsolationTests(unittest.TestCase):
                     self.assertEqual({path.relative_to(workspace): path.read_bytes()
                                       for path in workspace.rglob('*') if path.is_file()}, before)
 
-    def test_same_r3_rebuild_fresh_workspace_and_r2_remain_supported_without_writes(self):
+    def test_same_r3_rebuild_and_fresh_workspace_remain_supported_without_writes(self):
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary) / 'existing'
             validate_workspace_firmware(profile('4.0.18.0.XFRCNXM'), workspace)
@@ -119,7 +119,6 @@ class PhoneBuilderIsolationTests(unittest.TestCase):
             avd.mkdir(parents=True)
             data = avd / 'userdata-qemu.img'
             data.write_bytes(b'retained encrypted userdata')
-            validate_workspace_firmware(profile('4.0.17.0.XFRCNXM'), workspace)
             (workspace / 'local').mkdir()
             saved_path = workspace / 'local/build.json'
             saved_path.write_text(json.dumps({'source': 'official-hongkong-ota',
@@ -129,6 +128,27 @@ class PhoneBuilderIsolationTests(unittest.TestCase):
             validate_workspace_firmware(profile('4.0.18.0.XFRCNXM'), workspace)
             self.assertEqual({path.relative_to(workspace): path.read_bytes()
                               for path in workspace.rglob('*') if path.is_file()}, before)
+
+    def test_r2_rebuild_requires_matching_identity_and_refuses_downgrade(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / 'renamed-phone'
+            avd = workspace / 'avd/Renamed.avd'
+            avd.mkdir(parents=True)
+            (avd / 'userdata-qemu.img').write_bytes(b'user data')
+            (workspace / 'local').mkdir()
+            receipt = workspace / 'local/build.json'
+            for version in ('4.0.18.0.XFRCNXM', '4.0.17.0.XFRCNXM'):
+                receipt.write_text(json.dumps({'source': 'official-hongkong-ota', 'hyperos': version,
+                                               'archive_sha256': ARCHIVES[version]}))
+                before = {path.relative_to(workspace): path.read_bytes()
+                          for path in workspace.rglob('*') if path.is_file()}
+                if version == '4.0.18.0.XFRCNXM':
+                    with self.assertRaisesRegex(RuntimeError, 'verified matching'):
+                        validate_workspace_firmware(profile('4.0.17.0.XFRCNXM'), workspace)
+                else:
+                    validate_workspace_firmware(profile(version), workspace)
+                self.assertEqual({path.relative_to(workspace): path.read_bytes()
+                                  for path in workspace.rglob('*') if path.is_file()}, before)
 
     def test_no_configure_cannot_bypass_guard_before_archive_extract_or_environment_change(self):
         with tempfile.TemporaryDirectory() as temporary:

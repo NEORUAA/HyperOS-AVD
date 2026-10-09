@@ -674,37 +674,49 @@ def apply_runtime(config):
 
 
 def prepare_image():
-    from common import ROOT, sdk_path, sha256
+    from common import ROOT, sdk_path
     from build_image import erofs
     from erofs_image import build
-    from lp_image import pack
+    from packed_source import packed_candidate
     from phone_profile import profile_from_build
     profile = profile_from_build()
-    source = ROOT / 'work/hyperos-system.img'
     folder = ROOT / 'work/defaults-candidate'
-    edits, marker = image_replacements(sdk_path(), folder / 'overlay', profile)
-    edits['system/build.prop'] = (
-        production_properties(erofs(source, '/system/build.prop'), profile), 0o600, 'u:object_r:system_file:s0')
-    edits['system_ext/etc/init/init.hyperos_avd.rc'] = (
-        boot_defaults(erofs(source, '/system_ext/etc/init/init.hyperos_avd.rc'), profile),
-        0o644, 'u:object_r:system_file:s0')
-    if erofs(source, '/product/etc/device_features/hongkong.xml') != Path(profile['model_xml']).read_bytes():
-        raise RuntimeError('The source hongkong configuration differs from the verified original.')
-    original = erofs(source, '/product/priv-app/MIUIFindDeviceCN/MIUIFindDeviceCN.apk')
-    if hashlib.sha256(original).hexdigest() != profile['pins']['finddevice_apk']:
-        raise RuntimeError('Candidate source contains an unsupported FindDevice APK.')
-    raw, packed = folder / 'hyperos-system.img', folder / 'system.img'
-    source_hash = sha256(source)
-    build(raw, [('', source)], folder / 'tree', edits)
-    for path, (data, _, _) in edits.items():
-        if erofs(raw, '/' + path) != data:
-            raise RuntimeError('OS4 defaults content mismatch: ' + path)
-    pack(ROOT / 'images/system.img', packed, [
-        ('system', raw), ('vendor', ROOT / 'work/vendor.img'),
-        ('system_dlkm', ROOT / 'work/base/system_dlkm.img')])
-    (folder / 'manifest.json').write_text(json.dumps({
-        'source_raw_sha256': source_hash, 'raw_sha256': sha256(raw),
-        'system_sha256': sha256(packed), 'defaults': marker}, indent=2) + '\n')
+    with packed_candidate(ROOT, folder, 'official-hongkong-ota') as candidate:
+        source = candidate.raw
+        edits, marker = image_replacements(sdk_path(), candidate.work / 'overlay', profile)
+        accepted = json.loads((ROOT / 'local/build.json').read_text()).get('avd_defaults', {})
+        overlay = 'product/overlay/HyperOSAVDSettingsDefaults/SettingsDefaults.apk'
+        if accepted.get('settings_overlay_sha256'):
+            original_overlay = erofs(source, '/' + overlay)
+            if hashlib.sha256(original_overlay).hexdigest() != accepted['settings_overlay_sha256']:
+                raise RuntimeError('Accepted SettingsDefaults APK differs from its build receipt.')
+            if any(key in accepted and accepted[key] != marker.get(key)
+                   for key in ('settings_overlay', 'screen_off_timeout', 'sleep_timeout')):
+                raise RuntimeError('Accepted SettingsDefaults contract changed; retain reviewed signing provenance.')
+            # Rebuilding in an isolated temporary directory creates a fresh
+            # signing key. Retain the authenticated installed overlay bytes.
+            edits[overlay] = (original_overlay, 0o644, 'u:object_r:system_file:s0')
+            marker['settings_overlay_sha256'] = accepted['settings_overlay_sha256']
+            marker_path = 'product/etc/hyperos-avd-defaults.json'
+            if marker_path in edits:
+                _, mode, label = edits[marker_path]
+                edits[marker_path] = ((json.dumps(marker, indent=2) + '\n').encode(), mode, label)
+        edits['system/build.prop'] = (
+            production_properties(erofs(source, '/system/build.prop'), profile), 0o600, 'u:object_r:system_file:s0')
+        edits['system_ext/etc/init/init.hyperos_avd.rc'] = (
+            boot_defaults(erofs(source, '/system_ext/etc/init/init.hyperos_avd.rc'), profile),
+            0o644, 'u:object_r:system_file:s0')
+        if erofs(source, '/product/etc/device_features/hongkong.xml') != Path(profile['model_xml']).read_bytes():
+            raise RuntimeError('The source hongkong configuration differs from the verified original.')
+        original = erofs(source, '/product/priv-app/MIUIFindDeviceCN/MIUIFindDeviceCN.apk')
+        if hashlib.sha256(original).hexdigest() != profile['pins']['finddevice_apk']:
+            raise RuntimeError('Candidate source contains an unsupported FindDevice APK.')
+        raw = candidate.work / 'hyperos-system.img'
+        build(raw, [('', source)], candidate.work / 'tree', edits)
+        for path, (data, _, _) in edits.items():
+            if erofs(raw, '/' + path) != data:
+                raise RuntimeError('OS4 defaults content mismatch: ' + path)
+        packed = candidate.finish(raw, {'defaults': marker})
     print('Verified defaults candidate ready: ' + str(packed), flush=True)
 
 

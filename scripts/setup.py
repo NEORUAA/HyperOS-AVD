@@ -231,13 +231,13 @@ def start_instruction(root):
 def install_bundle(value):
     manifest, base = read_manifest(value)
     previous = ROOT / 'local/build.json'
-    if (manifest.get('hyperos') == '4.0.18.0.XFRCNXM'
+    if (manifest.get('build', {}).get('source') == OS4_SOURCE
             and any(path.is_file() for path in (ROOT / 'avd').glob('*.avd/userdata-qemu.img*'))):
         from phone_profile import profile_from_build
         try:
             saved = json.loads(previous.read_text())
-            selected = profile_from_build(saved)
-            verified = (saved.get('source') == OS4_SOURCE
+            selected = profile_from_build(saved) if isinstance(saved, dict) else {}
+            verified = (isinstance(saved, dict) and saved.get('source') == OS4_SOURCE
                         and saved.get('hyperos') == manifest['hyperos']
                         and saved.get('archive_sha256') == selected['archive_sha256']
                         and saved.get('archive_sha256') == manifest['build']['archive_sha256'])

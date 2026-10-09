@@ -11,6 +11,27 @@ import subprocess
 import zipfile
 
 
+def validate_workspace_firmware(profile, workspace, repo):
+    """Allow renamed workspaces without overwriting another firmware family."""
+    workspace, repo = Path(workspace).resolve(), Path(repo).resolve()
+    if workspace in (repo, repo / 'work') or workspace in repo.parents:
+        raise RuntimeError('Use a separate official tablet candidate workspace.')
+    receipt = workspace / 'local/build.json'
+    retained = any(path.is_file() for path in (workspace / 'avd').glob('*.avd/userdata-qemu.img*'))
+    if not receipt.exists() and not retained:
+        return
+    try:
+        saved = json.loads(receipt.read_text())
+        verified = (isinstance(saved, dict) and saved.get('source') == 'official-yingtian-ota'
+                    and saved.get('device') == profile['device']
+                    and saved.get('hyperos') == profile['hyperos']
+                    and saved.get('archive_sha256') == profile['source_archive_sha256'])
+    except (OSError, ValueError, KeyError):
+        verified = False
+    if not verified:
+        raise RuntimeError('Use a separate tablet candidate workspace; existing firmware and userdata were preserved.')
+
+
 def identity_values(build_props, metadata_bytes):
     """Select official public identity without importing hardware selectors."""
     values = {part: dict(line.split('=', 1) for line in data.decode().splitlines()
@@ -121,17 +142,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--zip', type=Path, default=repo / 'yingtian-ota_full-OS4.0.15.0.XBMCNXM-user-17.0-748c6d2437.zip')
     parser.add_argument('--workspace', type=Path, default=repo / 'work/os4-pad')
+    parser.add_argument('--name', help='New ASCII AVD name; otherwise preserve the saved instance name')
+    parser.add_argument('--port', type=int, help='Free even console port; otherwise preserve the saved instance port')
     parser.add_argument('--diagnostic-adb', action='store_true')
     parser.add_argument('--weather-angle-libs', type=Path,
                         help='Directory containing the two verified private Weather ANGLE libraries')
     args = parser.parse_args()
     workspace = args.workspace.resolve()
-    if workspace != repo / 'work/os4-pad':
-        raise RuntimeError('The tablet experiment must use work/os4-pad; other firmware is preserved.')
+    from os4_pad import PROFILE
+    validate_workspace_firmware(PROFILE, workspace, repo)
     os.environ['HYPEROS_AVD_WORKSPACE'] = str(workspace)
-    from common import ROOT, fetch_ksu, firmware_idle, host_check, sdk_path, sha256
+    from common import ROOT, avd_home, fetch_ksu, firmware_idle, host_check, port_free, sdk_path, sha256
     from build_image import erofs
-    from build_os4_official import merged_fstab, patch_ramdisk
+    from build_os4_official import merged_fstab, patch_ramdisk, validate_candidate
     from erofs_image import build
     from init_userdata import create
     from lp_image import pack, unpack
@@ -147,7 +170,11 @@ def main():
     from setup import configure, select_build_instance
     host_check()
     instance_name, instance_port = select_build_instance(SOURCE, NAME, PORT)
+    instance_name = args.name if args.name is not None else instance_name
+    instance_port = args.port if args.port is not None else instance_port
+    validate_candidate(instance_name, instance_port, ROOT, avd_home())
     firmware_idle(instance_port)
+    port_free(instance_port)
     for name in ('work', 'images', 'logs', 'config', 'local', 'tools'):
         (ROOT / name).mkdir(parents=True, exist_ok=True)
     if args.weather_angle_libs:
