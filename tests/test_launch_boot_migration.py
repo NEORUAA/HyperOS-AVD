@@ -44,6 +44,9 @@ class LaunchBootMigrationTests(unittest.TestCase):
             return {'migrated': False, 'unsupported': True, 'reason': 'Unknown hook is preserved.'}
         def standard(_config):
             order.append('native')
+        def lifecycle(_config):
+            order.append('lifecycle')
+            return {'migrated': False}
         with tempfile.TemporaryDirectory() as temporary, \
                 patch.object(launch, 'ROOT', Path(temporary)), \
                 patch.object(launch, 'is_os4', return_value=supported), \
@@ -51,6 +54,7 @@ class LaunchBootMigrationTests(unittest.TestCase):
                 patch.object(os4_defaults, 'apply_sensor_defaults'), \
                 patch.object(boot, 'migrate_kernel_helper', side_effect=kernel), \
                 patch.object(boot, 'migrate_uninstall_hook', side_effect=uninstall), \
+                patch.object(boot, 'migrate_lifecycle_hooks', side_effect=lifecycle), \
                 patch.object(native, 'install', side_effect=standard), \
                 patch('sys.stdout', new_callable=io.StringIO) as output:
             launch.initialize(config)
@@ -59,7 +63,7 @@ class LaunchBootMigrationTests(unittest.TestCase):
 
     def test_os4_migrates_known_hooks_before_native_module_installation(self):
         order, output, calls, record = self.initialize()
-        self.assertEqual(order, ['kernel', 'uninstall', 'native'])
+        self.assertEqual(order, ['kernel', 'uninstall', 'lifecycle', 'native'])
         self.assertIn('current user settings are preserved', output)
         self.assertIn('Unknown hook is preserved', output)
         self.assertFalse(any('reboot' in str(call) or 'ctl.restart' in str(call) for call in calls))
@@ -67,7 +71,7 @@ class LaunchBootMigrationTests(unittest.TestCase):
 
     def test_unknown_legacy_source_does_not_abort_native_initialization(self):
         order, output, _, _ = self.initialize(failure='Unknown owned helper checksum')
-        self.assertEqual(order, ['kernel', 'uninstall', 'native'])
+        self.assertEqual(order, ['kernel', 'uninstall', 'lifecycle', 'native'])
         self.assertIn('kernel helper is preserved: Unknown owned helper checksum', output)
         self.assertIn('HyperOS is ready', output)
 
