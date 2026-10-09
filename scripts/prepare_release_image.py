@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Refresh baked OS4 defaults in a separate release workspace, without AVD writes."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -12,6 +13,8 @@ from erofs_image import build
 from lp_image import pack, unpack
 from os4_defaults import image_replacements, production_properties, boot_defaults
 from patch_assistant import APK, image_replacements as assistant_replacements
+
+SHARED_FLUTTER = 'system_ext/lib64/libhyper_os_flutter.so'
 
 
 def clone(source, target):
@@ -30,6 +33,16 @@ def authenticated_properties(data):
             raise RuntimeError('Missing or ambiguous production property: ' + key.decode())
         lines[lines.index(matches[0])] = key + b'=' + value
     return b'\n'.join(lines) + b'\n'
+
+
+def refresh_shared_flutter(data, firmware):
+    """Refresh only a known engine from the selected original OTA profile."""
+    from patch_flutter import patch, profile
+    before, _ = profile(data)
+    if before != firmware['pins']['flutter']:
+        raise RuntimeError('Shared Flutter engine differs from its original OTA profile.')
+    fixed = patch(data)
+    return fixed, {'before': before, 'after': hashlib.sha256(fixed).hexdigest()}
 
 
 def prepare_boot_services(source, output):
@@ -143,7 +156,8 @@ def prepare(source, output, variant='os4-official'):
     if variant == 'os4-official':
         from phone_profile import profile_from_build
         firmware = profile_from_build(info)
-    raw = source / 'work/hyperos-system.img'
+        if info.get('system_sha256') != sha256(source / 'images/system.img'):
+            raise RuntimeError('Source packed image differs from its accepted release receipt.')
     output.mkdir(parents=True)
     for directory in ('images', 'tools', 'config'):
         shutil.copytree(source / directory, output / directory, copy_function=clone)
@@ -155,13 +169,19 @@ def prepare(source, output, variant='os4-official'):
         (output / 'local/build.json').write_text(json.dumps(info, indent=2) + '\n')
         print('Prepared isolated Pad release image: ' + str(output), flush=True)
         return
+    # Cleanup can remove all source work caches, and accepted repairs may have
+    # replaced the packed image since those caches were produced.
+    accepted = work / 'accepted'
+    unpack(source / 'images/system.img', accepted)
+    raw = accepted / 'system.img'
+    flutter, flutter_receipt = refresh_shared_flutter(erofs(raw, '/' + SHARED_FLUTTER), firmware)
     edits, defaults = image_replacements(sdk_path(), work / 'defaults-overlay', profile=firmware)
     # The resource defaults are unchanged; preserve the already accepted RRO signature.
     overlay = 'product/overlay/HyperOSAVDSettingsDefaults/SettingsDefaults.apk'
     original = erofs(raw, '/' + overlay)
     edits[overlay] = (original, 0o644, 'u:object_r:system_file:s0')
-    import hashlib
     defaults['settings_overlay_sha256'] = hashlib.sha256(original).hexdigest()
+    edits[SHARED_FLUTTER] = (flutter, 0o644, 'u:object_r:system_lib_file:s0')
     edits['product/etc/hyperos-avd-defaults.json'] = (
         (json.dumps(defaults, indent=2) + '\n').encode(), 0o644, 'u:object_r:system_file:s0')
     edits['system/build.prop'] = (production_properties(erofs(raw, '/system/build.prop'), profile=firmware),
@@ -176,12 +196,18 @@ def prepare(source, output, variant='os4-official'):
     for path, (content, _, _) in edits.items():
         if erofs(candidate, '/' + path) != content:
             raise RuntimeError('Release preparation mismatch: ' + path)
-    clone(source / 'work/vendor.img', work / 'vendor.img')
-    clone(source / 'work/base/system_dlkm.img', work / 'base/system_dlkm.img')
-    pack(source / 'images/system.img', output / 'images/system.img', [
+    clone(accepted / 'vendor.img', work / 'vendor.img')
+    clone(accepted / 'system_dlkm.img', work / 'base/system_dlkm.img')
+    partitions = [
         ('system', candidate), ('vendor', work / 'vendor.img'),
-        ('system_dlkm', work / 'base/system_dlkm.img')])
+        ('system_dlkm', work / 'base/system_dlkm.img')]
+    # pack() rebuilds liblp from the explicit inputs; retain any additional
+    # accepted partition rather than silently dropping it during preparation.
+    partitions.extend((path.stem, path) for path in sorted(accepted.glob('*.img'))
+                      if path.stem not in {'system', 'vendor', 'system_dlkm'})
+    pack(source / 'images/system.img', output / 'images/system.img', partitions)
     info.update(avd_defaults=defaults, assistant_render_fix=assistant, adb_authentication=True,
+                flutter_engine=flutter_receipt,
                 system_sha256=sha256(output / 'images/system.img'), raw_sha256=sha256(candidate))
     info.pop('preinstalled_backup', None)
     (output / 'local/build.json').write_text(json.dumps(info, indent=2) + '\n')
