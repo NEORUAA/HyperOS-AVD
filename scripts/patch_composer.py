@@ -4,6 +4,7 @@ import hashlib
 NATIVE = '/vendor/bin/hw/android.hardware.graphics.composer3-service.ranchu'
 BEFORE = 'e5c002c43532b16250908eb125b1a43f40aade6e783800f82744f6528b47c8ea'
 AFTER = 'b7fd0aa525ebcbf223a400452c0721e75d02a43a298094c4acc47d3053b26ad5'
+SITES = ((0x3a178, bytes.fromhex('0028211e'), bytes.fromhex('0028201e')),)
 MANIFEST = {'revision': 1, 'native': NATIVE, 'native_sha256': AFTER,
             'plane_alpha': 'unchanged', 'hardware_composition': True}
 
@@ -26,10 +27,10 @@ def patch(data):
     if checksum != BEFORE:
         raise RuntimeError('Unsupported ranchu composer SHA-256: ' + checksum)
     result = bytearray(data)
-    offset = 0x3a178
-    if result[offset:offset + 4] != bytes.fromhex('0028211e'):
+    offset, before, after = SITES[0]
+    if result[offset:offset + 4] != before:
         raise RuntimeError('Unexpected ranchu composer alpha instruction.')
-    result[offset:offset + 4] = bytes.fromhex('0028201e')
+    result[offset:offset + 4] = after
     if len(result) != len(data) or hashlib.sha256(result).hexdigest() != AFTER:
         raise RuntimeError('Ranchu composer patch checksum mismatch.')
     return bytes(result)

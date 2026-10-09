@@ -22,9 +22,13 @@ APK_SHA256 = '50a86b5976d645f9254ce84719d07de05f462452a14b05c60b28dc61afa4d464'
 AOT_BEFORE = 'fb8b1f91eba2d9c43875f49bbded70cca462be341fc379b9864e7c6136d6e463'
 AOT_AFTER = '44ab76174a5085b9cc45d44420b82e53c46423e2f58d32e0eee86264dc683dd5'
 AOT_OFFSET = 0xe68c7c
+AOT_SITES = ((AOT_OFFSET, bytes.fromhex('625b4091420441f9'),
+              bytes.fromhex('62bf409142d043f9')),)
 WATCHDOG_BEFORE = '4dc9fa82371dda8a0a8b9eff48301469d2f84752b52b71635b84e5fc0c47fa6e'
 WATCHDOG_AFTER = 'adf0bd94b88463669bebecb61ce301b614a974e28367a281ea1f81504062d3ed'
 WATCHDOG_OFFSET = 0x61f878
+WATCHDOG_SITES = ((WATCHDOG_OFFSET, bytes.fromhex('883e8052'),
+                   bytes.fromhex('08718252')),)
 REVISION = 11
 FIRMWARE_GUARD = '[ "$(getprop ro.mi.os.version.incremental)" = OS4.0.17.0.XFRCNXM ] || exit 0\n'
 
@@ -63,10 +67,11 @@ def patch_aot(data):
         return data
     if checksum != AOT_BEFORE:
         raise RuntimeError('Unsupported launcher AOT SHA-256: ' + checksum)
-    if data[AOT_OFFSET:AOT_OFFSET + 8] != bytes.fromhex('625b4091420441f9'):
+    offset, before, after = AOT_SITES[0]
+    if data[offset:offset + 8] != before:
         raise RuntimeError('Unexpected recents deadline instruction.')
     result = bytearray(data)
-    result[AOT_OFFSET:AOT_OFFSET + 8] = bytes.fromhex('62bf409142d043f9')
+    result[offset:offset + 8] = after
     if digest(result) != AOT_AFTER:
         raise RuntimeError('Launcher AOT output checksum mismatch.')
     return bytes(result)
@@ -84,10 +89,11 @@ def patch_watchdog(data):
         return data
     if checksum != WATCHDOG_BEFORE:
         raise RuntimeError('Unsupported launcher watchdog SHA-256: ' + checksum)
-    if data[WATCHDOG_OFFSET:WATCHDOG_OFFSET + 4] != bytes.fromhex('883e8052'):
+    offset, before, after = WATCHDOG_SITES[0]
+    if data[offset:offset + 4] != before:
         raise RuntimeError('Unexpected launcher watchdog instruction.')
     result = bytearray(data)
-    result[WATCHDOG_OFFSET:WATCHDOG_OFFSET + 4] = bytes.fromhex('08718252')
+    result[offset:offset + 4] = after
     if digest(result) != WATCHDOG_AFTER:
         raise RuntimeError('Launcher watchdog output checksum mismatch.')
     return bytes(result)

@@ -14,6 +14,9 @@ ENTRY = 'lib/arm64-v8a/libmglnative2.so'
 NATIVE = '/product/priv-app/VoiceAssistAndroidT/lib/arm64/libmglnative2.so'
 BEFORE = 'a78630eaa5e6991b888c2744e4f01de67e0079948def8cb60434c98130a1773e'
 AFTER = '7a7b0b363c4222320c6ff7f741ea1559e9f1f9a7ad9f01b78b98b4dd35445374'
+SITES = ((0x55275, b'#version 320 es', b'#version 300 es'),
+         # lsl w8, w8, #3 -> mov w8, #8 (EGL_ALPHA_SIZE).
+         (0xa017c, bytes.fromhex('08711d53'), bytes.fromhex('08018052')))
 MANIFEST = {'revision': 1, 'package': PACKAGE, 'apk': APK,
             'apk_sha256': APK_SHA256, 'native': NATIVE, 'native_sha256': AFTER,
             'glsl': '300 es', 'egl_alpha_bits': 8}
@@ -48,10 +51,7 @@ def patch(data):
     if checksum != BEFORE:
         raise RuntimeError('Unsupported XiaoAI MGL engine SHA-256: ' + checksum)
     result = bytearray(data)
-    sites = ((0x55275, b'#version 320 es', b'#version 300 es'),
-             # lsl w8, w8, #3 -> mov w8, #8 (EGL_ALPHA_SIZE).
-             (0xa017c, bytes.fromhex('08711d53'), bytes.fromhex('08018052')))
-    for offset, before, after in sites:
+    for offset, before, after in SITES:
         if result[offset:offset + len(before)] != before:
             raise RuntimeError(f'Unexpected XiaoAI MGL site at {offset:#x}')
         result[offset:offset + len(before)] = after
