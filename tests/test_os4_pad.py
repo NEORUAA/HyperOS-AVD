@@ -15,6 +15,43 @@ import patch_flutter
 
 
 class TabletProfileTests(unittest.TestCase):
+    def test_unverifiable_finddevice_still_initializes_pad_sensor_display_and_serial_defaults(self):
+        import common
+        import os4_defaults
+        import patch_pad_hwui
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / 'local').mkdir()
+            (folder / 'local/build.json').write_text(json.dumps({'source': os4_pad.SOURCE,
+                                                               'device': os4_pad.PROFILE['device']}))
+            commands = []
+            def root(config, command):
+                commands.append(command)
+                if command.startswith('[ -x /data/adb/ksu/bin/busybox'):
+                    return patch_pad_hwui.AFTER + '  native'
+                if command.startswith('if [ -e /data/adb/hyperos-avd-pad/libhwui.so'):
+                    return patch_pad_hwui.AFTER + '  saved'
+                return ''
+            def adb(config, action, *args, **kwargs):
+                if action == 'pull':
+                    Path(args[1]).write_bytes(b'verified HWUI fixture')
+            with mock_patch.object(common, 'ROOT', folder), mock_patch('apply_flutter_fix.official'), \
+                    mock_patch('apply_flutter_fix.root', side_effect=root), \
+                    mock_patch('common.adb', side_effect=adb) as device, \
+                    mock_patch('patch_pad_hwui.patch', return_value=b'verified candidate'), \
+                    mock_patch.object(os4_defaults, 'apply_thermal_runtime'), \
+                    mock_patch.object(os4_defaults, 'apply_refresh_runtime') as refresh, \
+                    mock_patch.object(os4_defaults, 'apply_finddevice_workaround', return_value='skipped') as finddevice, \
+                    mock_patch.object(os4_pad, 'apply_serial') as serial:
+                os4_pad.apply_runtime({'name': 'Renamed-pad'})
+            finddevice.assert_called_once_with({'name': 'Renamed-pad'}, os4_pad.FINDDEVICE_SHA256)
+            for arguments in (('emu', 'sensor', 'set', 'proximity', '5'),
+                              ('emu', 'sensor', 'set', 'light', '200'), ('emu', 'power', 'ac', 'on')):
+                self.assertTrue(any(call.args[1:] == arguments for call in device.call_args_list))
+            self.assertIn(os4_pad.display_settings_script(), commands)
+            refresh.assert_called_once()
+            serial.assert_called_once()
+
     def test_public_identity_script_preserves_hal_selectors_and_serial(self):
         script = os4_pad.profile_properties_script()
         subprocess.run(['sh', '-n'], input=script, text=True, check=True)

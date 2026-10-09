@@ -17,7 +17,137 @@ from os4_defaults import apply_gradient_blur_runtime, apply_sensor_defaults
 from os4_defaults import LOG_SCRIPT, LOG_TAGS, log_properties
 from os4_defaults import AWAKE_STAMP, AWAKE_SCRIPT, SCREEN_TIMEOUT
 from os4_defaults import apply_runtime, COMPONENT
+import os4_defaults
 from apply_navigation_fix import simulated_serial
+
+
+class FindDeviceUpdateTests(unittest.TestCase):
+    TREE = '''E: manifest (line=1)
+  A: package="com.xiaomi.finddevice" (Raw: "com.xiaomi.finddevice")
+  E: application (line=2)
+    A: android:label(0x01010001)=@0x7f010001
+    E: provider (line=3)
+      A: android:name(0x01010003)=".v2.FindDeviceStatusManagerProvider"
+      A: android:authorities(0x01010018)="com.xiaomi.finddevice.status"
+      A: android:exported(0x01010010)=(type 0x12)0x0
+      A: android:enabled(0x0101000e)=(type 0x12)0xffffffff
+      A: android:permission(0x01010006)="com.xiaomi.permission.FIND_DEVICE"
+'''
+
+    def package(self, *, flags='SYSTEM UPDATED_SYSTEM_APP', choice='', enabled=0):
+        text = ('  Package [com.xiaomi.finddevice] (123):\n'
+                '    pkgFlags=[ ' + flags + ' ]\n'
+                '    User 0: installed=true enabled=' + str(enabled) + '\n')
+        if choice:
+            text += '      ' + choice + 'Components:\n        ' + os4_defaults.PROVIDER + '\n'
+        # A disabled factory package must not override the active user choice.
+        return text + '\nHidden system packages:\n  Package [com.xiaomi.finddevice] (456):\n    User 0: enabled=3\n'
+
+    def fixture(self, *, updated=True, choice='', enabled=0, flags='SYSTEM UPDATED_SYSTEM_APP',
+                factory_bad=False, identities=None, raced=False, unavailable=False):
+        factory, active = b'trusted factory APK', b'signed updated APK'
+        factory_sha, active_sha = (hashlib.sha256(value).hexdigest() for value in (factory, active))
+        apk = '/data/app/~~token/com.xiaomi.finddevice-token/base.apk' if updated else os4_defaults.FINDDEVICE_FACTORY_APK
+        commands, reads = [], 0
+        def root(config, command):
+            nonlocal reads
+            commands.append(command)
+            if command.startswith('pm path '):
+                reads += 1
+                return 'package:' + (apk + '.replaced' if raced and reads > 1 else apk)
+            if command.startswith('dumpsys package '):
+                return self.package(choice=choice, enabled=enabled, flags=flags)
+            if command.startswith('sha256sum '):
+                return (('f' * 64 if factory_bad else factory_sha) if os4_defaults.FINDDEVICE_FACTORY_APK in command else active_sha) + '  apk'
+            if command == 'pm disable --user 0 ' + COMPONENT:
+                return 'Component ' + COMPONENT + ' new state: disabled'
+            return ''
+        def adb(config, action, remote, local, **kwargs):
+            self.assertEqual(action, 'pull')
+            Path(local).write_bytes(factory if remote == os4_defaults.FINDDEVICE_FACTORY_APK else active)
+        identity = ('certificate', os4_defaults.finddevice_provider_contract(self.TREE))
+        with patch('apply_flutter_fix.root', side_effect=root), patch('common.adb', side_effect=adb), \
+                patch.object(os4_defaults, 'finddevice_apk_identity',
+                             side_effect=RuntimeError('verification tools unavailable') if unavailable else (identities or [identity, identity])) as verify:
+            result = os4_defaults.apply_finddevice_workaround({'sdk': '/unused'}, factory_sha)
+        return result, commands, verify.call_count
+
+    def test_verified_factory_and_updated_system_provider_use_only_component_workaround(self):
+        for updated in (False, True):
+            with self.subTest(updated=updated):
+                result, commands, verified = self.fixture(updated=updated)
+                self.assertEqual(result, 'applied')
+                self.assertEqual(verified, 2 if updated else 0)
+                self.assertEqual([command for command in commands if command.startswith('pm disable')],
+                                 ['pm disable --user 0 ' + COMPONENT])
+
+    def test_update_requires_factory_trust_system_provenance_and_stable_active_apk(self):
+        for arguments in ({'factory_bad': True}, {'flags': 'SYSTEM'}, {'flags': 'UPDATED_SYSTEM_APP'},
+                          {'raced': True}, {'unavailable': True}):
+            with self.subTest(arguments=arguments):
+                result, commands, _ = self.fixture(**arguments)
+                self.assertEqual(result, 'skipped')
+                self.assertFalse(any(command.startswith(('pm disable', 'am force-stop')) for command in commands))
+
+    def test_update_signer_or_provider_capability_change_is_skipped(self):
+        identity = ('certificate', os4_defaults.finddevice_provider_contract(self.TREE))
+        for other in (('unrelated-certificate', identity[1]), ('certificate', ('changed',))):
+            result, commands, _ = self.fixture(identities=[identity, other])
+            self.assertEqual(result, 'skipped')
+            self.assertFalse(any(command.startswith('pm disable') for command in commands))
+
+    def test_explicit_component_and_package_choices_survive_updates(self):
+        for choice, enabled, expected in (('enabled', 0, 'enabled'), ('disabled', 0, 'disabled'),
+                                          ('', 1, 'explicit-package-choice'), ('', 3, 'explicit-package-choice')):
+            result, commands, verified = self.fixture(choice=choice, enabled=enabled)
+            self.assertEqual(result, expected)
+            self.assertEqual(verified, 0)
+            self.assertFalse(any(command.startswith(('pm disable', 'am force-stop')) for command in commands))
+
+    def test_literal_provider_contract_ignores_unrelated_app_resources_and_normalizes_class(self):
+        contract = os4_defaults.finddevice_provider_contract(self.TREE)
+        self.assertEqual(contract, os4_defaults.finddevice_provider_contract(
+            self.TREE.replace('".v2.FindDeviceStatusManagerProvider"', '"' + os4_defaults.PROVIDER + '"')))
+        changed = self.TREE.replace('(type 0x12)0x0', '(type 0x12)0xffffffff')
+        self.assertNotEqual(contract, os4_defaults.finddevice_provider_contract(changed))
+        for text in (self.TREE.replace('com.xiaomi.finddevice" (Raw:', 'unrelated.package" (Raw:'),
+                     self.TREE.replace('".v2.FindDeviceStatusManagerProvider"', '".OtherProvider"'),
+                     self.TREE.replace('(type 0x12)0x0', '@0x7f010001')):
+            with self.assertRaises(RuntimeError):
+                os4_defaults.finddevice_provider_contract(text)
+
+    def test_apk_identity_requires_successful_apksigner_and_parses_literal_provider(self):
+        import common
+        certificate = 'a' * 64
+        with tempfile.TemporaryDirectory() as temporary:
+            tools = Path(temporary) / 'build-tools/37.0.0'
+            tools.mkdir(parents=True)
+            (tools / 'apksigner').touch()
+            (tools / 'aapt2').touch()
+            with patch.object(common, 'sdk_path', return_value=Path(temporary)), \
+                    patch('patch_gnss.java', return_value='/sdk/jbr/bin/java'), \
+                    patch.object(os4_defaults.subprocess, 'run', side_effect=[
+                        Mock(stdout='Signer #1 certificate SHA-256 digest: ' + certificate + '\n'),
+                        Mock(stdout=self.TREE)]) as run:
+                identity = os4_defaults.finddevice_apk_identity(Path(temporary) / 'apk', temporary)
+            self.assertEqual(identity, ((certificate,), os4_defaults.finddevice_provider_contract(self.TREE)))
+            self.assertEqual(run.call_args_list[0].args[0][1:3], ['verify', '--print-certs'])
+            self.assertTrue(all(call.kwargs['check'] for call in run.call_args_list))
+            with patch.object(common, 'sdk_path', return_value=Path(temporary)), \
+                    patch('patch_gnss.java', return_value='/sdk/jbr/bin/java'), \
+                    patch.object(os4_defaults.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'apksigner')):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    os4_defaults.finddevice_apk_identity(Path(temporary) / 'apk', temporary)
+
+    def test_active_package_state_wins_over_disabled_factory_block(self):
+        text = self.package(choice='enabled')
+        block = os4_defaults.finddevice_package_block(text)
+        self.assertNotIn('Hidden system packages', block)
+        self.assertEqual(os4_defaults.finddevice_user_choice(block), 'enabled')
+        self.assertEqual(os4_defaults.finddevice_user_choice(''), 'unknown')
+        short = text.replace(os4_defaults.PROVIDER, '.v2.FindDeviceStatusManagerProvider')
+        short = short.replace('      enabledComponents:', '\n      enabledComponents:')
+        self.assertEqual(os4_defaults.finddevice_user_choice(os4_defaults.finddevice_package_block(short)), 'enabled')
 
 
 class OS4DefaultsTests(unittest.TestCase):
@@ -43,7 +173,9 @@ class OS4DefaultsTests(unittest.TestCase):
                 if command == 'getprop ro.boot.hardware':
                     return 'ranchu'
                 if command.startswith('pm path '):
-                    return 'package:/product/priv-app/FindDevice.apk'
+                    return 'package:' + os4_defaults.FINDDEVICE_FACTORY_APK
+                if command.startswith('dumpsys package '):
+                    return '  Package [com.xiaomi.finddevice] (123):\n    User 0: enabled=0\n'
                 if command.startswith('sha256sum '):
                     return selected['pins']['finddevice_apk'] + '  apk'
                 if command == 'pm disable --user 0 ' + COMPONENT:
@@ -62,6 +194,31 @@ class OS4DefaultsTests(unittest.TestCase):
                 apply_runtime(config)
             self.assertEqual(events.read_text(), 'timeout=123456\nsleep=654321\nstay=0\n')
             self.assertEqual(adb.call_args.args, (config, 'emu', 'power', 'ac', 'on'))
+
+    def test_unverifiable_finddevice_does_not_block_phone_awake_aod_or_other_defaults(self):
+        import common
+        from phone_profile import profile
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / 'local').mkdir()
+            (folder / 'local/defaults-before.json').write_text('{}')
+            calls = []
+            def root(config, command):
+                calls.append(command)
+                return 'ranchu' if command == 'getprop ro.boot.hardware' else ''
+            with patch.object(common, 'ROOT', folder), patch('apply_flutter_fix.official'), \
+                    patch('phone_profile.profile_from_build', return_value=profile('4.0.18.0.XFRCNXM')), \
+                    patch('apply_flutter_fix.root', side_effect=root), patch('common.adb') as adb, \
+                    patch.object(os4_defaults, 'apply_color_runtime') as color, \
+                    patch.object(os4_defaults, 'apply_refresh_runtime') as refresh, \
+                    patch.object(os4_defaults, 'apply_gradient_blur_runtime') as blur:
+                apply_runtime({'name': 'Renamed'})
+            self.assertIn(AWAKE_SCRIPT, calls)
+            self.assertTrue(any('doze_always_on 1' in command for command in calls))
+            self.assertFalse(any('pm disable' in command for command in calls))
+            self.assertEqual(adb.call_count, 1)
+            for function in (color, refresh, blur):
+                function.assert_called_once()
 
     def test_awake_defaults_seed_once_and_preserve_later_user_choices(self):
         with tempfile.TemporaryDirectory() as directory:

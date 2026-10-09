@@ -8,10 +8,12 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import tempfile
 
 FINDDEVICE = 'com.xiaomi.finddevice'
 PROVIDER = FINDDEVICE + '.v2.FindDeviceStatusManagerProvider'
 COMPONENT = FINDDEVICE + '/' + PROVIDER
+FINDDEVICE_FACTORY_APK = '/product/priv-app/MIUIFindDeviceCN/MIUIFindDeviceCN.apk'
 APK_SHA256 = 'e57888e1721680fece2961ec0cf23c646693be2e58d0ae6b772c285ce317cfd1'
 OVERLAY = 'org.hyperos.avd.settings.defaults'
 SCREEN_TIMEOUT = 2147483647
@@ -465,6 +467,176 @@ def apply_gradient_blur_runtime(config):
         print('OS4 generic gradient blur selected; cold-boot to reload native HWUI.', flush=True)
 
 
+def finddevice_provider_contract(text):
+    """Read the literal provider capability contract from aapt2's XML tree."""
+    nodes, stack = [], []
+    for line in text.splitlines():
+        element = re.match(r'^(\s*)E: ([\w.-]+)(?:\s|$)', line)
+        if element:
+            depth = len(element[1])
+            while stack and stack[-1]['depth'] >= depth:
+                stack.pop()
+            node = {'name': element[2], 'depth': depth, 'attributes': {},
+                    'parent': stack[-1] if stack else None, 'children': []}
+            if stack:
+                stack[-1]['children'].append(node)
+            nodes.append(node)
+            stack.append(node)
+            continue
+        attribute = re.match(r'^\s*A: ([\w:.-]+)(?:\(0x[0-9a-fA-F]+\))?=(.*)$', line)
+        if attribute and stack:
+            if attribute[1] in stack[-1]['attributes']:
+                raise RuntimeError('Duplicate FindDevice manifest attribute.')
+            stack[-1]['attributes'][attribute[1]] = attribute[2]
+
+    def literal(value):
+        if value.startswith('"'):
+            result, _ = json.JSONDecoder().raw_decode(value)
+            return result
+        boolean = re.fullmatch(r'\(type 0x12\)0x(0|1|ffffffff)', value)
+        if boolean:
+            return boolean[1] != '0'
+        if value in ('true', 'false'):
+            return value == 'true'
+        raise RuntimeError('FindDevice provider capability is not a literal declaration.')
+
+    def qualified(name):
+        if not isinstance(name, str) or not name:
+            raise RuntimeError('Invalid FindDevice provider class.')
+        return FINDDEVICE + name if name.startswith('.') else (FINDDEVICE + '.' + name if '.' not in name else name)
+
+    manifests = [node for node in nodes if node['name'] == 'manifest' and node['parent'] is None]
+    if len(manifests) != 1 or literal(manifests[0]['attributes'].get('package', '')) != FINDDEVICE:
+        raise RuntimeError('FindDevice manifest package identity differs.')
+    applications = [node for node in manifests[0]['children'] if node['name'] == 'application']
+    if len(applications) != 1:
+        raise RuntimeError('Ambiguous FindDevice application declaration.')
+    application = applications[0]
+    providers = [node for node in application['children'] if node['name'] == 'provider'
+                 and qualified(literal(node['attributes'].get('android:name', ''))) == PROVIDER]
+    if len(providers) != 1:
+        raise RuntimeError('FindDevice status provider is missing or ambiguous.')
+
+    def subtree(node):
+        attributes = {key: literal(value) for key, value in node['attributes'].items()}
+        if node is providers[0]:
+            attributes['android:name'] = qualified(attributes['android:name'])
+            if not isinstance(attributes.get('android:authorities'), str) or not attributes['android:authorities']:
+                raise RuntimeError('FindDevice provider authorities are unavailable.')
+        return (node['name'], tuple(sorted(attributes.items())), tuple(subtree(child) for child in node['children']))
+
+    inherited = tuple((key, literal(application['attributes'][key]) if key in application['attributes'] else default)
+                      for key, default in (('android:enabled', True), ('android:permission', ''),
+                                           ('android:process', FINDDEVICE), ('android:directBootAware', False)))
+    return inherited, subtree(providers[0])
+
+
+def finddevice_apk_identity(apk, sdk):
+    """Verify the original signer and target declaration without modifying APKs."""
+    from common import sdk_path
+    from patch_gnss import java
+    candidates = sorted((sdk_path(sdk) / 'build-tools').glob('*/apksigner'), reverse=True)
+    tools = next((path.parent for path in candidates if (path.parent / 'aapt2').is_file()), None)
+    if tools is None:
+        raise RuntimeError('FindDevice update verification needs SDK apksigner and aapt2.')
+    environment = dict(os.environ, JAVA_HOME=str(Path(java()).parent.parent))
+    signed = subprocess.run([str(tools / 'apksigner'), 'verify', '--print-certs', str(apk)],
+                            check=True, capture_output=True, text=True, env=environment, timeout=30)
+    certificates = re.findall(r'^Signer #[0-9]+ certificate SHA-256 digest: ([0-9a-fA-F]{64})$',
+                              signed.stdout, re.MULTILINE)
+    if not certificates or len(certificates) != len(set(certificates)):
+        raise RuntimeError('FindDevice verified signer identity is unavailable.')
+    tree = subprocess.run([str(tools / 'aapt2'), 'dump', 'xmltree', str(apk),
+                           '--file', 'AndroidManifest.xml'], check=True, capture_output=True,
+                          text=True, timeout=30)
+    return tuple(sorted(value.lower() for value in certificates)), finddevice_provider_contract(tree.stdout)
+
+
+def finddevice_package_block(text):
+    """Use the active package, never a disabled factory package printed later."""
+    match = re.search(r'^[ \t]*Package \[' + re.escape(FINDDEVICE) + r'\].*$', text, re.MULTILINE)
+    if not match:
+        return ''
+    rest = text[match.start():]
+    end = re.search(r'^[ \t]*(?:Package \[|Hidden system packages:|Disabled system packages:)',
+                    rest[rest.index('\n') + 1:] if '\n' in rest else '', re.MULTILINE)
+    return rest[:rest.index('\n') + 1 + end.start()] if end else rest
+
+
+def finddevice_user_choice(block):
+    """Keep explicit component and package choices; default means unmodified."""
+    user = re.search(r'^[ \t]*User 0:.*$', block, re.MULTILINE)
+    if not user:
+        return 'unknown'
+    user_block = block[user.start():]
+    next_user = re.search(r'^[ \t]*User [1-9][0-9]*:', user_block, re.MULTILINE)
+    if next_user:
+        user_block = user_block[:next_user.start()]
+    enabled = re.search(r'\benabled=([0-9]+)\b', user[0])
+    if not enabled or enabled[1] != '0':
+        return 'explicit-package-choice'
+    for heading, choice in (('enabledComponents', 'enabled'), ('disabledComponents', 'disabled')):
+        entries = re.search(r'^([ \t]*)' + heading + r':[ \t]*\n((?:\1[ \t]+[^\n]*\n?)*)', user_block, re.MULTILINE)
+        names = {line.strip() for line in entries[2].splitlines()} if entries else set()
+        if PROVIDER in names or '.' + PROVIDER.removeprefix(FINDDEVICE + '.') in names:
+            return choice
+    return 'default'
+
+
+def apply_finddevice_workaround(config, factory_sha256):
+    """Skip an unverifiable update locally so unrelated defaults still run."""
+    from apply_flutter_fix import root
+    from common import adb
+    reason = 'unverified package'
+    try:
+        paths = root(config, 'pm path ' + FINDDEVICE).splitlines()
+        if len(paths) != 1 or not paths[0].startswith('package:'):
+            raise RuntimeError('active base APK is unavailable or split')
+        apk = paths[0].removeprefix('package:')
+        if not re.fullmatch(r'/(?:data/app/|product/priv-app/)[A-Za-z0-9_./+=@~-]+\.apk', apk) or '..' in Path(apk).parts:
+            raise RuntimeError('active APK path is unsupported')
+        block = finddevice_package_block(root(config, 'dumpsys package ' + FINDDEVICE))
+        choice = finddevice_user_choice(block)
+        if choice == 'unknown':
+            raise RuntimeError('active package user state is unavailable')
+        if choice != 'default':
+            print('FindDevice provider workaround: preserving ' + choice + '.', flush=True)
+            return choice
+        checksum = root(config, 'sha256sum ' + shlex.quote(apk)).split()[0]
+        if apk == FINDDEVICE_FACTORY_APK and checksum == factory_sha256:
+            reason = 'verified factory component'
+        else:
+            flags = re.search(r'\b(?:pkgFlags|flags)=\[([^\]]*)\]', block)
+            if (not apk.startswith('/data/app/') or not flags
+                    or not {'SYSTEM', 'UPDATED_SYSTEM_APP'} <= set(flags[1].split())):
+                raise RuntimeError('active package is not a verified updated system app')
+            if root(config, 'sha256sum ' + FINDDEVICE_FACTORY_APK).split()[0] != factory_sha256:
+                raise RuntimeError('trusted factory APK is unavailable')
+            with tempfile.TemporaryDirectory(prefix='hyperos-finddevice-') as temporary:
+                factory, active = Path(temporary) / 'factory.apk', Path(temporary) / 'active.apk'
+                for remote, local, expected in ((FINDDEVICE_FACTORY_APK, factory, factory_sha256), (apk, active, checksum)):
+                    adb(config, 'pull', remote, str(local), check=True, capture_output=True, timeout=60)
+                    if hashlib.sha256(local.read_bytes()).hexdigest() != expected:
+                        raise RuntimeError('APK changed during verification')
+                if finddevice_apk_identity(factory, config.get('sdk')) != finddevice_apk_identity(active, config.get('sdk')):
+                    raise RuntimeError('update signer or provider capability differs from the factory APK')
+            reason = 'verified updated system component'
+        # Package replacement or a user choice made during verification wins.
+        if (root(config, 'pm path ' + FINDDEVICE).splitlines() != paths
+                or root(config, 'sha256sum ' + shlex.quote(apk)).split()[0] != checksum
+                or finddevice_user_choice(finddevice_package_block(root(config, 'dumpsys package ' + FINDDEVICE))) != 'default'):
+            raise RuntimeError('package or user choice changed during verification')
+        output = root(config, 'pm disable --user 0 ' + shlex.quote(COMPONENT))
+        if 'new state: disabled' not in output:
+            raise RuntimeError('provider disable was not confirmed')
+        root(config, 'am force-stop ' + FINDDEVICE)
+        print('FindDevice provider workaround: applied to ' + reason + '.', flush=True)
+        return 'applied'
+    except (RuntimeError, OSError, subprocess.SubprocessError, ValueError, IndexError) as error:
+        print('FindDevice provider workaround skipped: ' + str(error) + '; other defaults continue.', flush=True)
+        return 'skipped'
+
+
 def apply_runtime(config):
     """Seed defaults once without replacing later choices or resetting OOBE."""
     from apply_flutter_fix import official, root
@@ -474,12 +646,6 @@ def apply_runtime(config):
     phone_profile = profile_from_build()
     if root(config, 'getprop ro.boot.hardware') != 'ranchu':
         raise RuntimeError('OS4 defaults are restricted to ranchu hardware.')
-    paths = root(config, 'pm path ' + FINDDEVICE).splitlines()
-    if len(paths) != 1 or not paths[0].startswith('package:'):
-        raise RuntimeError('Expected the verified original FindDevice APK.')
-    apk = paths[0].removeprefix('package:')
-    if root(config, 'sha256sum ' + shlex.quote(apk)).split()[0] != phone_profile['pins']['finddevice_apk']:
-        raise RuntimeError('Unsupported FindDevice APK; no component changes applied.')
     before = ROOT / 'local/defaults-before.json'
     if not before.exists():
         before.parent.mkdir(parents=True, exist_ok=True)
@@ -489,10 +655,8 @@ def apply_runtime(config):
             'sleep_timeout': root(config, 'settings get secure sleep_timeout'),
             'stay_on_while_plugged_in': root(config, 'settings get global stay_on_while_plugged_in'),
         }, indent=2) + '\n')
-    output = root(config, 'pm disable --user 0 ' + shlex.quote(COMPONENT))
-    if 'new state: disabled' not in output:
-        raise RuntimeError('FindDevice provider disable validation failed: ' + output)
-    root(config, 'am force-stop ' + FINDDEVICE + '\n' + AWAKE_SCRIPT)
+    apply_finddevice_workaround(config, phone_profile['pins']['finddevice_apk'])
+    root(config, AWAKE_SCRIPT)
     # The default emulator battery is unplugged. Supply AC so PowerManager's
     # stay-awake mode is indefinite, rather than relying on a 24-day timeout.
     adb(config, 'emu', 'power', 'ac', 'on', check=True, capture_output=True, timeout=15)
@@ -506,7 +670,7 @@ def apply_runtime(config):
     apply_color_runtime(config)
     apply_refresh_runtime(config)
     apply_gradient_blur_runtime(config)
-    print('OS4 defaults applied: FindDevice workaround, awake AC and initial always-on AOD.', flush=True)
+    print('OS4 defaults applied: awake AC and initial always-on AOD; FindDevice result reported above.', flush=True)
 
 
 def prepare_image():

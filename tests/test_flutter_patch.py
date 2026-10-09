@@ -16,7 +16,8 @@ import apply_navigation_fix
 
 
 class FlutterPatchTests(unittest.TestCase):
-    def pad_install_fixture(self, folder, *, old=False, native_hash='', wrong_apk=False, no_engine=False):
+    def pad_install_fixture(self, folder, *, old=False, native_hash='', wrong_apk=False, no_engine=False,
+                            unknown_engine=False, updated=False):
         root = Path(folder)
         (root / 'local').mkdir()
         (root / 'local/build.json').write_text(json.dumps({'source': apply_flutter_fix.PAD_SOURCE}))
@@ -35,7 +36,8 @@ class FlutterPatchTests(unittest.TestCase):
         weather_hash = hashlib.sha256(apks['com.miui.weather2']).hexdigest()
         before, after = map(lambda data: hashlib.sha256(data).hexdigest(), (raw, engine))
         home_path = '/product/priv-app/MiuiHome/MiuiHome.apk'
-        packages = {'com.miui.home': home_path, 'com.miui.weather2': apply_flutter_fix.PAD_WEATHER_APK}
+        weather_path = '/data/app/~~token/com.miui.weather2-token/base.apk' if updated else apply_flutter_fix.PAD_WEATHER_APK
+        packages = {'com.miui.home': home_path, 'com.miui.weather2': weather_path}
         legacy = {'revision': 6, 'system': {'target': apply_flutter_fix.SYSTEM_LIB,
                     'before': hashlib.sha256(system).hexdigest(), 'after': hashlib.sha256(fixed_system).hexdigest()},
                   'packages': packages, 'apks': [{'package': 'com.miui.weather2',
@@ -73,6 +75,8 @@ class FlutterPatchTests(unittest.TestCase):
             if data == system:
                 return fixed_system
             if data == raw:
+                if unknown_engine:
+                    raise RuntimeError('Unsupported Flutter engine SHA-256: unknown-private-engine')
                 return engine
             raise AssertionError('Unexpected source binary')
 
@@ -91,14 +95,14 @@ class FlutterPatchTests(unittest.TestCase):
                 mock_patch.object(apply_flutter_fix, 'PAD_WEATHER_AFTER', after), \
                 mock_patch.object(apply_flutter_fix, 'rewrite_apk') as rewrite, \
                 mock_patch.object(apply_flutter_fix, 'detach') as detach:
-            if wrong_apk or native_hash and native_hash.split()[0] not in (before, after):
-                with self.assertRaises(RuntimeError):
-                    apply_flutter_fix.install({'sdk': '/unused'}, sources=(apply_flutter_fix.PAD_SOURCE,))
-                self.assertFalse(any(command.startswith('mkdir ') for command in commands))
-                result = None
-            else:
-                result = apply_flutter_fix.install({'sdk': '/unused'}, sources=(apply_flutter_fix.PAD_SOURCE,))
-                self.assertEqual(detach.call_count, int(old))
+            result = apply_flutter_fix.install({'sdk': '/unused'}, sources=(apply_flutter_fix.PAD_SOURCE,))
+            self.assertEqual(detach.call_count, int(old))
+            if wrong_apk or unknown_engine or native_hash and native_hash.split()[0] not in (before, after):
+                self.assertEqual(result['apks'], [])
+                self.assertIn('com.miui.weather2', result['skipped_apks'])
+                self.assertTrue(any(command.startswith('mkdir ') for command in commands))
+                if old:
+                    self.assertIn(apply_flutter_fix.PAD_WEATHER_ENGINE, detach.call_args.kwargs['preserve_paths'])
             rewrite.assert_not_called()
         self.assertEqual((root / 'com.miui.weather2.apk').read_bytes(), apks['com.miui.weather2'])
         return result, raw, commands
@@ -118,11 +122,40 @@ class FlutterPatchTests(unittest.TestCase):
             self.assertTrue(manifest['apks'][0]['external'])
             self.assertTrue(manifest['apks'][0]['preserve_original'])
 
-    def test_pad_unknown_apk_or_native_is_refused_before_guest_writes(self):
+    def test_pad_unknown_apk_or_native_skips_private_overlay_and_keeps_shared_install(self):
         for arguments in ({'wrong_apk': True}, {'wrong_apk': True, 'no_engine': True},
                           {'native_hash': '0' * 64 + '  engine'}):
             with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as temporary:
                 self.pad_install_fixture(temporary, **arguments)
+
+    def test_updated_unknown_private_engine_never_aborts_or_changes_original_apk(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest, _, commands = self.pad_install_fixture(temporary, unknown_engine=True, updated=True, old=True)
+            self.assertEqual(manifest['apks'], [])
+            self.assertIn('unknown-private-engine', manifest['skipped_apks']['com.miui.weather2'])
+            self.assertFalse(any('com.miui.weather2.so' in command for command in commands))
+            self.assertIn('target', manifest['system'])
+
+    def test_optional_private_bind_failure_does_not_abort_shared_boot_setup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            checksum = 'a' * 64
+            apk = folder / 'home.apk'
+            apk.touch()
+            (folder / 'apks.conf').write_text('com.miui.home|private.so|' + str(apk)
+                                            + '|/private.so|before|after|' + checksum + '\n')
+            bb = folder / 'bb'
+            bb.touch(); bb.chmod(0o700)
+            script = apply_flutter_fix.BOOT_SCRIPT
+            body = script[script.index('[ -f "$MODDIR/disable" ] && exit 0\n'):]
+            log = folder / 'log'
+            program = ('MODDIR=' + str(folder) + '\nBB=' + str(bb) + '\n'
+                       'log() { echo "$*" >> ' + str(log) + '; }\n'
+                       'bind_target() { [ "$3" != /private.so ]; }\n'
+                       'sha256sum() { echo "' + checksum + '  apk"; }\n' + body)
+            result = subprocess.run(['sh', '-c', program, 'post-fs-data.sh'], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Private engine skipped', log.read_text())
 
     def test_pad_weather_is_deferred_but_system_and_home_keep_early_bind(self):
         with tempfile.TemporaryDirectory() as temporary:

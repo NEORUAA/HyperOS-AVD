@@ -33,6 +33,55 @@ REVISION = 11
 FIRMWARE_GUARD = '[ "$(getprop ro.mi.os.version.incremental)" = OS4.0.17.0.XFRCNXM ] || exit 0\n'
 
 
+def deadline_status(apk_hash, embedded, native, *, factory_hash=None, factory=False):
+    """Describe optional native deadlines independently of an APK version name."""
+    expected = {'libapp.so': (AOT_BEFORE, AOT_AFTER),
+                'libapp_launcher.so': (WATCHDOG_BEFORE, WATCHDOG_AFTER)}
+    if (factory and factory_hash and apk_hash == factory_hash
+            and all(native.get(name) == hashes[1] for name, hashes in expected.items())):
+        return 'baked', 'Launcher deadlines are already patched in the factory image.'
+    from apply_flutter_fix import EMPTY
+    if set(embedded) != set(expected):
+        return 'unverified', 'Optional launcher deadlines could not be inspected; original code retained.'
+    if all(checksum == EMPTY for checksum in embedded.values()):
+        return 'not-applicable', 'Optional Dart AOT deadlines do not apply to this launcher; Quickstep identity remains active.'
+    if all(embedded.get(name) in hashes for name, hashes in expected.items()):
+        if all(native.get(name) == hashes[1] for name, hashes in expected.items()):
+            return 'patched', 'Launcher native deadlines are already patched.'
+        return 'catalog', 'Launcher native deadlines match supported profiles; the native compatibility catalog applies them.'
+    return 'unknown', 'Optional launcher deadline libraries are unknown; original code retained, other navigation setup continues.'
+
+
+def inspect_deadlines(config, apk, apk_hash, firmware):
+    """Use verified library bytes for diagnostics, without rewriting any APK."""
+    try:
+        if not apk.startswith(('/data/app/', '/product/')) or any(c in apk for c in '\n\r|'):
+            raise RuntimeError('Unsupported launcher APK path.')
+        command = ('BB=/data/adb/ksu/bin/busybox\nAPK=' + shlex.quote(apk) + '\n'
+                   '"$BB" unzip -l "$APK" >/dev/null 2>&1 || exit 1\n')
+        for name in ('libapp.so', 'libapp_launcher.so'):
+            target = str(Path(apk).parent / 'lib/arm64' / name)
+            command += ('printf "' + name + '|"\n'
+                        '"$BB" unzip -p "$APK" lib/arm64-v8a/' + name + ' 2>/dev/null | "$BB" sha256sum\n'
+                        'printf "native-' + name + '|"\n'
+                        'if [ -f ' + shlex.quote(target) + ' ]; then sha256sum ' + shlex.quote(target) + '; else echo missing; fi\n')
+        embedded, native = {}, {}
+        for line in root(config, command).splitlines():
+            name, separator, value = line.partition('|')
+            checksum = value.split()[0] if value.split() else ''
+            if not separator:
+                continue
+            if name.startswith('native-'):
+                native[name.removeprefix('native-')] = checksum
+            elif re.fullmatch(r'[0-9a-f]{64}', checksum):
+                embedded[name] = checksum
+        return deadline_status(apk_hash, embedded, native,
+                               factory_hash=firmware.get('pins', {}).get('home_apk'),
+                               factory=apk == '/product/priv-app/MiuiHome/MiuiHome.apk')
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return 'unverified', 'Optional launcher deadlines could not be inspected; original code retained, other navigation setup continues.'
+
+
 def simulated_serial(previous):
     """Match the supplied phone's SN style, not an official factory identity."""
     value = previous.get('serial_number') if previous else None
@@ -237,7 +286,11 @@ def install(config, enable=False):
                 'animation_backend': 'stock-sf', 'sf_animation': True,
                 'phone_identity': phone_identity, 'serial_number': serial}
     apk = root(config, 'pm path com.miui.home').splitlines()[0].removeprefix('package:')
-    aot_supported = apk.startswith('/data/app/') and root(config, 'sha256sum ' + shlex.quote(apk)).split()[0] == APK_SHA256
+    apk_hash = root(config, 'sha256sum ' + shlex.quote(apk)).split()[0]
+    aot_supported = apk.startswith('/data/app/') and apk_hash == APK_SHA256
+    deadline_note = None
+    if not aot_supported:
+        manifest['deadline_status'], deadline_note = inspect_deadlines(config, apk, apk_hash, firmware)
     payloads = []
     checksums = []
     if aot_supported:
@@ -297,7 +350,7 @@ def install(config, enable=False):
             root(config, f'sh {MODULE}/service.sh')
     else:
         root(config, f'rm -f {MODULE}/aot.conf {MODULE}/watchdog.conf')
-        print('Launcher deadline patch: this APK is not supported; keeping its original code.', flush=True)
+        print(deadline_note, flush=True)
     # A fresh userdata install happens after post-fs-data has already passed.
     # Apply thermal labels now; the baked identity handles the first RRO scan.
     root(config, f'sh {MODULE}/post-fs-data.sh')

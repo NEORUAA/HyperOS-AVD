@@ -15,6 +15,37 @@ import os4_defaults as defaults
 
 
 class PhoneRuntimeUpgradeTests(unittest.TestCase):
+    def test_deadline_diagnostics_distinguish_factory_patch_missing_libraries_and_unknown_code(self):
+        libraries = {'libapp.so': navigation.AOT_BEFORE,
+                     'libapp_launcher.so': navigation.WATCHDOG_BEFORE}
+        patched = {'libapp.so': navigation.AOT_AFTER,
+                   'libapp_launcher.so': navigation.WATCHDOG_AFTER}
+        state, message = navigation.deadline_status('factory', libraries, patched,
+                                                    factory_hash='factory', factory=True)
+        self.assertEqual(state, 'baked')
+        self.assertIn('already patched in the factory image', message)
+        state, message = navigation.deadline_status('updated', dict.fromkeys(libraries, flutter.EMPTY), {})
+        self.assertEqual(state, 'not-applicable')
+        self.assertIn('do not apply', message)
+        self.assertNotIn('not supported', message)
+        self.assertEqual(navigation.deadline_status('changed-apk', libraries, {})[0], 'catalog')
+        unknown = dict(libraries, **{'libapp.so': 'a' * 64})
+        state, message = navigation.deadline_status('updated', unknown, {})
+        self.assertEqual(state, 'unknown')
+        self.assertIn('other navigation setup continues', message)
+        self.assertEqual(navigation.deadline_status('updated', {}, {})[0], 'unverified')
+
+    def test_deadline_inspection_accepts_empty_native_entries_only_after_readable_apk(self):
+        from unittest.mock import patch
+        lines = ''.join(name + '|' + flutter.EMPTY + '  -\nnative-' + name + '|missing\n'
+                        for name in ('libapp.so', 'libapp_launcher.so'))
+        with patch.object(navigation, 'root', return_value=lines) as read:
+            result = navigation.inspect_deadlines({}, '/data/app/x/base.apk', 'new', {})
+            self.assertEqual(result[0], 'not-applicable')
+            self.assertIn('unzip -l "$APK" >/dev/null 2>&1 || exit 1', read.call_args.args[1])
+        with patch.object(navigation, 'root', side_effect=RuntimeError('APK unavailable')):
+            self.assertEqual(navigation.inspect_deadlines({}, '/data/app/x/base.apk', 'new', {})[0], 'unverified')
+
     def profile(self):
         return {'hyperos': '4.0.18.0.XFRCNXM', 'incremental': 'OS4.0.18.0.XFRCNXM',
                 'properties': {'ro.build.fingerprint': 'verified-new-source',

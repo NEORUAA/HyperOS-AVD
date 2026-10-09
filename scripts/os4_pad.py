@@ -343,17 +343,8 @@ def apply_runtime(config):
          'sh -n ' + early_path + '.next\n'
          'mv -f ' + early_path + '.next ' + early_path + '\n'
          'sh ' + early_path)
-    from os4_defaults import COMPONENT, FINDDEVICE
-    paths = root(config, 'pm path ' + FINDDEVICE).splitlines()
-    if len(paths) != 1 or not paths[0].startswith('package:'):
-        raise RuntimeError('Expected the original yingtian FindDevice APK.')
-    apk = paths[0].removeprefix('package:')
-    if root(config, 'sha256sum ' + shlex.quote(apk)).split()[0] != FINDDEVICE_SHA256:
-        raise RuntimeError('Unsupported tablet FindDevice APK; no component changes applied.')
-    result = root(config, 'pm disable --user 0 ' + shlex.quote(COMPONENT))
-    if 'new state: disabled' not in result:
-        raise RuntimeError('Tablet FindDevice provider disable failed: ' + result)
-    root(config, 'am force-stop ' + FINDDEVICE)
+    from os4_defaults import apply_finddevice_workaround
+    apply_finddevice_workaround(config, FINDDEVICE_SHA256)
     for sensor, value in (('proximity', '5'), ('light', '200')):
         adb(config, 'emu', 'sensor', 'set', sensor, value,
             capture_output=True, text=True, check=True, timeout=10)

@@ -61,7 +61,7 @@ if [ "${0##*/}" = post-fs-data.sh ]; then
     while IFS='|' read -r package payload apk_target target before after apk_sha; do
         [ -n "$apk_sha" ] && [ -f "$apk_target" ] || continue
         [ "$(sha256sum "$apk_target" | cut -d ' ' -f 1)" = "$apk_sha" ] || continue
-        bind_target 1 "$MODDIR/$payload" "$target" "$before" "$after" || exit 1
+        bind_target 1 "$MODDIR/$payload" "$target" "$before" "$after" || log "Private engine skipped: $package; original code preserved."
     done < "$MODDIR/apks.conf"
     exit 0
 fi
@@ -79,9 +79,9 @@ for pid in 1 $(getprop init.svc_debug_pid.hyos_spawner) $(pidof zygote64); do
         current_sha=$(sha256sum "$apk_target" 2>/dev/null | "$BB" cut -d ' ' -f 1)
         if [ "$current" = "$apk_target" ] && { [ "$current_sha" = "$apk_sha" ] ||
                 { [ "$target" = "$apk_target" ] && [ "$current_sha" = "$after" ]; }; }; then
-            bind_target "$pid" "$MODDIR/$payload" "$target" "$before" "$after" || exit 1
+            bind_target "$pid" "$MODDIR/$payload" "$target" "$before" "$after" || log "Private engine skipped: $package; original code preserved."
         else
-            log "APK changed: $package. Rerun apply_flutter_fix.py."
+            log "APK changed: $package; original code preserved. Native compatibility catalog reconciles supported updates."
         fi
     done < "$MODDIR/apks.conf"
 done
@@ -277,7 +277,7 @@ def old_targets(manifest):
     raise RuntimeError('Unknown existing Flutter overlay revision.')
 
 
-def detach(config, manifest):
+def detach(config, manifest, preserve_paths=()):
     """Detach only binds whose source belongs to this module."""
     paths = [item['target'] for item in old_targets(manifest)]
     commands = []
@@ -292,7 +292,8 @@ def detach(config, manifest):
     root(config, 'for pid in 1 $(getprop init.svc_debug_pid.hyos_spawner) $(pidof zygote64); do\n'
          '[ -d "/proc/$pid" ] || continue\n' + '\n'.join(commands) + '\ndone')
     for item in old_targets(manifest):
-        if (item.get('placeholder') or item.get('external')) and not item.get('preserve_original'):
+        if ((item.get('placeholder') or item.get('external')) and not item.get('preserve_original')
+                and item['target'] not in preserve_paths):
             path = shlex.quote(item['target'])
             root(config, f'if [ -f {path} ] && [ "$(sha256sum {path} | cut -d " " -f 1)" = {item["before"]} ]; then rm {path}; fi')
 
@@ -328,7 +329,13 @@ def install(config, enable=False, sources=('official-hongkong-ota',)):
         raise RuntimeError('Wait for boot completion and KernelSU root first.')
     if root(config, 'getprop ro.mi.os.version.incremental') != firmware['incremental']:
         raise RuntimeError('Flutter overlay refused a different OTA version.')
-    targets = {pkg: root(config, 'pm path ' + pkg).splitlines()[0].removeprefix('package:') for pkg in PACKAGES}
+    targets, skipped = {}, {}
+    for pkg in PACKAGES:
+        paths = root(config, 'pm path ' + pkg).splitlines()
+        if len(paths) != 1 or not paths[0].startswith('package:'):
+            skipped[pkg] = 'active base APK unavailable or split; shared engine remains active'
+        else:
+            targets[pkg] = paths[0].removeprefix('package:')
     old_text = root(config, f'if [ -f {MODULE}/manifest.json ]; then cat {MODULE}/manifest.json; fi')
     old = json.loads(old_text) if old_text else None
     if old:
@@ -354,11 +361,17 @@ def install(config, enable=False, sources=('official-hongkong-ota',)):
                 if not current and item.get('external'):
                     continue
                 if current not in (item['before'], item['after']):
-                    raise RuntimeError('Overlay target changed unexpectedly: ' + item['target'])
+                    if item['target'] == SYSTEM_LIB:
+                        raise RuntimeError('Overlay target changed unexpectedly: ' + item['target'])
+                    reuse = False
+                    break
+        if reuse:
             if not all('apk_target' in i for i in old['apks']):
                 raise RuntimeError('Overlay schema requires rebuilding this module.')
             refresh_scripts(config, source, firmware)
             root(config, f'rm -f {MODULE}/disable\nsh {MODULE}/service.sh')
+            for pkg, reason in old.get('skipped_apks', {}).items():
+                print('Private Flutter engine ' + pkg + ': ' + reason + '; original code retained.', flush=True)
             print('Native Flutter overlays are ready.', flush=True)
             return old
     folder = ROOT / 'work/flutter-render-fix'
@@ -379,95 +392,99 @@ def install(config, enable=False, sources=('official-hongkong-ota',)):
     apks = []
     apk_hashes = {}
     for pkg, target in targets.items():
-        if any(c in target for c in '\n\r|') or not target.startswith(('/data/app/', '/system_ext/', '/product/')):
-            raise RuntimeError('Unexpected APK location: ' + target)
-        original = folder / (pkg + '-current.apk')
-        adb(config, 'pull', target, str(original), check=True, capture_output=True, timeout=60)
-        actual = sha256(original)
-        factory_pad_weather = source == PAD_SOURCE and pkg == 'com.miui.weather2' and target == PAD_WEATHER_APK
-        if factory_pad_weather and actual != PAD_WEATHER_APK_SHA256:
-            raise RuntimeError('Unsupported factory tablet Weather APK.')
-        apk_hashes[pkg] = actual
-        saved = folder / (pkg + '-' + actual + '.apk')
-        if not saved.exists():
-            saved.write_bytes(original.read_bytes())
-        payload = pkg + '.apk'
-        fixed = folder / payload
-        with zipfile.ZipFile(original) as archive:
-            if ENGINE_ENTRY not in archive.namelist():
-                continue  # Factory Rust apps use the patched shared system engine.
-            raw = archive.read(ENGINE_ENTRY)
-            engine = patch(raw)
-        native_target = str(Path(target).parent / 'lib/arm64/libhyper_os_flutter.so')
-        if factory_pad_weather:
-            # HyperOS extracts the signed factory Weather engine outside its
-            # read-only APK directory. Patch the library actually loaded.
-            if digest(raw) != PAD_WEATHER_BEFORE or digest(engine) != PAD_WEATHER_AFTER:
-                raise RuntimeError('Unsupported factory tablet Weather engine.')
-            native_target = PAD_WEATHER_ENGINE
-            current = root(config, 'if [ -e ' + shlex.quote(native_target) + ' ] || [ -L ' + shlex.quote(native_target) + ' ]; then\n'
-                           '[ -f ' + shlex.quote(native_target) + ' ] && [ ! -L ' + shlex.quote(native_target) + ' ] || exit 1\n'
-                           'sha256sum ' + shlex.quote(native_target) + '\nfi')
-            if current and current.split()[0] not in (PAD_WEATHER_BEFORE, PAD_WEATHER_AFTER):
-                raise RuntimeError('An unrelated tablet Weather engine already exists.')
-            payload = pkg + '.so'
-            (folder / payload).write_bytes(engine)
-            (folder / (payload + '.original')).write_bytes(raw)
-            apks.append({'package': pkg, 'apk_target': target, 'payload': payload,
-                         'target': native_target, 'before': PAD_WEATHER_BEFORE,
-                         'after': PAD_WEATHER_AFTER, 'external': True, 'preserve_original': True})
-            continue
-        if source == PAD_SOURCE and target.startswith('/product/data-app/'):
-            raise RuntimeError('Unsupported tablet factory native layout; signed APK was preserved.')
-        extracted = root(config, 'if [ -f ' + shlex.quote(native_target) + ' ]; then echo yes; fi') == 'yes'
-        previous_placeholder = any(i['target'] == native_target and (i.get('placeholder') or i.get('external')) for i in old_targets(old)) if old else False
-        if target.startswith('/data/app/') and (not extracted or previous_placeholder):
-            # Rust's linker namespace searches nativeLibraryDir before the APK.
-            # Supply only the engine there; keep the signed APK byte-identical.
-            native_before, native_profile = profile(raw)
-            payload = pkg + '.so'
-            (folder / payload).write_bytes(engine)
-            (folder / (payload + '.original')).write_bytes(raw)
-            apks.append({'package': pkg, 'apk_target': target, 'payload': payload,
-                         'target': native_target, 'before': native_before,
-                         'after': native_profile['output'], 'external': True})
-            continue
-        if extracted:
-            native = folder / (pkg + '-native-current.so')
-            adb(config, 'pull', native_target, str(native), check=True, capture_output=True, timeout=60)
-            native_raw = native.read_bytes()
-            native_before, native_profile = profile(native_raw)
-            if profile(raw)[0] != native_before:
-                raise RuntimeError('Extracted engine differs from its APK: ' + pkg)
-            payload = pkg + '.so'
+        try:
+            if any(c in target for c in '\n\r|') or not target.startswith(('/data/app/', '/system_ext/', '/product/')):
+                raise RuntimeError('Unexpected APK location: ' + target)
+            original = folder / (pkg + '-current.apk')
+            adb(config, 'pull', target, str(original), check=True, capture_output=True, timeout=60)
+            actual = sha256(original)
+            apk_hashes[pkg] = actual
+            factory_pad_weather = source == PAD_SOURCE and pkg == 'com.miui.weather2' and target == PAD_WEATHER_APK
+            if factory_pad_weather and actual != PAD_WEATHER_APK_SHA256:
+                raise RuntimeError('Unsupported factory tablet Weather APK; factory extraction was preserved')
+            payload = pkg + '.apk'
             fixed = folder / payload
-            fixed.write_bytes(patch(native_raw))
-            apks.append({'package': pkg, 'apk_target': target, 'payload': payload, 'target': native_target,
-                         'before': native_before, 'after': native_profile['output']})
-            continue
-        if engine == raw:
-            fixed.write_bytes(original.read_bytes())
-        else:
-            candidates = sorted((Path(config['sdk']) / 'build-tools').glob('*/zipalign'), reverse=True)
-            if not candidates:
-                raise RuntimeError('Install Android SDK Build-Tools with zipalign for an APK overlay.')
-            unaligned = folder / (pkg + '-unaligned.apk')
-            rewrite_apk(original, unaligned, engine)
-            subprocess.run([str(candidates[0]), '-f', '-P', '16', '4', str(unaligned), str(fixed)], check=True)
-            subprocess.run([str(candidates[0]), '-c', '-P', '16', '4', str(fixed)], check=True, capture_output=True)
-        with zipfile.ZipFile(fixed) as archive:
-            if digest(archive.read(ENGINE_ENTRY)) != digest(engine):
-                raise RuntimeError('Aligned APK engine checksum mismatch.')
-        before = actual
-        for previous in old_targets(old) if old else []:
-            if previous['target'] == target and previous['after'] == actual:
-                before = previous['before']
-        apks.append({'package': pkg, 'apk_target': target, 'payload': payload, 'target': target, 'before': before, 'after': sha256(fixed)})
+            with zipfile.ZipFile(original) as archive:
+                if ENGINE_ENTRY not in archive.namelist():
+                    skipped[pkg] = 'no private engine; patched shared system engine applies'
+                    continue
+                if archive.namelist().count(ENGINE_ENTRY) != 1:
+                    raise RuntimeError('Ambiguous private Flutter engine entry')
+                raw = archive.read(ENGINE_ENTRY)
+                engine = patch(raw)
+            native_target = str(Path(target).parent / 'lib/arm64/libhyper_os_flutter.so')
+            if factory_pad_weather:
+                # Factory Weather must wait until PM finishes its extraction.
+                if digest(raw) != PAD_WEATHER_BEFORE or digest(engine) != PAD_WEATHER_AFTER:
+                    raise RuntimeError('Unsupported factory tablet Weather engine')
+                native_target = PAD_WEATHER_ENGINE
+                current = root(config, 'if [ -e ' + shlex.quote(native_target) + ' ] || [ -L ' + shlex.quote(native_target) + ' ]; then\n'
+                               '[ -f ' + shlex.quote(native_target) + ' ] && [ ! -L ' + shlex.quote(native_target) + ' ] || exit 1\n'
+                               'sha256sum ' + shlex.quote(native_target) + '\nfi')
+                if current and current.split()[0] not in (PAD_WEATHER_BEFORE, PAD_WEATHER_AFTER):
+                    raise RuntimeError('Unrelated tablet Weather engine already exists')
+                payload = pkg + '.so'
+                (folder / payload).write_bytes(engine)
+                (folder / (payload + '.original')).write_bytes(raw)
+                apks.append({'package': pkg, 'apk_target': target, 'payload': payload,
+                             'target': native_target, 'before': PAD_WEATHER_BEFORE,
+                             'after': PAD_WEATHER_AFTER, 'external': True, 'preserve_original': True})
+                continue
+            if source == PAD_SOURCE and target.startswith('/product/data-app/'):
+                raise RuntimeError('Unsupported tablet factory native layout; signed APK was preserved')
+            extracted = root(config, 'if [ -f ' + shlex.quote(native_target) + ' ]; then echo yes; fi') == 'yes'
+            previous_placeholder = any(i['target'] == native_target and (i.get('placeholder') or i.get('external')) for i in old_targets(old)) if old else False
+            if target.startswith('/data/app/') and (not extracted or previous_placeholder):
+                # Supply the known original engine; leave the signed APK intact.
+                native_before, native_profile = profile(raw)
+                payload = pkg + '.so'
+                (folder / payload).write_bytes(engine)
+                (folder / (payload + '.original')).write_bytes(raw)
+                apks.append({'package': pkg, 'apk_target': target, 'payload': payload,
+                             'target': native_target, 'before': native_before,
+                             'after': native_profile['output'], 'external': True})
+                continue
+            if extracted:
+                native = folder / (pkg + '-native-current.so')
+                adb(config, 'pull', native_target, str(native), check=True, capture_output=True, timeout=60)
+                native_raw = native.read_bytes()
+                native_before, native_profile = profile(native_raw)
+                if profile(raw)[0] != native_before:
+                    raise RuntimeError('Extracted engine differs from its APK: ' + pkg)
+                payload = pkg + '.so'
+                fixed = folder / payload
+                fixed.write_bytes(patch(native_raw))
+                apks.append({'package': pkg, 'apk_target': target, 'payload': payload, 'target': native_target,
+                             'before': native_before, 'after': native_profile['output']})
+                continue
+            if engine == raw:
+                fixed.write_bytes(original.read_bytes())
+            else:
+                candidates = sorted((Path(config['sdk']) / 'build-tools').glob('*/zipalign'), reverse=True)
+                if not candidates:
+                    raise RuntimeError('Install Android SDK Build-Tools with zipalign for an APK overlay')
+                unaligned = folder / (pkg + '-unaligned.apk')
+                rewrite_apk(original, unaligned, engine)
+                subprocess.run([str(candidates[0]), '-f', '-P', '16', '4', str(unaligned), str(fixed)], check=True)
+                subprocess.run([str(candidates[0]), '-c', '-P', '16', '4', str(fixed)], check=True, capture_output=True)
+            with zipfile.ZipFile(fixed) as archive:
+                if digest(archive.read(ENGINE_ENTRY)) != digest(engine):
+                    raise RuntimeError('Aligned APK engine checksum mismatch')
+            before = actual
+            for previous in old_targets(old) if old else []:
+                if previous['target'] == target and previous['after'] == actual:
+                    before = previous['before']
+            apks.append({'package': pkg, 'apk_target': target, 'payload': payload, 'target': target, 'before': before, 'after': sha256(fixed)})
+        except (RuntimeError, OSError, subprocess.SubprocessError, zipfile.BadZipFile, KeyError) as error:
+            skipped[pkg] = str(error)
+    for pkg, reason in skipped.items():
+        print('Private Flutter engine ' + pkg + ': ' + reason +
+              '; original code retained, native compatibility catalog safely handles supported profiles.', flush=True)
     for item in apks:
         item['apk_sha256'] = apk_hashes[item['package']]
     manifest = {'revision': REVISION, 'firmware': firmware, 'system': system,
                 'apks': apks, 'packages': targets, 'apk_hashes': apk_hashes,
-                'startup_script_sha256': script_hash}
+                'startup_script_sha256': script_hash, 'skipped_apks': skipped}
     values = {'SYSTEM_BEFORE': system['before'], 'SYSTEM_AFTER': system['after']}
     (folder / 'targets.conf').write_text(''.join(k + '=' + shlex.quote(v) + '\n' for k, v in values.items()))
     (folder / 'apks.conf').write_text(''.join('|'.join(i[k] for k in ('package', 'payload', 'apk_target', 'target', 'before', 'after', 'apk_sha256')) + '\n' for i in apks))
@@ -495,11 +512,13 @@ def install(config, enable=False, sources=('official-hongkong-ota',)):
         if root(config, f'sha256sum {stage}/{name}').split()[0] != checksum:
             raise RuntimeError('Staged overlay checksum mismatch: ' + name)
     if old:
-        detach(config, old)
+        preserved = {item['target'] for item in old.get('apks', ()) if item.get('package') in skipped}
+        detach(config, old, preserve_paths=preserved)
         root(config, f'mv {MODULE} /data/adb/hyperos-render-backup-$(date +%s)')
     root(config, f'test ! -e {MODULE}\nmv {stage} {MODULE}\nsh {MODULE}/service.sh')
     (ROOT / 'local/flutter-render-fix.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    print('Native Flutter fixes installed for system, launcher and weather. Original APKs and userdata were preserved.', flush=True)
+    print('Native Flutter shared engine and ' + str(len(apks)) +
+          ' verified private overlays installed. Original APKs and userdata were preserved.', flush=True)
     return manifest
 
 
