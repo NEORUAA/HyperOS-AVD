@@ -16,6 +16,10 @@ SERIAL_FILE = '/data/adb/hyperos-avd-pad/serial.json'
 SERIAL_EARLY = '/data/adb/post-fs-data.d/hyperos-avd-pad-serial.sh'
 COLOR_STAMP = '/data/local/tmp/hyperos-avd-pad-color-defaults-v1'
 DEFAULTS_STAMP = '/data/local/tmp/hyperos-avd-pad-settings-defaults-v1'
+THERMAL_EARLY = '/data/adb/post-fs-data.d/hyperos-avd-pad-thermal.sh'
+# Authenticated combined HWUI/thermal/profile hook shipped with the yingtian
+# profile. Its payload stays untouched: a running process can still map it.
+LEGACY_THERMAL_HWUI_SHA256 = '25f76116c3f217f45cb9b3b2d7883982698136bce8d23a10d5136f319f8cd9f1'
 
 
 def _compatible_serial_firmware(previous, current):
@@ -265,84 +269,98 @@ def align_window(config):
              'wm user-rotation lock ' + str(target_rotation))
 
 
-def apply_runtime(config):
-    """Seed emulator-only settings; never apply hongkong identity or AOD."""
+def thermal_profile_script():
+    """Keep identity and thermal labels independent of native patch ownership."""
     import shlex
+    from os4_defaults import THERMAL_LABEL_SCRIPT
+    return ('#!/system/bin/sh\n'
+            '# HyperOS-AVD tablet thermal/profile v2; native-compat owns HWUI.\n'
+            'set -eu\n'
+            '[ "$(getprop ro.boot.hardware)" = ranchu ] || exit 1\n'
+            '[ "$(getprop ro.product.device)" = ' + shlex.quote(PROFILE['device']) + ' ] || exit 1\n'
+            '[ "$(getprop ro.mi.os.version.incremental)" = ' + shlex.quote(PROFILE['hyperos']) + ' ] || exit 1\n'
+            '[ -x /data/adb/ksu/bin/resetprop ] || exit 1\n'
+            + THERMAL_LABEL_SCRIPT + profile_properties_script())
+
+
+def _thermal_parent_guard():
+    """Refuse aliases in every parent before inspecting or replacing a hook."""
+    return '''for parent in /data /data/adb /data/adb/post-fs-data.d; do
+    [ ! -L "$parent" ] || exit 1
+    if [ -e "$parent" ]; then [ -d "$parent" ] || exit 1; fi
+done'''
+
+
+def apply_thermal_profile(config):
+    """Atomically migrate known hooks, never touch native payloads or mounts."""
+    import shlex
+    import uuid
+    from apply_flutter_fix import root
+    busybox = '/data/adb/ksu/bin/busybox'
+    # Return a local diagnostic for an unknown/aliased hook. Do not execute it,
+    # follow it, or replace it merely because its filename resembles ours.
+    inspection = root(config, f'''BB={busybox}
+[ -x "$BB" ] || exit 1
+if ! (
+{_thermal_parent_guard()}
+); then printf 'unknown\\n'
+elif [ -e {THERMAL_EARLY} ] || [ -L {THERMAL_EARLY} ]; then
+    if [ -f {THERMAL_EARLY} ] && [ ! -L {THERMAL_EARLY} ] &&
+            [ "$("$BB" stat -c %h {THERMAL_EARLY})" = 1 ]; then
+        printf 'owned:'; "$BB" sha256sum {THERMAL_EARLY} | "$BB" cut -d ' ' -f 1
+    else printf 'unknown\\n'; fi
+else printf 'absent\\n'
+fi''')
+    script = thermal_profile_script()
+    digest = hashlib.sha256(script.encode()).hexdigest()
+    expected = inspection.removeprefix('owned:') if inspection.startswith('owned:') else None
+    if inspection != 'absent' and expected not in (LEGACY_THERMAL_HWUI_SHA256, digest):
+        print('Unknown or aliased Pad thermal startup hook is preserved; native-compat remains the HWUI owner.',
+              flush=True)
+        return {'status': 'skipped', 'reason': 'unknown-startup-hook'}
+    if expected != digest:
+        stage = THERMAL_EARLY + '.stage-' + uuid.uuid4().hex
+        guard = (f'[ ! -e {THERMAL_EARLY} ] && [ ! -L {THERMAL_EARLY} ] || exit 1' if expected is None
+                 else f'''[ -f {THERMAL_EARLY} ] && [ ! -L {THERMAL_EARLY} ] || exit 1
+[ "$("$BB" stat -c %h {THERMAL_EARLY})" = 1 ] || exit 1
+[ "$("$BB" sha256sum {THERMAL_EARLY} | "$BB" cut -d ' ' -f 1)" = {expected} ] || exit 1''')
+        root(config, f'''BB={busybox}
+[ -x "$BB" ] || exit 1
+{_thermal_parent_guard()}
+{guard}
+mkdir -p /data/adb/post-fs-data.d || exit 1
+umask 077
+trap {shlex.quote('rm -f ' + stage)} EXIT
+[ ! -e {stage} ] && [ ! -L {stage} ] || exit 1
+printf %s {shlex.quote(script)} > {stage} || exit 1
+chmod 700 {stage} || exit 1
+sh -n {stage} || exit 1
+[ "$("$BB" sha256sum {stage} | "$BB" cut -d ' ' -f 1)" = {digest} ] || exit 1
+{_thermal_parent_guard()}
+{guard}
+mv -f {stage} {THERMAL_EARLY} || exit 1''')
+    # Identity/label restoration is safe in the running guest; this hook has
+    # no native library mount or renderer/preload property operation.
+    root(config, f'''BB={busybox}
+{_thermal_parent_guard()}
+[ -f {THERMAL_EARLY} ] && [ ! -L {THERMAL_EARLY} ] || exit 1
+[ "$("$BB" stat -c %h {THERMAL_EARLY})" = 1 ] || exit 1
+[ "$("$BB" sha256sum {THERMAL_EARLY} | "$BB" cut -d ' ' -f 1)" = {digest} ] || exit 1
+sh {THERMAL_EARLY}''')
+    return {'status': 'ready', 'migrated': expected == LEGACY_THERMAL_HWUI_SHA256}
+
+
+def apply_runtime(config):
+    """Seed emulator-only settings; native-compat is the sole HWUI owner."""
     from common import ROOT, adb
     from apply_flutter_fix import official, root
-    from patch_pad_hwui import AFTER, BEFORE, NATIVE, patch as hwui_patch
     official(config, sources=(SOURCE,))
     info = json.loads((ROOT / 'local/build.json').read_text())
     if info.get('source') != SOURCE or info.get('device') != PROFILE['device']:
         raise RuntimeError('Refused a different tablet firmware profile.')
-    busybox = '/data/adb/ksu/bin/busybox'
-    payload = '/data/adb/hyperos-avd-pad/libhwui.so'
-    early_path = '/data/adb/post-fs-data.d/hyperos-avd-pad-thermal.sh'
-    # Check the init target and payload before enabling Vulkan. Never replace
-    # an unknown library or truncate the inode of an already loaded bind mount.
-    current = root(config, f'[ -x {busybox} ] || exit 1\n'
-                   f'{busybox} nsenter -t 1 -m -- {busybox} sha256sum {NATIVE}').split()[0]
-    if current not in (BEFORE, AFTER):
-        raise RuntimeError('Unsupported tablet HWUI target SHA-256: ' + current)
-    saved = root(config, f'if [ -e {payload} ] || [ -L {payload} ]; then {busybox} sha256sum {payload}; fi')
-    if saved and saved.split()[0] != AFTER:
-        raise RuntimeError('Unsupported existing tablet HWUI payload; no renderer changes applied.')
-    folder = ROOT / 'work/pad-hwui'
-    folder.mkdir(parents=True, exist_ok=True)
-    original = folder / 'current.so'
-    fixed = folder / 'libhwui.so'
-    adb(config, 'pull', NATIVE, str(original), check=True, capture_output=True, timeout=60)
-    data = original.read_bytes()
-    # adbd may retain the original mount namespace. The patch helper accepts
-    # only the same pinned original or candidate, independent of that namespace.
-    fixed.write_bytes(hwui_patch(data))
-    if not saved:
-        stage = '/data/local/tmp/hyperos-avd-pad-hwui.so'
-        adb(config, 'push', str(fixed), stage, check=True, capture_output=True, timeout=30)
-        root(config, f'[ "$({busybox} sha256sum {stage} | {busybox} cut -d " " -f 1)" = {AFTER} ] || exit 1\n'
-             f'mkdir -p {payload.rsplit("/", 1)[0]}\n'
-             f'if [ -e {payload} ] || [ -L {payload} ]; then\n'
-             f'  [ "$({busybox} sha256sum {payload} | {busybox} cut -d " " -f 1)" = {AFTER} ] || exit 1\n'
-             'else\n'
-             f'  rm -f {payload}.next\n'
-             f'  cp {stage} {payload}.next\n'
-             f'  chmod 644 {payload}.next\n'
-             f'  chcon u:object_r:system_lib_file:s0 {payload}.next\n'
-             f'  [ "$({busybox} sha256sum {payload}.next | {busybox} cut -d " " -f 1)" = {AFTER} ] || exit 1\n'
-             f'  mv -f {payload}.next {payload}\n'
-             'fi\n'
-             f'rm -f {stage}')
-    root(config, f'[ "$({busybox} sha256sum {payload} | {busybox} cut -d " " -f 1)" = {AFTER} ] || exit 1\n'
-         f'chmod 644 {payload}\n'
-         f'chcon u:object_r:system_lib_file:s0 {payload}')
-    from os4_defaults import apply_thermal_runtime, THERMAL_LABEL_SCRIPT
+    from os4_defaults import apply_thermal_runtime
     apply_thermal_runtime(config)
-    early = ("#!/system/bin/sh\n"
-             "[ \"$(getprop ro.boot.hardware)\" = ranchu ] || exit 1\n"
-             "[ \"$(getprop ro.product.device)\" = yingtian ] || exit 1\n"
-             f"[ \"$(getprop ro.mi.os.version.incremental)\" = {PROFILE['hyperos']} ] || exit 1\n"
-             "[ -x /data/adb/ksu/bin/resetprop ] || exit 1\n"
-             f"BB={busybox}\n"
-             "[ -x \"$BB\" ] || exit 1\n"
-             f"SOURCE={payload}\nTARGET={NATIVE}\n"
-             "source_hash=$(\"$BB\" nsenter -t 1 -m -- \"$BB\" sha256sum \"$SOURCE\" | \"$BB\" cut -d ' ' -f 1)\n"
-             f"[ \"$source_hash\" = {AFTER} ] || exit 1\n"
-             "target_hash=$(\"$BB\" nsenter -t 1 -m -- \"$BB\" sha256sum \"$TARGET\" | \"$BB\" cut -d ' ' -f 1)\n"
-             f"case \"$target_hash\" in\n"
-             f"  {BEFORE}) \"$BB\" nsenter -t 1 -m -- \"$BB\" mount -o bind \"$SOURCE\" \"$TARGET\" || exit 1 ;;\n"
-             f"  {AFTER}) ;;\n"
-             "  *) exit 1 ;;\nesac\n"
-             "target_hash=$(\"$BB\" nsenter -t 1 -m -- \"$BB\" sha256sum \"$TARGET\" | \"$BB\" cut -d ' ' -f 1)\n"
-             f"[ \"$target_hash\" = {AFTER} ] || exit 1\n"
-             "/data/adb/ksu/bin/resetprop -n ro.zygote.disable_gl_preload 0 || exit 1\n"
-             "setprop debug.hwui.renderer skiavk || exit 1\n"
-             + THERMAL_LABEL_SCRIPT + profile_properties_script())
-    root(config, 'mkdir -p /data/adb/post-fs-data.d\n'
-         'printf %s ' + shlex.quote(early) + ' > ' + early_path + '.next\n'
-         'chmod 700 ' + early_path + '.next\n'
-         'sh -n ' + early_path + '.next\n'
-         'mv -f ' + early_path + '.next ' + early_path + '\n'
-         'sh ' + early_path)
+    apply_thermal_profile(config)
     from os4_defaults import apply_finddevice_workaround
     apply_finddevice_workaround(config, FINDDEVICE_SHA256)
     for sensor, value in (('proximity', '5'), ('light', '200')):

@@ -18,7 +18,6 @@ class TabletProfileTests(unittest.TestCase):
     def test_unverifiable_finddevice_still_initializes_pad_sensor_display_and_serial_defaults(self):
         import common
         import os4_defaults
-        import patch_pad_hwui
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             (folder / 'local').mkdir()
@@ -27,18 +26,10 @@ class TabletProfileTests(unittest.TestCase):
             commands = []
             def root(config, command):
                 commands.append(command)
-                if command.startswith('[ -x /data/adb/ksu/bin/busybox'):
-                    return patch_pad_hwui.AFTER + '  native'
-                if command.startswith('if [ -e /data/adb/hyperos-avd-pad/libhwui.so'):
-                    return patch_pad_hwui.AFTER + '  saved'
                 return ''
-            def adb(config, action, *args, **kwargs):
-                if action == 'pull':
-                    Path(args[1]).write_bytes(b'verified HWUI fixture')
             with mock_patch.object(common, 'ROOT', folder), mock_patch('apply_flutter_fix.official'), \
                     mock_patch('apply_flutter_fix.root', side_effect=root), \
-                    mock_patch('common.adb', side_effect=adb) as device, \
-                    mock_patch('patch_pad_hwui.patch', return_value=b'verified candidate'), \
+                    mock_patch('common.adb') as device, \
                     mock_patch.object(os4_defaults, 'apply_thermal_runtime'), \
                     mock_patch.object(os4_defaults, 'apply_refresh_runtime') as refresh, \
                     mock_patch.object(os4_defaults, 'apply_finddevice_workaround', return_value='skipped') as finddevice, \
@@ -51,6 +42,134 @@ class TabletProfileTests(unittest.TestCase):
             self.assertIn(os4_pad.display_settings_script(), commands)
             refresh.assert_called_once()
             serial.assert_called_once()
+            self.assertFalse(any(call.args[1] in ('pull', 'push') for call in device.call_args_list))
+            for command in commands:
+                for forbidden in ('libhwui.so', 'mount -o bind', 'umount',
+                                  'debug.hwui.renderer', 'ro.zygote.disable_gl_preload'):
+                    self.assertNotIn(forbidden, command)
+
+    def test_thermal_profile_hook_has_no_independent_hwui_activation(self):
+        script = os4_pad.thermal_profile_script()
+        subprocess.run(['sh', '-n'], input=script, text=True, check=True)
+        self.assertIn('sysfs_thermal', script)
+        self.assertIn('key=ro.product.device\nvalue=yingtian', script)
+        for forbidden in ('libhwui.so', 'nsenter', 'mount ', 'umount',
+                          'debug.hwui.renderer', 'ro.zygote.disable_gl_preload',
+                          '/data/adb/modules/', 'disable', 'remove'):
+            self.assertNotIn(forbidden, script)
+        self.assertEqual(os4_pad.properties(b'').count(b'debug.hwui.renderer=skiavk'), 1)
+
+    def test_thermal_hook_migration_preserves_unknown_and_aliased_hooks(self):
+        for inspection in ('unknown', 'owned:' + '0' * 64, 'owned:', 'unexpected'):
+            with self.subTest(inspection=inspection), \
+                    mock_patch('apply_flutter_fix.root', return_value=inspection) as root, \
+                    mock_patch('builtins.print') as diagnostic:
+                result = os4_pad.apply_thermal_profile({'name': 'Renamed-pad'})
+                self.assertEqual(result, {'status': 'skipped', 'reason': 'unknown-startup-hook'})
+                self.assertEqual(root.call_count, 1)
+                command = root.call_args.args[1]
+                self.assertIn('[ ! -L "$parent" ]', command)
+                self.assertIn('stat -c %h', command)
+                self.assertNotIn('mv -f', command)
+                diagnostic.assert_called_once()
+
+    def test_thermal_hook_migration_authenticates_and_atomically_replaces_legacy(self):
+        old = os4_pad.LEGACY_THERMAL_HWUI_SHA256
+        with mock_patch('apply_flutter_fix.root', side_effect=['owned:' + old, '', '']) as root:
+            result = os4_pad.apply_thermal_profile({'name': 'Renamed-pad'})
+        self.assertEqual(result, {'status': 'ready', 'migrated': True})
+        self.assertEqual(root.call_count, 3)
+        write, execute = (call.args[1] for call in root.call_args_list[1:])
+        self.assertEqual(write.count('= ' + old), 2)
+        self.assertIn('mv -f', write)
+        self.assertIn('.stage-', write)
+        self.assertIn('sh -n', write)
+        self.assertIn('sha256sum', execute)
+        for command in (write, execute):
+            subprocess.run(['sh', '-n'], input=command, text=True, check=True)
+            for forbidden in ('libhwui.so', 'mount -o bind', 'umount',
+                              'debug.hwui.renderer', 'ro.zygote.disable_gl_preload'):
+                self.assertNotIn(forbidden, command)
+
+    def test_thermal_migration_keeps_loaded_payload_and_native_lifecycle_choices(self):
+        # Run the real atomic hook migration against an isolated fake guest.
+        # Only the fixture SHA and hook body differ from device provenance.
+        with tempfile.TemporaryDirectory() as temporary:
+            guest = Path(temporary)
+            adb = guest / 'data/adb'
+            (adb / 'post-fs-data.d').mkdir(parents=True)
+            busybox = adb / 'ksu/bin/busybox'
+            busybox.parent.mkdir(parents=True)
+            busybox.write_text('''#!/usr/bin/env python3
+import hashlib, os, subprocess, sys
+args = sys.argv[1:]
+if args[0] == 'sha256sum':
+    print(hashlib.sha256(open(args[1], 'rb').read()).hexdigest() + '  ' + args[1])
+elif args[:3] == ['stat', '-c', '%h']:
+    print(os.stat(args[3]).st_nlink)
+elif args[0] == 'cut':
+    raise SystemExit(subprocess.call(['/usr/bin/cut', *args[1:]]))
+else:
+    raise SystemExit(1)
+''')
+            busybox.chmod(0o755)
+            hook = guest / os4_pad.THERMAL_EARLY.lstrip('/')
+            hook.write_bytes(b'known legacy hook\n')
+            legacy_hash = hashlib.sha256(hook.read_bytes()).hexdigest()
+            payload = adb / 'hyperos-avd-pad/libhwui.so'
+            payload.parent.mkdir()
+            payload.write_bytes(b'loaded payload inode must stay intact')
+            payload_identity = (payload.stat().st_ino, payload.read_bytes())
+            module = adb / 'modules/hyperos_avd_native_compat'
+            module.mkdir(parents=True)
+            for flag in ('disable', 'remove'):
+                (module / flag).touch()
+            generated = '#!/bin/sh\nprintf ready > ' + str(guest / 'profile-ready') + '\n'
+            def root(config, command):
+                command = command.replace('/data/', str(guest / 'data') + '/')
+                return subprocess.run(['sh', '-c', command], capture_output=True,
+                                      text=True, check=True).stdout.strip()
+            with mock_patch('apply_flutter_fix.root', side_effect=root), \
+                    mock_patch.object(os4_pad, 'thermal_profile_script', return_value=generated), \
+                    mock_patch.object(os4_pad, 'LEGACY_THERMAL_HWUI_SHA256', legacy_hash):
+                self.assertTrue(os4_pad.apply_thermal_profile({})['migrated'])
+                self.assertFalse(os4_pad.apply_thermal_profile({})['migrated'])
+            self.assertEqual(hook.read_text(), generated)
+            self.assertEqual((guest / 'profile-ready').read_text(), 'ready')
+            self.assertEqual((payload.stat().st_ino, payload.read_bytes()), payload_identity)
+            self.assertEqual({path.name for path in module.iterdir()}, {'disable', 'remove'})
+            self.assertFalse(list(hook.parent.glob('*.stage-*')))
+
+    def test_thermal_hook_aliases_are_preserved_by_real_inspection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            guest = Path(temporary)
+            directory = guest / 'data/adb/post-fs-data.d'
+            directory.mkdir(parents=True)
+            busybox = guest / 'data/adb/ksu/bin/busybox'
+            busybox.parent.mkdir(parents=True)
+            busybox.write_text('#!/bin/sh\nexit 0\n')
+            busybox.chmod(0o755)
+            target = guest / 'external-hook'
+            target.write_text('custom hook')
+            hook = directory / Path(os4_pad.THERMAL_EARLY).name
+            hook.symlink_to(target)
+            def root(config, command):
+                command = command.replace('/data/', str(guest / 'data') + '/')
+                return subprocess.run(['sh', '-c', command], capture_output=True,
+                                      text=True, check=True).stdout.strip()
+            with mock_patch('apply_flutter_fix.root', side_effect=root), mock_patch('builtins.print'):
+                self.assertEqual(os4_pad.apply_thermal_profile({})['status'], 'skipped')
+            self.assertTrue(hook.is_symlink())
+            self.assertEqual(target.read_text(), 'custom hook')
+            hook.unlink()
+            directory.rmdir()
+            external = guest / 'external-directory'
+            external.mkdir()
+            directory.symlink_to(external, target_is_directory=True)
+            with mock_patch('apply_flutter_fix.root', side_effect=root), mock_patch('builtins.print'):
+                self.assertEqual(os4_pad.apply_thermal_profile({})['status'], 'skipped')
+            self.assertTrue(directory.is_symlink())
+            self.assertEqual(list(external.iterdir()), [])
 
     def test_public_identity_script_preserves_hal_selectors_and_serial(self):
         script = os4_pad.profile_properties_script()
