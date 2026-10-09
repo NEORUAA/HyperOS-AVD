@@ -21,8 +21,8 @@
 | 合成器 | plane alpha 与亮度分离，活动返回压暗正常渐隐；背屏独立 timing 改为 60 Hz。`patch_composer.py`、`patch_rear_display.py` | 原生 KSU catalog；两步 hash 链保留 alpha 修复，已启动的 HAL 需冷启动重新加载。 |
 | 虚拟场景相机 | rear ID、Xiaomi role、YUV 元数据及预览尺寸。`patch_camera_scene.py` | 镜像内 provider + 编译后的 scene helper；需校验 provider、C++ ABI 和依赖布局。 |
 | 手机 / Pad 相机 | 私有流模式映射、front role、I420→NV21；手机 early JPEG 恢复，Pad 使用独立 ImageReader ABI。`apply_xiaomi_camera_fix.py`、`apply_pad_camera_native_fix.py` | 现有专用 KSU 编译桥接；APK、JNI、framework、HAL、libc++ 联合校验，手机偏移不能复用于 Pad。基础功能仍不等于真机 ISP/录像算法完整支持。 |
-| 相机 ANGLE / Parrot | Pad 相机专属 ANGLE 设置；Parrot CPU AION 分配与纹理查询。`apply_pad_camera_fix.py`、`apply_camera_fix.py` | ANGLE 设置保留其他包选项；Parrot 目前是包内专用库安装器，未自动转入 catalog，未知 APK/ABI 拒绝。 |
-| 天气 MGL / ANGLE | 私有 Vulkan EGL display、MGL 依赖重定向及固定 ANGLE workload。`patch_weather.py`、`apply_weather_fix.py` | 镜像或现有专用 KSU 编译桥接；Weather 原生绑定必须避开首次 PackageManager 提取阶段，不改写/重签原 APK。 |
+| 相机 ANGLE / Parrot | Pad 相机专属 ANGLE 设置；Parrot CPU AION 分配与纹理查询。`apply_pad_camera_fix.py`、`apply_camera_fix.py` | ANGLE 设置保留其他包选项；Parrot 使用可选 KSU 私有桥接模块，核验完整 APK 与 Android runtime ABI，沿用既有安装选择。未知 APK/ABI 保留原文件。 |
+| 天气 MGL / ANGLE | 私有 Vulkan EGL display、MGL 依赖重定向及固定 ANGLE workload。`patch_weather.py`、`apply_weather_fix.py` | 镜像基线 + KSU 私有桥接模块；从 PM 重新发现路径，核验已知 APK/依赖后绑定。避开首次提取阶段，不改写/重签原 APK。 |
 | 小爱边缘光效 | MGL GLSL 版本与 8-bit EGL alpha，保留背景及原动画。`patch_assistant.py` | 原生 KSU catalog；已有专用模块保留，APK 来源校验与安装路径发现继续有效。 |
 | 锁屏视频预览 | fastplayer 使用 packed RGBA 与正确 stride，绕过异常 YV12 导入。`patch_lockscreen_video.py` | 原生 KSU catalog / 镜像外置库；未知播放器不套用 offset，APK 保留原字节。 |
 | GNSS framework | 将回调延迟到释放 HAL monitor 后，避免同步回调死锁。`patch_gnss.py` | 已核验 `services.jar` 的镜像构建；Java/DEX 补丁不进入 ELF catalog。 |
@@ -93,3 +93,21 @@ The full regression suite passed 720 tests with 56 optional skips before the fin
 4. 验证 cold boot、实际加载库、用户数据/选择保留和对应功能；一次静态测试不能代替音频、动画、拍照或 UI 验收。仅发布实际验证过的组合，并保留未知特性跳过原因。
 
 详细适配背景见 [手机](hyperos4.md)、[Pad](hyperos4-pad.md)；发布验证记录见 `docs/releases/`。这些记录描述具体版本的证据，不扩大为所有 OS4 的保证。
+
+## 全量交付审计 — 2026-10-10
+
+先按功能提交反馈修复，再审计上表中的全部补丁。新改造沿用现有实例，不按 AVD 名称、端口或工作区目录选择二进制 profile。
+
+| 维护入口 | 改造内容 |
+| --- | --- |
+| `module_lifecycle.py` | 共用 pending / disable / remove 检查，包含悬空别名；已核验旧 hook 原子迁移，保留自定义脚本和用户开关。不会执行迁移中的 hook。 |
+| `modules/app-bridge/`、`app_bridge_module.py` | Weather / 可选 Parrot 共用标准 KSU 安装与受控私有库绑定。Producer 提供已核验预编译 helper，最终用户不需要 NDK。已知 APK 重装后由 guest 服务重新发现路径；未知 workload 跳过。 |
+| `launch.py`、`patch_outcome.py` | 先完成基础配置及原生模块，再检查可选应用。只有明确且尚未修改文件的“不支持”结果可以局部跳过；完整性、所有权、传输或激活错误仍须报告。 |
+| `os4_pad.py` | HWUI 原生库只由统一 catalog 管理。Pad thermal / identity hook 保留职责边界；仅迁移精确已知旧脚本，不改写已加载 payload inode。 |
+| `apply_rear_display_fix.py` | 背屏启动使用内核 `flock` 租约，异常退出后自动释放；保留活跃旧服务、外来文件及别名。 |
+| `packed_source.py` | 默认配置与预装应用候选从当前已核验完整镜像提取；保留额外分区内容和顺序，发布前重查源及收据，删除中间文件。未知 LP 属性拒绝，已接受 RRO 保留原签名字节。 |
+| Phone / Pad builder、`setup.py` | Phone 两版已知 OTA 均保护保数据固件边界；Pad 支持隔离工作区及自定义实例名。保护规则基于固件身份和已有数据，不基于默认名称。 |
+
+镜像的首次启动、Java/DEX、内核和宿主补丁继续使用上表的交付层。将这些内容移入 userdata KSU 会丢失恢复出厂或 root 前的必要修复，因此不宣称它们已全部模块化。未来版本可以复用已审计的相同内容；新的 APK、ELF、framework 或内核需要增加 profile 和真实验证。
+
+本轮收敛后的完整回归为 **801 项通过，56 项可选跳过**。Phone / Pad 均通过正常启动器冷启动，保持 root、SELinux Enforcing 和 `skiavk`；序列号、机型、Android ID、应用版本、七项抽查设置和模块开关与验证前一致。两版天气使用同一已签名 APK 保数据重装后，安装路径从系统目录变为 `/data/app`，guest 模块自行恢复全部已核验私有库绑定，未再运行宿主修复。Pad 天气画面已检查；Phone 的既有定位授权提示保持原选择，未扩大为完整页面验收。临时脚本和重复中间文件清理，原回滚备份保留。
