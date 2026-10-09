@@ -350,7 +350,7 @@ sh {THERMAL_EARLY}''')
     return {'status': 'ready', 'migrated': expected == LEGACY_THERMAL_HWUI_SHA256}
 
 
-def apply_runtime(config):
+def apply_runtime(config, managed=False):
     """Seed emulator-only settings; native-compat is the sole HWUI owner."""
     from common import ROOT, adb
     from apply_flutter_fix import official, root
@@ -360,7 +360,8 @@ def apply_runtime(config):
         raise RuntimeError('Refused a different tablet firmware profile.')
     from os4_defaults import apply_thermal_runtime
     apply_thermal_runtime(config)
-    apply_thermal_profile(config)
+    if not managed:
+        apply_thermal_profile(config)
     from os4_defaults import apply_finddevice_workaround
     apply_finddevice_workaround(config, FINDDEVICE_SHA256)
     for sensor, value in (('proximity', '5'), ('light', '200')):
@@ -378,6 +379,7 @@ def apply_runtime(config):
          'fi\n'
          'setprop persist.sys.miui_resolution 2272,3408,400')
     from os4_defaults import apply_refresh_runtime
-    apply_refresh_runtime(config)
-    apply_serial(config)
+    if not managed:
+        apply_refresh_runtime(config)
+        apply_serial(config)
     print('Pad defaults ready: original tablet identity, 60 Hz.', flush=True)

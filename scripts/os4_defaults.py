@@ -637,7 +637,7 @@ def apply_finddevice_workaround(config, factory_sha256):
         return 'skipped'
 
 
-def apply_runtime(config):
+def apply_runtime(config, managed=False):
     """Seed defaults once without replacing later choices or resetting OOBE."""
     from apply_flutter_fix import official, root
     from common import ROOT, adb
@@ -668,7 +668,8 @@ def apply_runtime(config):
          '    settings put secure aod_mode_user_set 1\n'
          f'    touch {AOD_STAMP}\nfi')
     apply_color_runtime(config)
-    apply_refresh_runtime(config)
+    if not managed:
+        apply_refresh_runtime(config)
     apply_gradient_blur_runtime(config)
     print('OS4 defaults applied: awake AC and initial always-on AOD; FindDevice result reported above.', flush=True)
 

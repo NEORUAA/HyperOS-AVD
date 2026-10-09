@@ -60,13 +60,9 @@ BUILD_KEYS = ('hyperos', 'source', 'android_api', 'archive_sha256', 'kernel_page
               'adb_authentication', 'experimental', 'device', 'display', 'model_xml_sha256',
               'identity_source_sha256', 'vendor_fixes', 'hwui',
               'flutter_engine', 'finddevice_provider_disabled', 'boot_service_fix', 'boot_policy')
-RUNTIME_PAYLOADS = {
-    'os4-official': {'xiaomi-camera': ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json'),
-                    'parrot-camera': ('lib_aion_buffer.so', 'receipt.json')},
-    'os4-pad': {'pad-camera-native': ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json'),
-                'weather-angle': ('libEGL_angle.so', 'libGLESv2_angle.so', 'libhgl.so', 'receipt.json'),
-                'parrot-camera': ('lib_aion_buffer.so', 'receipt.json')},
-}
+OS4_RUNTIME_PAYLOADS = {'os4-core': ('context.json', 'receipt.json'),
+                      'os4-app-compat': ('app-compat.zip', 'receipt.json')}
+RUNTIME_PAYLOADS = {variant: OS4_RUNTIME_PAYLOADS for variant in ('os4-official', 'os4-pad')}
 
 
 def verify_lockscreen_video(profile, build, read):
@@ -528,20 +524,23 @@ def runtime_files():
         for pattern in patterns:
             for path in sorted((REPO_ROOT / directory).glob(pattern)):
                 paths[path.relative_to(REPO_ROOT).as_posix()] = path
+    # The reviewed migration history is data, not guest-supplied trust.
+    for name in ('app_compat_legacy_records.json', 'app_compat_history.json'):
+        history = REPO_ROOT / 'scripts' / name
+        if not history.is_file() or history.is_symlink():
+            raise RuntimeError('Missing reviewed application migration history: ' + name)
+        paths[history.relative_to(REPO_ROOT).as_posix()] = history
     # Include only the maintained module sources, never a user's /data/adb
     # state, patched ELF caches, ZIP outputs or runtime diagnostic files.
-    module = REPO_ROOT / 'modules/native-compat'
-    for name in ('module.prop', 'customize.sh', 'runtime.sh', 'post-fs-data.sh', 'service.sh'):
-        path = module / name
-        if not path.is_file():
-            raise RuntimeError('Missing portable native module source: ' + name)
-        paths[path.relative_to(REPO_ROOT).as_posix()] = path
-    module = REPO_ROOT / 'modules/app-bridge'
-    for name in ('customize.sh', 'runtime.sh', 'service.sh', 'uninstall.sh'):
-        path = module / name
-        if not path.is_file():
-            raise RuntimeError('Missing portable private bridge source: ' + name)
-        paths[path.relative_to(REPO_ROOT).as_posix()] = path
+    for name in ('native-compat', 'app-bridge', 'compat-webui'):
+        module = REPO_ROOT / 'modules' / name
+        if not module.is_dir() or module.is_symlink():
+            raise RuntimeError('Missing portable compatibility source: ' + name)
+        for path in sorted(module.iterdir()):
+            if path.suffix in ('.sh', '.html', '.js', '.css') or path.name == 'module.prop':
+                if not path.is_file() or path.is_symlink():
+                    raise RuntimeError('Invalid portable compatibility source: ' + path.name)
+                paths[path.relative_to(REPO_ROOT).as_posix()] = path
     return paths
 
 
@@ -603,6 +602,8 @@ def main():
     parser.add_argument('--output', type=Path, help='Stage a new bundle before replacing an unpublished release')
     parser.add_argument('--variant', choices=('os3', 'os4-official', 'os4-pad'), default='os3')
     parser.add_argument('--part-mib', type=int, default=1536)
+    parser.add_argument('--compat-cache-root', type=Path, action='append', default=[],
+                        help='Verified producer cache for the complete common app recipe union')
     args = parser.parse_args()
     root = ROOT
     if args.variant != 'os3' and 'HYPEROS_AVD_WORKSPACE' not in os.environ:
@@ -634,8 +635,10 @@ def main():
         for path in build_host_color(root):
             paths['tools/' + path.name] = path
     if metadata['format'] == 3:
-        from apply_camera_fix import prepare_prebuilt as prepare_parrot_prebuilt
-        prepare_parrot_prebuilt(root, sdk_path())
+        from core_context import prepare as prepare_core_context
+        from apply_app_compat import prepare_prebuilt as prepare_app_compat
+        prepare_core_context(root)
+        prepare_app_compat(root, sdk=sdk_path(), cache_roots=[root, *args.compat_cache_root])
         for folder, names in RUNTIME_PAYLOADS[args.variant].items():
             paths.update({'tools/' + folder + '/' + name: root / 'tools' / folder / name for name in names})
         paths.update({'runtime/' + relative: path for relative, path in runtime_files().items()})

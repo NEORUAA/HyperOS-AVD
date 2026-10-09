@@ -42,7 +42,7 @@ class LaunchBootMigrationTests(unittest.TestCase):
         def uninstall(_config):
             order.append('uninstall')
             return {'migrated': False, 'unsupported': True, 'reason': 'Unknown hook is preserved.'}
-        def standard(_config):
+        def standard(_config, platform_context=None):
             order.append('native')
         def lifecycle(_config):
             order.append('lifecycle')
@@ -56,6 +56,8 @@ class LaunchBootMigrationTests(unittest.TestCase):
                 patch.object(boot, 'migrate_uninstall_hook', side_effect=uninstall), \
                 patch.object(boot, 'migrate_lifecycle_hooks', side_effect=lifecycle), \
                 patch.object(native, 'install', side_effect=standard), \
+                patch('core_context.load', return_value={}), \
+                patch('apply_app_compat.install_prebuilt', return_value={'installed': True}), \
                 patch('sys.stdout', new_callable=io.StringIO) as output:
             launch.initialize(config)
             record = json.loads((Path(temporary) / 'local/last-boot.json').read_text())

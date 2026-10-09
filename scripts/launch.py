@@ -178,55 +178,21 @@ def initialize(config, bypass_oobe=False, rotate_window=True):
     outcomes = {}
     if source == 'official-hongkong-ota':
         from os4_defaults import apply_runtime
-        apply_runtime(config)
+        apply_runtime(config, managed=True)
     elif source == 'official-yingtian-ota':
         from os4_pad import apply_runtime, align_window
-        apply_runtime(config)
+        apply_runtime(config, managed=True)
         if rotate_window:
             align_window(config)
     if is_os4():
         migrate_boot_service_helpers(config)
-        # Provision the common owner before inspecting optional app workloads.
-        # Its guest service reconciles known native content after cold boot.
+        # Both OS4 variants install the same two module artifacts. Guest
+        # services select individual recipes by content and capability.
         from apply_native_compat import install as install_native_compat
-        install_native_compat(config)
-    if source == 'official-hongkong-ota':
-        from apply_flutter_fix import install
-        install(config)
-        from apply_navigation_fix import install as install_navigation
-        install_navigation(config)
-        from apply_weather_fix import install as install_weather
-        optional_patch(outcomes, 'Weather bridge', install_weather, config)
-        from apply_assistant_fix import install as install_assistant
-        optional_patch(outcomes, 'XiaoAI bridge', install_assistant, config)
-        if metadata.get('rear_display_wake_fix'):
-            from apply_rear_display_fix import install as install_rear_display
-            install_rear_display(config)
-        from apply_xiaomi_camera_fix import MODULE, install as install_xiaomi_camera
-        installed = adb(config, 'shell', 'su -W -c ' + shlex.quote(
-            f'if [ -f {MODULE}/manifest.json ]; then echo yes; fi'),
-            capture_output=True, text=True, check=True, timeout=10).stdout.strip()
-        if installed == 'yes' or config.get('camera_bridge', False):
-            optional_patch(outcomes, 'Xiaomi camera bridge', install_xiaomi_camera,
-                           config, rebuild=installed == 'yes')
-    elif source == 'official-yingtian-ota':
-        from apply_flutter_fix import install
-        install(config, sources=('official-yingtian-ota',))
-        from apply_weather_fix import install as install_weather
-        optional_patch(outcomes, 'Weather bridge', install_weather, config,
-                       sources=('official-yingtian-ota',), angle_folder=ROOT / 'tools/weather-angle')
-        from apply_assistant_fix import install as install_assistant
-        optional_patch(outcomes, 'XiaoAI bridge', install_assistant, config,
-                       sources=('official-yingtian-ota',))
-        from apply_pad_camera_fix import install as install_pad_camera
-        optional_patch(outcomes, 'Pad camera ANGLE', install_pad_camera, config)
-        from apply_pad_camera_native_fix import install as install_pad_camera_native
-        optional_patch(outcomes, 'Pad camera native bridge', install_pad_camera_native, config)
-    if is_os4() and (ROOT / 'local/camera-fix.json').is_file():
-        # Retain the user's existing optional Parrot opt-in. Fresh installations
-        # do not install Google Camera or enable this bridge implicitly.
-        from apply_camera_fix import install as install_parrot
-        optional_patch(outcomes, 'Parrot camera bridge', install_parrot, config)
+        from core_context import load as load_core_context
+        outcomes['core'] = install_native_compat(config, platform_context=load_core_context(ROOT))
+        from apply_app_compat import install_prebuilt as install_apps
+        outcomes['apps'] = install_apps(config, workspace=ROOT)
     if bypass_oobe:
         skip_oobe(config)
     manager = adb(config, 'shell', 'pm path me.weishu.kernelsu', capture_output=True, text=True, timeout=15)

@@ -40,20 +40,23 @@ class OptionalPatchTests(unittest.TestCase):
                 order.append(name)
                 if error:
                     raise error
+                return {'installed': True, 'features': ['weather', 'oem-camera', 'parrot-camera']}
             return call
         imports = {
             'os4_defaults.apply_sensor_defaults': Mock(),
             'os4_defaults.apply_runtime': record('defaults'),
             'os4_pad.apply_runtime': record('defaults'),
             'os4_pad.align_window': record('window'),
-            'apply_native_compat.install': record('native'),
-            'apply_flutter_fix.install': record('flutter', mandatory_failure),
-            'apply_navigation_fix.install': record('navigation'),
-            'apply_weather_fix.install': record('weather', failure),
-            'apply_assistant_fix.install': record('assistant', failure),
-            'apply_xiaomi_camera_fix.install': record('phone camera', failure),
-            'apply_pad_camera_fix.install': record('pad ANGLE', failure),
-            'apply_pad_camera_native_fix.install': record('pad camera', failure),
+            'apply_native_compat.install': record('native', mandatory_failure),
+            'core_context.load': Mock(return_value={'schema': 1, 'identity_sources': []}),
+            'apply_app_compat.install_prebuilt': record('apps', failure),
+            'apply_flutter_fix.install': Mock(side_effect=AssertionError('Legacy Flutter installer invoked')),
+            'apply_navigation_fix.install': Mock(side_effect=AssertionError('Legacy navigation installer invoked')),
+            'apply_weather_fix.install': Mock(side_effect=AssertionError('Legacy Weather installer invoked')),
+            'apply_assistant_fix.install': Mock(side_effect=AssertionError('Legacy XiaoAI installer invoked')),
+            'apply_xiaomi_camera_fix.install': Mock(side_effect=AssertionError('Legacy Phone camera invoked')),
+            'apply_pad_camera_fix.install': Mock(side_effect=AssertionError('Legacy Pad ANGLE invoked')),
+            'apply_pad_camera_native_fix.install': Mock(side_effect=AssertionError('Legacy Pad camera invoked')),
         }
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             root = Path(temporary)
@@ -69,18 +72,15 @@ class OptionalPatchTests(unittest.TestCase):
             result = json.loads((root / 'local/last-boot.json').read_text())
         return order, result
 
-    def test_phone_unknown_optional_apps_leave_core_and_manager_ready(self):
-        order, result = self._initialize('official-hongkong-ota', UnsupportedPatch('Unknown optional APK'))
-        self.assertEqual(order, ['defaults', 'migration', 'native', 'flutter', 'navigation',
-                                 'weather', 'assistant', 'phone camera'])
-        self.assertEqual(len(result['patch_outcomes']), 3)
-        self.assertTrue(all(value['state'] == 'unsupported' for value in result['patch_outcomes'].values()))
+    def test_phone_uses_two_common_owners_without_per_app_installers(self):
+        order, result = self._initialize('official-hongkong-ota')
+        self.assertEqual(order, ['defaults', 'migration', 'native', 'apps'])
+        self.assertEqual(set(result['patch_outcomes']), {'core', 'apps'})
 
-    def test_pad_unknown_optional_apps_leave_core_and_manager_ready(self):
-        order, result = self._initialize('official-yingtian-ota', UnsupportedPatch('Unknown optional APK'))
-        self.assertEqual(order, ['defaults', 'window', 'migration', 'native', 'flutter',
-                                 'weather', 'assistant', 'pad ANGLE', 'pad camera'])
-        self.assertEqual(len(result['patch_outcomes']), 4)
+    def test_pad_uses_the_same_common_owners_as_phone(self):
+        order, result = self._initialize('official-yingtian-ota')
+        self.assertEqual(order, ['defaults', 'window', 'migration', 'native', 'apps'])
+        self.assertEqual(set(result['patch_outcomes']), {'core', 'apps'})
 
     def test_mandatory_shared_engine_failure_stays_fatal(self):
         with self.assertRaisesRegex(RuntimeError, 'Unknown shared engine'):
