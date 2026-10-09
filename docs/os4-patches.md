@@ -49,7 +49,7 @@ HYPEROS_AVD_WORKSPACE="$PWD/work/os4-official" python3 scripts/apply_native_comp
 
 模块通过 KernelSU 正常安装生命周期激活。early 阶段处理系统目标；late 阶段从包管理器解析当前原生库路径，每 30 秒检查包数据库变化，稳定后重新核验；无变化时不反复提取 APK。服务使用内核 `flock` 租约，崩溃后可自动恢复模块自己的空锁，同时保留仍存活的旧服务；运行状态只允许 root 访问。完整输入/历史输出 hash、每个原字节、完整输出 hash 均需匹配；未知内容仅跳过对应特性并记录状态，不能中断系统开机或回退为猜测 offset。已有八类专用模块及其关闭选择保留，不自动删除。
 
-状态位于 `/data/adb/modules/hyperos_avd_native_compat/state/status.tsv`，每行是 `feature|target|state|reason`；运行日志为同目录的 `runtime.log`。
+状态位于 `/data/adb/modules/hyperos_avd_native_compat/state/status.tsv`，每行是 `feature|target|state|reason`；运行日志位于 `/data/adb/modules/hyperos_avd_native_compat/runtime.log`。
 
 | 状态 / 原因示例 | 含义 |
 | --- | --- |
@@ -63,9 +63,27 @@ HYPEROS_AVD_WORKSPACE="$PWD/work/os4-official" python3 scripts/apply_native_comp
 
 恢复出厂会清除 `/data/adb`，因此纯 userdata 模块不保证重置后的第一次开机。现有可启动的镜像、必要的内核/SELinux/首次扫描修复仍必须保留。启动器会在基线启动后安装通用模块，可能还需一次重启；新的镜像内 KSU 自举尚未经过恢复出厂验证，不将它写成已完成能力。
 
-本轮已在手机 `4.0.18.0.XFRCNXM` 上验证标准 KSU 安装、待重启复用和正常重启；临时关闭旧 Flutter 模块后，新模块独立生成并让桌面实际加载了修复库。保留宿主崩溃留下的空锁后再次冷启动，也确认服务自动恢复并持续持有租约。Android ID、序列号、引导状态、应用列表及抽查的用户设置保持一致，Vulkan 和 SELinux Enforcing 保留，原模块启用选择已恢复。Android 17 的 `legacyNativeLibraryDir`、停用出厂包与空 ZIP 原生条目也有回归覆盖；当前 Rust 桌面没有某些可选私有库，使用共享引擎并安全跳过这些目标。Pad 本轮未做实际冷启动验收，未知未来版本仍需上述内容和 ABI 审计。
+本轮已在手机 `4.0.18.0.XFRCNXM` 上验证标准 KSU 安装、待重启复用和正常重启；临时关闭旧 Flutter 模块后，新模块独立生成并让桌面实际加载了修复库。保留宿主崩溃留下的空锁后再次冷启动，也确认服务自动恢复并持续持有租约。Android ID、序列号、引导状态、应用列表及抽查的用户设置保持一致，Vulkan 和 SELinux Enforcing 保留，原模块启用选择已恢复。Android 17 的 `legacyNativeLibraryDir`、停用出厂包与空 ZIP 原生条目也有回归覆盖；当前 Rust 桌面没有某些可选私有库，使用共享引擎并安全跳过这些目标。Pad cold-boot validation and the revision 2 compatibility fixes are recorded below. Unknown future binaries still require content and ABI review.
 
 连续 Android 软重启还触发过一次宿主崩溃，堆栈位于 SDK 的 macOS OpenGL/gfxstream 合成路径；正常冷启动后已恢复，用户数据保留。该连续重启问题尚未定位根因或增加修复，不将 guest 模块核验扩大为宿主稳定性保证。
+
+## Feedback verification — 2026-10-10
+
+The feedback predates nine local commits after the Phone r4 / installer 1.2.1 tags (`5aac0a2` → `c5b8552`). Both retained Phone and Pad guests were tested with their existing userdata. This verification does not create a release or certify unknown future binaries.
+
+| Item | Result and delivery |
+| --- | --- |
+| ART CPU affinity | Actual APK installation and compilation succeeded on both four-vCPU guests. Image init and native module revision 2 share one topology-aware policy; valid user subsets and thread choices are retained. Six-vCPU and non-contiguous topology are covered by fixtures. |
+| Unsupported kernel / QTI services | Pinned init definitions are gated before startup using boot-local capability probes. Both final cold boots report capabilities `0`, helper exit `0`, and no iorapd / Millet / QTI display startup attempt or QTI execute denial. No persistent service opt-out is written. |
+| Updated OEM packages | FindDevice changes require verified system-update origin, signer and Provider contract. Unknown optional private Flutter / Launcher code is retained and skipped locally, allowing other initialization to complete. The exact reported updated APKs were not available for live verification. |
+| Pad native module regression | Revision 1 incorrectly selected Phone rear-display timing on Pad. Revision 2 checks actual display capabilities and preserves file metadata. A pinned HWC executable bind retains its owner and allows the required SELinux transition on that single read-only file. An actual HWC restart verified its HAL domain; normal v2 cold boots pass on both guests. |
+| Legacy helper upgrades | Known module helpers and uninstall hooks are migrated atomically without running hooks, changing user lifecycle flags, or writing persistent service opt-outs. Unknown payloads are preserved with diagnostics. |
+| Local encrypted storage | A locally built image can supply verified boot inputs for the existing encrypted-capacity check, without pretending to be a downloaded release. Installed manifests retain their strict validation. |
+| Pad rendering / stability reports | Weather launch and scrolling, Settings, correctly oriented Recents, and the valid HTMLViewer privacy page were exercised. No matching MoltenVK shader failure, HTMLViewer ANR, or Gallery widget-provider database abort occurred in the final sampled logs. These historical failures are not declared fixed. Gallery's existing consent choice was retained; its provider was observed independently. |
+
+Both final guests retain SELinux Enforcing and HWUI Vulkan. Serial/model/device identity, the package list, and seven sampled user choices remain unchanged. Android's own boot counters and runtime bookkeeping can change. No app data was cleared, no new AVD or OTA download was needed, and no push or release was performed.
+
+The full regression suite passed 720 tests with 56 optional skips before the final conservative init-auditor refinement; 81 affected tests then passed with one optional skip. The final packed Phone / Pad graphs passed 17 / 7 integrity checks across 174 / 155 init entries, including conservative route and duplicate-service auditing. Private receipts and screenshots remain under `work/phone-feedback-audit-20261010/` and `work/pad-feedback-audit-20261010/`; they are not release assets. Intermediate firmware staging and duplicate test backups are removed after validation; the original rollback backups are retained.
 
 ## 新增兼容 profile
 
