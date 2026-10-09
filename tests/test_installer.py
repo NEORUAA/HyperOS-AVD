@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import common
 import setup
 import package_release
+import phone_profile
 
 
 class InstallerTests(unittest.TestCase):
@@ -169,6 +170,12 @@ class InstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             path, manifest = self.os4_fixture(root)
+            # Direct reimport preserves data only for the same verified OTA.
+            manifest['build']['archive_sha256'] = phone_profile.profile(
+                manifest['hyperos'])['archive_sha256']
+            path.write_text(json.dumps(manifest))
+            (root / 'local').mkdir()
+            (root / 'local/build.json').write_text(json.dumps(manifest['build']))
             data = root / 'avd/HyperOS_4_Official_API_37.avd/userdata-qemu.img'
             data.parent.mkdir(parents=True)
             data.write_bytes(b'personal OS4 data')

@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import apply_xiaomi_camera_fix as camera
+import module_lifecycle
 from phone_profile import profile
 
 
@@ -195,16 +196,30 @@ class PhoneCameraUpgradeTests(unittest.TestCase):
         config = {'name': 'User-renamed-phone', 'port': 5584, 'sdk': '/unused-sdk'}
         values = {'ro.boot.qemu.avd_name': config['name'], 'ro.boot.hardware': 'ranchu',
                   'ro.mi.os.version.incremental': selected['incremental']}
+        calls = []
+        lifecycle_read = module_lifecycle.state_script(camera.MODULE)
         def guest(device, command):
+            self.assertEqual(device, config)
+            calls.append(command)
+            if command == lifecycle_read:
+                self.assertNotRegex(command, r'\b(?:touch|rm|mv|cp|mkdir|chmod|chcon|mount|resetprop)\b')
+                return ''
             if command.startswith('getprop '):
                 return values[command[len('getprop '):]]
             self.assertEqual(command, 'pm path com.android.camera')
             return 'package:/data/app/unsupported/base.apk'
-        with patch.object(camera, 'official'), patch('phone_profile.profile_from_build', return_value=selected), \
-                patch.object(camera, 'root', side_effect=guest), patch.object(camera, 'build') as build:
+        with tempfile.TemporaryDirectory() as directory, patch.object(camera, 'ROOT', Path(directory)), \
+                patch.object(camera, 'official'), patch('phone_profile.profile_from_build', return_value=selected), \
+                patch.object(camera, 'root', side_effect=guest), patch.object(camera, 'build') as build, \
+                patch.object(camera, 'adb') as adb, patch.object(camera, 'migrate_camera_app') as migrate:
             with self.assertRaisesRegex(RuntimeError, 'update is unsupported'):
                 camera.install(config)
+            self.assertEqual(list(Path(directory).iterdir()), [])
         build.assert_not_called()
+        adb.assert_not_called()
+        migrate.assert_not_called()
+        self.assertEqual(calls, [lifecycle_read, *('getprop ' + key for key in values),
+                                 'pm path com.android.camera'])
 
 
 if __name__ == '__main__':
