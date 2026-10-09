@@ -296,6 +296,35 @@ else:
         recipe[0]['factory_passthrough']={'oat/arm64/Fixture.odex':digest(b'original')}
         with self.assertRaisesRegex(RuntimeError,'passthrough'):catalog.validate(recipe)
 
+    def test_factory_inventory_preserves_filename_boundaries_and_rejects_find_error(self):
+        factory,apk,_=self.factory_preopt()
+        parent=str(Path(factory).parent)
+        # Trailing whitespace previously collapsed an unknown file into the
+        # name of the real APK or oat directory during shell word splitting.
+        for name in ('Fixture.apk\n','Fixture.apk ','oat\n','oat\t'):
+            unknown=apk.parent/name
+            unknown.write_bytes(b'unknown original must be preserved')
+            with self.subTest(name=name):
+                result=self.shell('MODDIR="$OWNERDIR/contexts/first"; BRIDGE_CATALOG=1\n'
+                                  'catalog_context_assets || exit 1\n'
+                                  'catalog_mirror_inventory 1 '+shlex.quote(parent)+' Fixture.apk',check=False)
+                self.assertNotEqual(result.returncode,0)
+                self.assertEqual(unknown.read_bytes(),b'unknown original must be preserved')
+                self.assertEqual(self.mounts(),{})
+                self.assertFalse(list((self.module/'contexts/first/state').glob('inventory.*')))
+            unknown.unlink()
+        # A partial enumeration that ends in an error must not validate even
+        # when every emitted name is an audited original entry.
+        find=self.bin/'find'
+        find.write_text('#!/bin/sh\nprintf \'./Fixture.apk\\0./oat\\0\'\nexit 1\n')
+        find.chmod(0o755)
+        result=self.shell('catalog_pass early',check=False)
+        self.assertEqual(result.returncode,0)
+        self.assertEqual(self.statuses()['weather'],'unsupported')
+        self.assertEqual(self.mounts(),{})
+        self.assertTrue(apk.is_file())
+        self.assertFalse(list((self.module/'contexts/first/state').glob('inventory.*')))
+
     def test_owned_angle_cleanup_preserves_unrelated_package_policy(self):
         self.recipes[0]['policy']={'angle':{'driver':'angle','features':['exposeES32ForTesting']}}
         self.publish_catalog()

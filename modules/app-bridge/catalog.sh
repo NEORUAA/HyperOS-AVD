@@ -172,8 +172,22 @@ catalog_mirror_regular() {
     esac
 }
 catalog_mirror_inventory() {
-    local pid=$1 parent=$2 apk_name=$3 item name
-    for item in $(bridge_ns "$pid" sh -c 'cd "$1" && find . -mindepth 1' sh "$parent"); do
+    local pid=$1 parent=$2 apk_name=$3 item name inventory entries
+    inventory=$("$BB" mktemp "$MODDIR/state/inventory.XXXXXX") || return 1
+    # NUL-delimited enumeration retains every actual pathname. Only after an
+    # argument-safe checker rejects all noncanonical characters may entries be
+    # represented as shell words. A failed/partial find never authorizes a tree.
+    bridge_ns "$pid" sh -c 'cd "$1" && "$2" find . -mindepth 1 -print0' sh "$parent" "$BB" > "$inventory" || {
+        rm -f "$inventory"; return 1
+    }
+    entries=$("$BB" xargs -0 "$BB" sh -c '
+        for item do
+            case "$item" in ""|*[!A-Za-z0-9_./=+~@-]*) exit 1 ;; esac
+            printf "%s\\n" "$item"
+        done
+    ' sh < "$inventory") || { rm -f "$inventory"; return 1; }
+    rm -f "$inventory"
+    for item in $entries; do
         case "$item" in
             "./$apk_name") catalog_mirror_regular "$pid" "$parent/$apk_name" || return 1 ;;
             ./lib|./lib/arm64)
