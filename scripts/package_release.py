@@ -442,6 +442,14 @@ def runtime_files():
         for pattern in patterns:
             for path in sorted((REPO_ROOT / directory).glob(pattern)):
                 paths[path.relative_to(REPO_ROOT).as_posix()] = path
+    # Include only the maintained module sources, never a user's /data/adb
+    # state, patched ELF caches, ZIP outputs or runtime diagnostic files.
+    module = REPO_ROOT / 'modules/native-compat'
+    for name in ('module.prop', 'customize.sh', 'runtime.sh', 'post-fs-data.sh', 'service.sh'):
+        path = module / name
+        if not path.is_file():
+            raise RuntimeError('Missing portable native module source: ' + name)
+        paths[path.relative_to(REPO_ROOT).as_posix()] = path
     return paths
 
 

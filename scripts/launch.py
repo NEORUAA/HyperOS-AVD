@@ -171,6 +171,11 @@ def initialize(config, bypass_oobe=False, rotate_window=True):
         install_pad_camera(config)
         from apply_pad_camera_native_fix import install as install_pad_camera_native
         install_pad_camera_native(config)
+    if is_os4():
+        # The guest owns subsequent native-library reconciliation. Provision
+        # its standard module once; never reboot a user's session implicitly.
+        from apply_native_compat import install as install_native_compat
+        install_native_compat(config)
     if bypass_oobe:
         skip_oobe(config)
     manager = adb(config, 'shell', 'pm path me.weishu.kernelsu', capture_output=True, text=True, timeout=15)
