@@ -394,6 +394,32 @@ def resize(sdk, avd, gib, *, allow_guest=False):
     return resize_userdata(sdk, avd, gib * 1024**3)
 
 
+def storage_boot_metadata(root, folder):
+    """Pin owned local builds without weakening installed-release verification."""
+    manifest = root / 'local/installed-release.json'
+    if manifest.exists():
+        return json.loads(manifest.read_text())
+    build_path = root / 'local/build.json'
+    build = json.loads(build_path.read_text()) if build_path.is_file() else {}
+    variant = {common.OS4_SOURCE: 'os4-official',
+               'official-yingtian-ota': 'os4-pad'}.get(build.get('source'))
+    version = build.get('hyperos')
+    if (not variant or build.get('android_api') != 37 or not isinstance(version, str)
+            or not version.startswith(('OS4.', '4.'))):
+        raise RuntimeError('Guest storage repair requires a known installed release or local OS4 build.')
+    files = {}
+    for relative in ('images/system.img', 'images/vendor.img', 'images/kernel-ranchu',
+                     'images/ramdisk.img', 'tools/ksud-aarch64-linux-android'):
+        path = root / relative
+        if not path.is_file():
+            raise RuntimeError('Missing local storage repair firmware: ' + relative)
+        files[relative] = {'sha256': sha256(path)}
+    metadata = {'variant': variant, 'build': build, 'files': files,
+                'verification': 'owned-local-build-snapshot'}
+    json_write(folder / 'storage-boot-inputs.json', metadata)
+    return metadata
+
+
 def prepare_storage(root, name, port, sdk, gib, folder):
     """Repair legacy encrypted capacity only through the owned decrypted guest."""
     root, sdk, folder = Path(root), Path(sdk), Path(folder)
@@ -404,7 +430,7 @@ def prepare_storage(root, name, port, sdk, gib, folder):
     result = resize(sdk, avd, gib, allow_guest=True)
     if not result.get('guest_required'):
         return result
-    manifest = json.loads((root / 'local/installed-release.json').read_text())
+    manifest = storage_boot_metadata(root, folder)
     if manifest.get('variant') not in ('os3', 'os4-official', 'os4-pad'):
         raise RuntimeError('Guest storage repair requires a known installed release.')
     saved = json.loads((root / 'local/runtime.json').read_text())

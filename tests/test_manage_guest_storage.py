@@ -166,6 +166,56 @@ class ManageGuestStorageTests(unittest.TestCase):
         self.mocks['popen'].assert_not_called()
         self.assert_no_publish()
 
+    def test_local_os4_build_without_release_manifest_uses_pinned_boot_inputs(self):
+        (self.root / 'local/installed-release.json').unlink()
+        build = {'source': 'official-yingtian-ota', 'android_api': 37,
+                 'hyperos': 'OS4.0.15.0.XBMCNXM'}
+        (self.root / 'local/build.json').write_text(json.dumps(build))
+        self.assertTrue(self.prepare()['changed'])
+        proof = json.loads((self.folder / 'storage-boot-inputs.json').read_text())
+        self.assertEqual(proof['variant'], 'os4-pad')
+        self.assertEqual(proof['files'], self.manifest['files'])
+        self.mocks['features'].assert_called_once_with(build)
+        self.mocks['rear'].assert_called_once_with(build)
+        self.assertFalse((self.root / 'local/installed-release.json').exists())
+
+    def test_missing_or_unknown_local_build_refuses_before_spawn(self):
+        (self.root / 'local/installed-release.json').unlink()
+        for build in ({}, {'source': 'foreign', 'android_api': 37, 'hyperos': 'OS4'},
+                      {'source': 'official-yingtian-ota', 'android_api': 36, 'hyperos': 'OS4'},
+                      {'source': 'official-yingtian-ota', 'android_api': 37, 'hyperos': 'OS3.0'},
+                      {'source': 'official-yingtian-ota', 'android_api': 37, 'hyperos': True}):
+            with self.subTest(build=build):
+                (self.root / 'local/build.json').write_text(json.dumps(build))
+                with self.assertRaisesRegex(RuntimeError, 'known installed release or local OS4 build'):
+                    self.prepare()
+        self.mocks['popen'].assert_not_called()
+        self.assert_no_publish()
+
+    def test_existing_release_manifest_cannot_fall_back_to_local_build(self):
+        (self.root / 'local/build.json').write_text(json.dumps(
+            {'source': 'official-yingtian-ota', 'android_api': 37, 'hyperos': 'OS4.0'}))
+        self.manifest['files']['images/system.img']['sha256'] = '0' * 64
+        self.write_manifest()
+        with self.assertRaisesRegex(RuntimeError, 'firmware differs'):
+            self.prepare()
+        self.mocks['popen'].assert_not_called()
+
+    def test_local_build_mutation_after_snapshot_refuses_before_spawn(self):
+        (self.root / 'local/installed-release.json').unlink()
+        (self.root / 'local/build.json').write_text(json.dumps(
+            {'source': 'official-yingtian-ota', 'android_api': 37, 'hyperos': 'OS4.0'}))
+        snapshot = manage.storage_boot_metadata
+        def mutate(root, folder):
+            result = snapshot(root, folder)
+            (root / 'images/vendor.img').write_bytes(b'changed after pinning')
+            return result
+        with patch.object(manage, 'storage_boot_metadata', side_effect=mutate):
+            with self.assertRaisesRegex(RuntimeError, 'firmware differs'):
+                self.prepare()
+        self.mocks['popen'].assert_not_called()
+        self.assert_no_publish()
+
     def test_foreign_avd_registry_refuses_before_idle_or_capacity_probe(self):
         foreign = self.root.parent / 'another-workspace' / 'Foreign.avd'
         (self.registry / (self.name + '.ini')).write_text('path=' + str(foreign) + '\n')
