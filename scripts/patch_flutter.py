@@ -9,7 +9,9 @@ from pathlib import Path
 PROFILES = {
     '7f88d7f4d9a464fdd56fb255642c9d300f28f50272ccf5fd31f082c1a52e17f4': {
         'name': 'system-hongkong-4.0.18',
-        'output': '439bb47881f64431ba43dc4de5788e7f0a3a0c4e78102b47cc8f0daa6229b91b',
+        'output': '3ce87f3200841ae53cd869c9f939906d2f904f6af6601c1543365052b577e275',
+        'legacy': ('439bb47881f64431ba43dc4de5788e7f0a3a0c4e78102b47cc8f0daa6229b91b',),
+        'glyph_raster_site': 0xb2d4a8,
         'shadow_sites': (0xd3d9c0, 0xd3e61c, 0xd3e630),
         # Re-audited against this OTA's .gnu_debugdata, not a global offset.
         # GetEnabledDeviceFeatures, PipelineVK::Create, both HostBuffer::Emplace
@@ -37,6 +39,10 @@ PROFILES = {
             (0xd3d9c0, '3800c0f2', 'b800c0f2'),
             (0xd3e61c, '2009a00e', '2021022e'),
             (0xd3e630, '4108a00e', '4120092e'),
+            # Large glyph paths develop triangular wedges after scale on AVD.
+            # Use the existing cached Skia glyph atlas up to 512 physical pixels
+            # instead of 150; larger outlines retain the original path fallback.
+            (0xb2d4a8, 'c862a852', '0880a852'),
         ],
     },
     '9caf8bd3413b3093ae0855f86369f31ddf45b46c7ddbaa4c2f656e4f67bb5009': {
@@ -168,6 +174,11 @@ def patch(data):
     alignment paths. The measured AVD minStorageBufferOffsetAlignment is 16;
     caller alignments above 16 are still respected. The trampoline uses only
     scratch x16 and preserves each engine ABI, including its output register.
+
+    The hongkong 4.0.18 engine keeps medium/large glyphs (up to 512 pixels)
+    in its existing bitmap atlas instead of its unstable path tessellation.
+    This preserves scale, font outlines and atlas caching without repeatedly
+    regenerating offscreen MSAA targets or switching renderers.
 
     The shared v3 engine's dispersion-shadow quad uses a triangle strip. AVD
     captures showed diagonal wedges in Gallery. Select a triangle fan and

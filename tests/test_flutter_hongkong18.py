@@ -1,6 +1,7 @@
 """Verify the independently audited OS4.0.18 native renderer profile."""
 import hashlib
 import lzma
+import os
 from pathlib import Path
 import struct
 import sys
@@ -11,7 +12,8 @@ sys.path.insert(0, str(REPO / 'scripts'))
 import patch_flutter
 
 INPUT = '7f88d7f4d9a464fdd56fb255642c9d300f28f50272ccf5fd31f082c1a52e17f4'
-OUTPUT = '439bb47881f64431ba43dc4de5788e7f0a3a0c4e78102b47cc8f0daa6229b91b'
+OUTPUT = '3ce87f3200841ae53cd869c9f939906d2f904f6af6601c1543365052b577e275'
+PREVIOUS = '439bb47881f64431ba43dc4de5788e7f0a3a0c4e78102b47cc8f0daa6229b91b'
 TRAMPOLINE = 0x68a968
 
 
@@ -50,7 +52,8 @@ def branch_target(offset, instruction):
 
 class Hongkong18FlutterTests(unittest.TestCase):
     def binary(self):
-        path = REPO / 'work/os4-r3-build/input/hongkong-4.0.18/flutter.bin'
+        path = Path(os.environ.get('HYPEROS_AVD_FLUTTER18_ARTIFACT', str(
+            REPO / 'work/os4-r3-build/input/hongkong-4.0.18/flutter.bin')))
         if not path.is_file():
             self.skipTest('Original proprietary OTA engine is not distributed in Git.')
         data = path.read_bytes()
@@ -61,7 +64,7 @@ class Hongkong18FlutterTests(unittest.TestCase):
         profile = patch_flutter.PROFILES[INPUT]
         self.assertEqual(profile['name'], 'system-hongkong-4.0.18')
         self.assertEqual(profile['output'], OUTPUT)
-        self.assertEqual(len(profile['sites']), 17)
+        self.assertEqual(len(profile['sites']), 18)
         sites = {offset: (before, after) for offset, before, after in profile['sites']}
         for offset in (0xb436d0, 0xb43c64):
             self.assertEqual(sites[offset][0], 'f30300aa')
@@ -86,6 +89,30 @@ class Hongkong18FlutterTests(unittest.TestCase):
         changed[0xde01a8 + 4] ^= 1
         with self.assertRaisesRegex(RuntimeError, 'Unsupported Flutter engine'):
             patch_flutter.patch(changed)
+
+    def test_large_glyph_threshold_is_bounded_and_old_patch_migrates(self):
+        data = self.binary()
+        fixed = patch_flutter.patch(data)
+        offset = patch_flutter.PROFILES[INPUT]['glyph_raster_site']
+        self.assertEqual(offset, 0xb2d4a8)
+        symbols = debug_symbols(data)
+        collect = [value for name, value in symbols.items()
+                   if 'TypographerContextSkia16CollectNewGlyphs' in name]
+        self.assertEqual(len(collect), 1)
+        self.assertLessEqual(collect[0][0], offset + 0x10000)
+        self.assertLess(offset + 0x10000, collect[0][0] + collect[0][1])
+        for payload, threshold in ((data, 150.0), (fixed, 512.0)):
+            instruction = struct.unpack_from('<I', payload, offset)[0]
+            self.assertEqual(instruction & 0xffe0001f, 0x52a00008)
+            bits = ((instruction >> 5) & 0xffff) << 16
+            self.assertEqual(struct.unpack('<f', struct.pack('<I', bits))[0], threshold)
+        previous = bytearray(fixed)
+        previous[offset:offset + 4] = data[offset:offset + 4]
+        self.assertEqual(hashlib.sha256(previous).hexdigest(), PREVIOUS)
+        self.assertEqual(patch_flutter.patch(previous), fixed)
+        # Only this instruction differs from the already released renderer.
+        self.assertEqual(previous[:offset], fixed[:offset])
+        self.assertEqual(previous[offset + 4:], fixed[offset + 4:])
 
     def test_trampoline_is_executable_padding_outside_neighbor_functions(self):
         data = self.binary()
