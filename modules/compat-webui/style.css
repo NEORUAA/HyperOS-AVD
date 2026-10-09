@@ -1,0 +1,30 @@
+:root { color-scheme: light dark; font-family: system-ui, -apple-system, sans-serif; --bg:#f3f5f8; --card:#fff; --text:#18212e; --muted:#667284; --line:#dfe5ed; --accent:#2165e8; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--text); }
+main { max-width:760px; margin:0 auto; padding:24px 18px 36px; padding-top:max(24px, env(safe-area-inset-top)); }
+header { margin:12px 4px 24px; }
+h1 { font-size:30px; margin:6px 0; letter-spacing:-.03em; }
+p { line-height:1.55; margin:8px 0; }
+.eyebrow { font-size:12px; font-weight:700; letter-spacing:.1em; color:var(--accent); }
+#family,.note,footer { color:var(--muted); font-size:13px; }
+.summary { display:flex; gap:16px; align-items:center; justify-content:space-between; padding:20px; border-radius:22px; background:var(--card); }
+.summary strong { font-size:18px; }
+.summary p { font-size:13px; color:var(--muted); }
+button { border:0; background:var(--accent); color:white; border-radius:20px; padding:10px 18px; min-height:44px; flex-shrink:0; font:inherit; }
+button:disabled { opacity:.6; }
+button:focus-visible,summary:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
+#message { margin:16px 4px; color:var(--muted); font-size:13px; }
+.patch { background:var(--card); border-radius:18px; padding:16px 18px; margin:10px 0; }
+.patch header { display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin:0; }
+.patch h2 { margin:0; font-size:16px; }
+.badge { font-size:12px; flex-shrink:0; color:var(--muted); }
+.ready,.verified { color:#138246; }
+.failed { color:#c23838; }
+.pending,.unsupported { color:#a56800; }
+.patch p { font-size:13px; color:var(--muted); }
+.patch code { display:block; overflow-wrap:anywhere; font-size:11px; color:var(--muted); }
+details { border-top:1px solid var(--line); margin-top:24px; padding-top:18px; }
+summary { cursor:pointer; padding:8px 0; font-weight:600; }
+pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:420px; overflow:auto; font-size:11px; line-height:1.5; background:var(--card); border-radius:14px; padding:16px; }
+footer { margin-top:22px; }
+@media (prefers-color-scheme:dark) { :root { --bg:#10141b; --card:#1b222d; --text:#eef2f8; --muted:#a3afc1; --line:#303a48; --accent:#5795ff; } .ready,.verified { color:#6bd69a; } .failed { color:#ff8a8a; } .pending,.unsupported { color:#ffd17c; } }

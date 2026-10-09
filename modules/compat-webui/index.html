@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'none'; object-src 'none'; base-uri 'none'">
+  <meta name="module-id" content="@MODULE_ID@">
+  <title>OS4 兼容补丁</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <main>
+    <header><p class="eyebrow">HyperOS AVD</p><h1>兼容补丁</h1><p id="family"></p></header>
+    <section class="summary" aria-label="运行状态">
+      <div><strong id="module-state">正在读取</strong><p id="health">本页只读取状态，不修改补丁或系统设置。</p></div>
+      <button id="refresh" type="button">刷新</button>
+    </section>
+    <p id="message" role="status" aria-live="polite">等待 KernelSU 状态接口。</p>
+    <div id="patches" aria-label="补丁详情"></div>
+    <p class="note">“已就绪”表示库或配置已核验。已有进程可能仍使用旧代码；待重启状态会单独显示。</p>
+    <details><summary>最近日志</summary><pre id="logs">尚未读取</pre></details>
+    <footer id="updated">所有资源均在模块内，无需联网。</footer>
+  </main>
+</body>
+</html>
