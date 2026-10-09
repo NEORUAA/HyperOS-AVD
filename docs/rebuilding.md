@@ -32,6 +32,10 @@ release template; it never uses installed AVD data.
 Build artifacts remain in ignored `input/`, `work/`, `images/`, `tools/` and
 `logs/`. This build is specific to the stated GSI/kernel/base combination.
 
+OS4 uses an [audited patch catalog and delivery boundaries](os4-patches.md).
+Its portable KernelSU module shares native profiles with the image patchers;
+kernel, framework and macOS corrections retain their required boot layers.
+
 ## Regression checks
 
 ```sh
