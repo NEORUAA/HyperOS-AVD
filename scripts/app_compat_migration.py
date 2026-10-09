@@ -309,7 +309,10 @@ def _active_owner(config, expected, catalog):
     canonical = json.loads(catalog_files(catalog)['manifest.json'])
     if expected != canonical or _pending(config, MODULE_ID):
         return None
-    active = _inspect(config, '/data/adb/modules/' + MODULE_ID, MODULE_ID)
+    # This is the authenticated current universal owner, not an old private
+    # bridge. Admit only its source-canonical revision before full asset checks.
+    active = _inspect(config, '/data/adb/modules/' + MODULE_ID, MODULE_ID,
+                      allowed_revisions=(str(expected['revision']),))
     if not active or active['flags']:
         return None
     _saved(config, active, expected)

@@ -157,7 +157,7 @@ for name in sys.argv[1:]:
         props = f'id={identifier}\nname=Universal\nversion=1\nversionCode=1\nauthor=HyperOS-AVD\ndescription=Fixture\n'
         assets = {'module.prop': props.encode(), 'runtime.sh': b'new runtime', 'objects/helper.bin': b'new binary',
                   'customize.sh': b'install control'}
-        manifest = {'files_sha256': {name: checksum(body) for name, body in assets.items()}}
+        manifest = {'revision': 1, 'files_sha256': {name: checksum(body) for name, body in assets.items()}}
         if full_catalog:
             from app_compat_catalog import catalog_files
             from app_compat_producers import recipes
@@ -337,6 +337,48 @@ for name in sys.argv[1:]:
             self.assertNotIn('umount', command)
             self.assertNotIn('module uninstall', command)
             self.assertFalse(re.search(r'(^|\n)(stop |start |am force-stop)', command))
+
+    def test_current_universal_revision_reuses_through_public_path_with_empty_migration(self):
+        from app_compat_catalog import REVISION
+        self.assertGreaterEqual(REVISION,3)
+        self.create_active(full_catalog=True)
+        before=self.snapshot()
+        def public_root(config,command):
+            if command.startswith('getprop'):
+                return 'ranchu\nOS4.999.0.TEST'
+            return self.root(config,command)
+        with patch.object(apply_app_compat,'root',side_effect=public_root), \
+                patch.object(apply_app_compat,'verify_prebuilt',return_value=(self.base/'verified.zip',self.owner_manifest)), \
+                patch.object(apply_app_compat,'adb') as adb:
+            result=apply_app_compat.install_prebuilt({},workspace=self.base,catalog=self.catalog,migration=migration)
+        self.assertTrue(result['reused'])
+        self.assertFalse(result['pending'])
+        self.assertFalse(result['reboot_required'])
+        self.assertEqual(result['migration'],{'retired':[],'reboot_required':False})
+        self.assertEqual(self.snapshot(),before)
+        adb.assert_not_called()
+
+    def test_current_owner_exact_revision_and_full_assets_remain_required(self):
+        old=self.create_old('hyperos_avd_parrot_camera')
+        planned=self.plan()
+        active=self.create_active(full_catalog=True)
+        props=active/'module.prop'
+        original=props.read_text()
+        props.write_text(re.sub(r'versionCode=\d+','versionCode=999',original))
+        before=self.snapshot()
+        with self.assertRaisesRegex(RuntimeError,'Unknown private bridge module revision'):
+            migration.retire({},planned,self.owner_manifest)
+        self.assertEqual(self.snapshot(),before)
+        self.assertTrue(old.exists())
+        props.write_text(original)
+        asset=active/'webroot/app.js'
+        asset.write_bytes(b'unknown local bytes in the exact current revision')
+        before=self.snapshot()
+        with self.assertRaises(subprocess.CalledProcessError):
+            migration.retire({},planned,self.owner_manifest)
+        self.assertEqual(self.snapshot(),before)
+        self.assertTrue(old.exists())
+        self.assertFalse((self.data/'adb/hyperos_app_compat/legacy').exists())
 
     def test_new_lifecycle_flag_and_old_inode_replacement_prevent_retirement(self):
         old = self.create_old('hyperos_avd_xiaomi_camera')
