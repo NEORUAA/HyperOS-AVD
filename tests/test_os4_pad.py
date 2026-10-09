@@ -40,6 +40,23 @@ class TabletProfileTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             os4_pad.serial_manifest(dict(state, unrelated=True))
 
+    def test_serial_manifest_survives_forward_same_device_firmware(self):
+        state = {'revision': 1, 'source': os4_pad.SOURCE,
+                 'hyperos': 'OS4.0.15.0.XBMCNXM', 'serial_number': '69704/F6X601467'}
+        updated = dict(os4_pad.PROFILE, hyperos='OS4.0.16.0.XBMCNXM')
+        with mock_patch.object(os4_pad, 'PROFILE', updated):
+            self.assertEqual(os4_pad.serial_manifest(state), state)
+            self.assertIn(updated['hyperos'], os4_pad.serial_script(state))
+            for firmware in ('OS4.0.17.0.XBMCNXM', 'OS4.0.15.0.XFRCNXM',
+                             'OS3.0.15.0.XBMCNXM', 'unknown', None):
+                with self.subTest(firmware=firmware), self.assertRaises(RuntimeError):
+                    os4_pad.serial_manifest(dict(state, hyperos=firmware))
+        for changed in ({**state, 'extra': True}, {**state, 'revision': 2},
+                        {**state, 'source': 'official-hongkong-ota'},
+                        {**state, 'serial_number': 'unknown'}):
+            with self.subTest(state=changed), self.assertRaises(RuntimeError):
+                os4_pad.serial_manifest(changed)
+
     def test_serial_early_script_changes_only_identifier_fields(self):
         state = {'revision': 1, 'source': os4_pad.SOURCE, 'hyperos': os4_pad.PROFILE['hyperos'],
                  'serial_number': '69704/F6X601467'}
@@ -78,6 +95,43 @@ class TabletProfileTests(unittest.TestCase):
             self.assertFalse(any('mv -f' in call.args[1] for call in root.call_args_list))
             self.assertEqual(json.loads((folder / 'local/pad-serial.json').read_text()), state)
 
+    def test_serial_upgrade_migrates_only_a_verified_owned_early_script(self):
+        state = {'revision': 1, 'source': os4_pad.SOURCE,
+                 'hyperos': 'OS4.0.15.0.XBMCNXM', 'serial_number': '69704/F6X601467'}
+        old_script = os4_pad.serial_script(state).strip()
+        updated = dict(os4_pad.PROFILE, hyperos='OS4.0.17.0.XBMCNXM')
+        for saved in (old_script, old_script.replace('OS4.0.15.0.', 'OS4.0.16.0.')):
+            responses = ['ranchu', 'yingtian', updated['hyperos'], json.dumps(state),
+                         saved, '', '', *([state['serial_number']] * 3)]
+            with self.subTest(script=saved), tempfile.TemporaryDirectory() as temporary:
+                folder = Path(temporary); (folder / 'local').mkdir()
+                with mock_patch.object(os4_pad, 'PROFILE', updated), \
+                        mock_patch('common.ROOT', folder), mock_patch('apply_flutter_fix.official'), \
+                        mock_patch('apply_flutter_fix.root', side_effect=responses) as root:
+                    self.assertEqual(os4_pad.apply_serial({'name': 'Renamed Pad', 'port': 6000}), state)
+                writes = root.call_args_list[5].args[1]
+                self.assertIn(updated['hyperos'], writes)
+                self.assertIn('mv -f ' + os4_pad.SERIAL_EARLY, writes)
+                self.assertNotIn('mv -f ' + os4_pad.SERIAL_FILE, writes)
+                self.assertEqual(json.loads((folder / 'local/pad-serial.json').read_text()), state)
+
+    def test_serial_upgrade_rejects_changed_payloads_before_writing(self):
+        state = {'revision': 1, 'source': os4_pad.SOURCE,
+                 'hyperos': 'OS4.0.15.0.XBMCNXM', 'serial_number': '69704/F6X601467'}
+        old_script = os4_pad.serial_script(state).strip()
+        updated = dict(os4_pad.PROFILE, hyperos='OS4.0.16.0.XBMCNXM')
+        for saved in (old_script + '\n# unrelated',
+                      old_script.replace('getprop ro.product.device', 'getprop ro.product.model'),
+                      old_script.replace('OS4.0.15.0.XBMCNXM', 'OS4.0.15.0.XFRCNXM'),
+                      old_script.replace('OS4.0.15.0.XBMCNXM', 'OS4.0.17.0.XBMCNXM')):
+            responses = ['ranchu', 'yingtian', updated['hyperos'], json.dumps(state), saved]
+            with self.subTest(script=saved), mock_patch.object(os4_pad, 'PROFILE', updated), \
+                    mock_patch('apply_flutter_fix.official'), \
+                    mock_patch('apply_flutter_fix.root', side_effect=responses) as root:
+                with self.assertRaisesRegex(RuntimeError, 'Unknown tablet serial startup'):
+                    os4_pad.apply_serial({'name': 'Renamed Pad', 'port': 6000})
+                self.assertEqual(root.call_count, 5)
+
     def test_serial_first_install_stages_and_validates_before_use(self):
         serial = '69704/F6X601467'
         responses = ['ranchu', 'yingtian', os4_pad.PROFILE['hyperos'], '', '', '', '',
@@ -108,8 +162,10 @@ class TabletProfileTests(unittest.TestCase):
 
     def test_display_defaults_seed_color_once_and_keep_screen_awake(self):
         with tempfile.TemporaryDirectory() as temporary:
-            stamp = str(Path(temporary) / 'color-stamp')
-            with mock_patch.object(os4_pad, 'COLOR_STAMP', stamp):
+            folder = Path(temporary)
+            with mock_patch.object(os4_pad, 'COLOR_STAMP', str(folder / 'color-stamp')), \
+                    mock_patch.object(os4_pad, 'DEFAULTS_STAMP', str(folder / 'settings-stamp')), \
+                    mock_patch('os4_defaults.AWAKE_STAMP', str(folder / 'awake-stamp')):
                 script = os4_pad.display_settings_script()
             mock = 'settings() { printf "settings %s\\n" "$*"; }; setprop() { :; }; input() { :; };\n'
             first = subprocess.run(['sh'], input=mock + script, text=True,
@@ -119,7 +175,39 @@ class TabletProfileTests(unittest.TestCase):
             self.assertIn('settings put secure sleep_timeout -1', first)
             self.assertIn('settings put system screen_off_timeout 2147483647', first)
             self.assertIn('settings put system display_color_mode 0', first)
-            self.assertNotIn('display_color_mode', second)
+            self.assertIn('settings put global development_settings_enabled 1', first)
+            self.assertEqual(second, '')
+
+    def test_legacy_defaults_markers_preserve_existing_user_choices(self):
+        for previous in ('color-stamp', 'awake-stamp'):
+            with self.subTest(previous=previous), tempfile.TemporaryDirectory() as temporary:
+                folder = Path(temporary)
+                (folder / previous).touch()
+                with mock_patch.object(os4_pad, 'COLOR_STAMP', str(folder / 'color-stamp')), \
+                        mock_patch.object(os4_pad, 'DEFAULTS_STAMP', str(folder / 'settings-stamp')), \
+                        mock_patch('os4_defaults.AWAKE_STAMP', str(folder / 'awake-stamp')):
+                    script = os4_pad.display_settings_script()
+                mock = 'settings() { printf "settings %s\\n" "$*"; }; setprop() { :; }; input() { :; };\n'
+                output = subprocess.run(['sh'], input=mock + script, text=True,
+                                        check=True, capture_output=True).stdout
+                for setting in ('screen_off_timeout', 'sleep_timeout',
+                                'stay_on_while_plugged_in', 'development_settings_enabled'):
+                    self.assertNotIn(setting, output)
+                self.assertEqual('display_color_mode' in output, previous == 'awake-stamp')
+                self.assertTrue((folder / 'settings-stamp').is_file())
+
+    def test_failed_default_write_does_not_mark_settings_initialized(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            with mock_patch.object(os4_pad, 'COLOR_STAMP', str(folder / 'color-stamp')), \
+                    mock_patch.object(os4_pad, 'DEFAULTS_STAMP', str(folder / 'settings-stamp')), \
+                    mock_patch('os4_defaults.AWAKE_STAMP', str(folder / 'awake-stamp')):
+                script = os4_pad.display_settings_script()
+            result = subprocess.run(['sh'], input='settings() { return 1; };\n' + script,
+                                    text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((folder / 'settings-stamp').exists())
+            self.assertFalse((folder / 'color-stamp').exists())
 
     def test_real_tablet_profile_is_separate_from_phone(self):
         self.assertEqual(os4_pad.PROFILE['device'], 'yingtian')

@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 
 SOURCE = 'official-yingtian-ota'
 NAME = 'HyperOS_4_Pad9ProMax_API_37'
@@ -14,25 +15,51 @@ MODEL_XML = (CONFIG / 'yingtian.xml').read_bytes()
 SERIAL_FILE = '/data/adb/hyperos-avd-pad/serial.json'
 SERIAL_EARLY = '/data/adb/post-fs-data.d/hyperos-avd-pad-serial.sh'
 COLOR_STAMP = '/data/local/tmp/hyperos-avd-pad-color-defaults-v1'
+DEFAULTS_STAMP = '/data/local/tmp/hyperos-avd-pad-settings-defaults-v1'
+
+
+def _compatible_serial_firmware(previous, current):
+    """Allow forward OS4 updates in the same tablet firmware family."""
+    pattern = r'OS4\.([0-9]+)\.([0-9]+)\.([0-9]+)\.([A-Z0-9]+)'
+    before = re.fullmatch(pattern, previous) if isinstance(previous, str) else None
+    after = re.fullmatch(pattern, current) if isinstance(current, str) else None
+    return (before is not None and after is not None and before[4] == after[4]
+            and tuple(map(int, before.groups()[:3])) <= tuple(map(int, after.groups()[:3])))
 
 
 def serial_manifest(previous=None):
     """Keep one simulated Xiaomi-style identifier per tablet userdata."""
     from apply_navigation_fix import simulated_serial
+    if previous is not None:
+        if (not isinstance(previous, dict)
+                or set(previous) != {'revision', 'source', 'hyperos', 'serial_number'}
+                or previous.get('revision') != 1 or previous.get('source') != SOURCE
+                or not _compatible_serial_firmware(previous.get('hyperos'), PROFILE['hyperos'])):
+            raise RuntimeError('Unknown saved tablet serial profile; identifier preserved.')
     serial = simulated_serial(previous)
     result = {'revision': 1, 'source': SOURCE, 'hyperos': PROFILE['hyperos'],
               'serial_number': serial}
-    if previous is not None and previous != result:
-        raise RuntimeError('Unknown saved tablet serial profile; identifier preserved.')
+    if previous is not None:
+        # Firmware is provenance, not the serial's lifetime. Keep the saved
+        # record byte-for-byte compatible across forward same-device upgrades.
+        result = dict(previous)
+        result['serial_number'] = serial
     return result
 
 
 def serial_script(state):
     """Set only serial fields before Android caches device identifiers."""
+    return _serial_script(state, PROFILE['hyperos'])
+
+
+def _serial_script(state, firmware):
+    """Render a known current or previous guard for owned-script migration."""
     import shlex
     state = serial_manifest(state)
+    if not _compatible_serial_firmware(firmware, PROFILE['hyperos']):
+        raise RuntimeError('Unknown tablet serial startup firmware; files preserved.')
     guards = {'ro.boot.hardware': 'ranchu', 'ro.product.device': PROFILE['device'],
-              'ro.mi.os.version.incremental': PROFILE['hyperos']}
+              'ro.mi.os.version.incremental': firmware}
     lines = ['#!/system/bin/sh', 'set -eu',
              '# HyperOS-AVD tablet serial v1; preserve the saved userdata identity.']
     lines += ['[ "$(getprop ' + key + ')" = ' + shlex.quote(value) + ' ] || exit 1'
@@ -67,14 +94,20 @@ def apply_serial(config):
     script = serial_script(state)
     saved_script = read_owned(SERIAL_EARLY)
     if saved_script and saved_script != script.strip():
-        raise RuntimeError('Unknown tablet serial startup script; files preserved.')
-    if not previous or not saved_script:
+        guards = re.findall(r'^\[ "\$\(getprop ro\.mi\.os\.version\.incremental\)" = '
+                            r'([^ ]+) \] \|\| exit 1$', saved_script, re.M)
+        if (len(guards) != 1 or not _compatible_serial_firmware(guards[0], PROFILE['hyperos'])
+                or saved_script != _serial_script(state, guards[0]).strip()):
+            raise RuntimeError('Unknown tablet serial startup script; files preserved.')
+    if not previous or saved_script != script.strip():
         suffix = '.stage-' + uuid.uuid4().hex
         writes = ['mkdir -p ' + SERIAL_FILE.rsplit('/', 1)[0] + ' ' + SERIAL_EARLY.rsplit('/', 1)[0],
                   'umask 077', 'trap ' + shlex.quote('rm -f ' + SERIAL_FILE + suffix +
                                                    ' ' + SERIAL_EARLY + suffix) + ' EXIT']
-        for path, data, mode in ((SERIAL_FILE, json.dumps(state, indent=2) + '\n', '600'),
-                                 (SERIAL_EARLY, script, '700')):
+        pending = [(SERIAL_EARLY, script, '700')]
+        if not previous:
+            pending.insert(0, (SERIAL_FILE, json.dumps(state, indent=2) + '\n', '600'))
+        for path, data, mode in pending:
             stage = path + suffix
             writes += ['[ ! -e ' + stage + ' ] && [ ! -L ' + stage + ' ] || exit 1',
                        'printf %s ' + shlex.quote(data) + ' > ' + stage,
@@ -93,14 +126,22 @@ def apply_serial(config):
 
 
 def display_settings_script():
-    """Keep the test screen awake and seed Natural only on first setup."""
-    return ('settings put global stay_on_while_plugged_in 7\n'
-            'settings put system screen_off_timeout 2147483647\n'
-            'settings put secure sleep_timeout -1\n'
-            'settings put global development_settings_enabled 1\n'
+    """Seed display defaults once, retaining legacy and later user choices."""
+    from os4_defaults import AWAKE_STAMP
+    return (f'if [ ! -e {DEFAULTS_STAMP} ]; then\n'
+            # Existing color/awake stamps prove that an earlier defaults run
+            # initialized this userdata; migrate without overwriting choices.
+            f'  if [ ! -e {COLOR_STAMP} ] && [ ! -e {AWAKE_STAMP} ]; then\n'
+            '    settings put global stay_on_while_plugged_in 7 || exit 1\n'
+            '    settings put system screen_off_timeout 2147483647 || exit 1\n'
+            '    settings put secure sleep_timeout -1 || exit 1\n'
+            '    settings put global development_settings_enabled 1 || exit 1\n'
+            '  fi\n'
+            f'  touch {DEFAULTS_STAMP} || exit 1\n'
+            'fi\n'
             f'if [ ! -e {COLOR_STAMP} ]; then\n'
-            '  settings put system display_color_mode 0\n'
-            f'  touch {COLOR_STAMP}\n'
+            '  settings put system display_color_mode 0 || exit 1\n'
+            f'  touch {COLOR_STAMP} || exit 1\n'
             'fi\n'
             'setprop persist.sys.gradient_blur_perf false\n'
             'input keyevent 224')
