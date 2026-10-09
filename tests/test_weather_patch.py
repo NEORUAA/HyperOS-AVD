@@ -197,10 +197,17 @@ class WeatherGuardTests(unittest.TestCase):
                              'before': pair[0], 'after': pair[1]} for name, pair in pairs.items()]}
 
     def install_fixture(self, folder, *, apk=INSTALLED_APK, old=False, disabled=False,
-                        wrong_apk=False, wrong_native=False, wrong_property=False, enable=False):
+                        wrong_apk=False, wrong_native=False, wrong_property=False, enable=False,
+                        phone=False, baked=False, corrupt_prebuilt=False):
         workspace = Path(folder)
         (workspace / 'local').mkdir()
-        (workspace / 'local/build.json').write_text(json.dumps({'source': 'official-yingtian-ota'}))
+        (workspace / 'local/build.json').write_text(json.dumps(
+            {'source': 'official-hongkong-ota' if phone else 'official-yingtian-ota'}))
+        if corrupt_prebuilt:
+            prebuilt = workspace / 'tools/weather-angle'
+            prebuilt.mkdir(parents=True)
+            (prebuilt / 'libhgl.so').write_bytes(b'corrupt release payload')
+            (prebuilt / 'receipt.json').write_text('{}')
         original = workspace / 'weather.apk'
         raw = {name: ('original ' + name).encode() for name in PAD_LIBRARIES}
         fixed = {name: ('fixed ' + name).encode() for name in PAD_LIBRARIES}
@@ -214,7 +221,8 @@ class WeatherGuardTests(unittest.TestCase):
             archive.writestr('assets/original', b'untouched APK bytes')
         original_bytes = original.read_bytes()
         apk_hash = hashlib.sha256(original_bytes).hexdigest()
-        selected = {'id': 'tablet-yingtian', 'apk_sha256': apk_hash, 'libraries': pairs}
+        selected = {'id': 'phone-hongkong' if phone else 'tablet-yingtian',
+                    'apk_sha256': apk_hash, 'libraries': pairs}
         previous = {'revision': 1, 'apk': PAD_APK, 'profile': selected['id'], 'apk_sha256': apk_hash,
                     'targets': [{'payload': name, 'target': PAD_NATIVE + '/' + name,
                                  'before': pair[0], 'after': pair[1]} for name, pair in
@@ -243,6 +251,10 @@ class WeatherGuardTests(unittest.TestCase):
             if command.startswith('if [ -e '):
                 path = next(shlex.split(line)[1] for line in command.splitlines()
                             if line.startswith('sha256sum '))
+                if baked and path == '/product/app/MIUIWeather/MIUIWeather.apk':
+                    return apk_hash + '  ' + path
+                if baked and path == '/product/app/MIUIWeather/lib/arm64/libhgl.so':
+                    return hashlib.sha256(b'fixture bridge').hexdigest() + '  ' + path
                 name = Path(path).name
                 if name in pairs:
                     return ('0' * 64 if wrong_native else pairs[name][0]) + '  ' + path
@@ -254,7 +266,10 @@ class WeatherGuardTests(unittest.TestCase):
         def transfer(config, action, *arguments, **kwargs):
             transfers.append((action, arguments))
             if action == 'pull':
-                Path(arguments[1]).write_bytes(original_bytes if arguments[0] == apk else angle_data[Path(arguments[0]).name])
+                value = original_bytes if arguments[0] == apk else (
+                    b'fixture bridge' if Path(arguments[0]).name == 'libhgl.so' else
+                    angle_data[Path(arguments[0]).name])
+                Path(arguments[1]).write_bytes(value)
 
         def make_bridge(config, folder):
             path = folder / 'libhgl.so'
@@ -265,12 +280,21 @@ class WeatherGuardTests(unittest.TestCase):
                 mock_patch.object(apply_weather_fix, 'official') as ownership, \
                 mock_patch.object(apply_weather_fix, 'profile', return_value=selected), \
                 mock_patch.object(apply_weather_fix, 'ANGLE', angles), \
+                mock_patch.object(apply_weather_fix, 'BRIDGE_SHA256',
+                                  hashlib.sha256(b'fixture bridge').hexdigest()), \
                 mock_patch.object(apply_weather_fix, 'root', side_effect=guest), \
                 mock_patch.object(apply_weather_fix, 'adb', side_effect=transfer), \
                 mock_patch.object(apply_weather_fix, 'patch', side_effect=lambda name, data, **kwargs: fixed[name]), \
                 mock_patch.object(apply_weather_fix, 'build_bridge', side_effect=make_bridge) as build, \
+                mock_patch('app_bridge_module._inspect',
+                           side_effect=lambda config, directory, module_id:
+                           {'flags': ['disable']} if disabled and directory == apply_weather_fix.MODULE else None), \
+                mock_patch('app_bridge_module.set_enabled') as lifecycle, \
+                mock_patch('app_bridge_module.install',
+                           side_effect=lambda config, **kwargs: {'installed': True, 'revision': 2,
+                                                               'profiles': kwargs['profiles']}) as installer, \
                 mock_patch.object(apply_weather_fix, 'detach') as detach:
-            if wrong_apk or wrong_native or wrong_property or apk.endswith('/other.apk'):
+            if wrong_apk or wrong_native or wrong_property or apk.endswith('/other.apk') or corrupt_prebuilt:
                 with self.assertRaises(RuntimeError):
                     apply_weather_fix.install({'sdk': '/unused'}, enable=enable,
                                               sources=('official-yingtian-ota',))
@@ -280,11 +304,16 @@ class WeatherGuardTests(unittest.TestCase):
             else:
                 result = apply_weather_fix.install({'sdk': '/unused'}, enable=enable,
                                                   sources=('official-yingtian-ota',))
-                self.assertEqual(detach.call_count, int(old and not (disabled and not enable)))
+                detach.assert_not_called()
             ownership.assert_called_once_with({'sdk': '/unused'}, sources=('official-yingtian-ota',))
             if disabled and not enable:
                 build.assert_not_called()
                 self.assertFalse(any(action == 'push' for action, _ in transfers))
+                installer.assert_not_called()
+            if disabled and enable:
+                lifecycle.assert_called_once()
+            if phone and baked:
+                build.assert_not_called()
         self.assertEqual(original.read_bytes(), original_bytes)
         self.assertFalse(any(action == 'push' and str(arguments[0]).endswith('.apk')
                              for action, arguments in transfers))
@@ -293,17 +322,31 @@ class WeatherGuardTests(unittest.TestCase):
     def test_pad_signed_reinstall_uses_only_its_extracted_native_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
             manifest, commands = self.install_fixture(temporary)
-            self.assertEqual(manifest['apk'], INSTALLED_APK)
-            native = apply_weather_fix.pad_native(INSTALLED_APK)
-            self.assertTrue(all(item['target'] == native + '/' + item['payload'] for item in manifest['targets']))
+            self.assertEqual(manifest['revision'], 2)
+            recipe = manifest['profiles'][0]
+            self.assertEqual(recipe['factory_apk'], PAD_APK)
+            self.assertEqual(recipe['native'], PAD_NATIVE)
+            self.assertNotIn(INSTALLED_APK, json.dumps(recipe))
             self.assertTrue(any('getprop sys.boot_completed' == command for command in commands))
-            self.assertTrue(all(item['target'].endswith('.so') for item in manifest['targets']))
+            self.assertTrue(all(item['name'].endswith('.so') for item in recipe['libraries']))
+
+    def test_phone_signed_reinstall_exports_pinned_factory_helper_without_ndk(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest, commands = self.install_fixture(temporary, phone=True, baked=True)
+            self.assertTrue(manifest['installed'])
+            self.assertEqual(manifest['profiles'][0]['factory_apk'], '/product/app/MIUIWeather/MIUIWeather.apk')
+            self.assertTrue(any('/product/app/MIUIWeather/lib/arm64/libhgl.so' in item for item in commands))
+
+    def test_baked_phone_helper_does_not_bypass_corrupt_release_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            result, _ = self.install_fixture(temporary, phone=True, baked=True, corrupt_prebuilt=True)
+            self.assertIsNone(result)
 
     def test_factory_manifest_migrates_and_disabled_choice_is_preserved(self):
         for disabled, enable in ((False, False), (True, False), (True, True)):
             with self.subTest(disabled=disabled, enable=enable), tempfile.TemporaryDirectory() as temporary:
                 manifest, _ = self.install_fixture(temporary, old=True, disabled=disabled, enable=enable)
-                self.assertEqual(manifest['apk'], PAD_APK if disabled and not enable else INSTALLED_APK)
+                self.assertEqual(manifest['installed'], not (disabled and not enable))
 
     def test_installed_apk_native_and_properties_are_guarded_before_guest_writes(self):
         for arguments in ({'wrong_apk': True}, {'wrong_native': True}, {'wrong_property': True},

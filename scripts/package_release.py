@@ -10,7 +10,7 @@ import subprocess
 import tarfile
 
 import common
-from common import REPO_ROOT, ROOT, OS4_SOURCE, fetch_ksu, sha256, tool
+from common import REPO_ROOT, ROOT, OS4_SOURCE, fetch_ksu, sha256, tool, sdk_path
 from init_userdata import create as create_userdata
 
 
@@ -61,9 +61,11 @@ BUILD_KEYS = ('hyperos', 'source', 'android_api', 'archive_sha256', 'kernel_page
               'identity_source_sha256', 'vendor_fixes', 'hwui',
               'flutter_engine', 'finddevice_provider_disabled', 'boot_service_fix', 'boot_policy')
 RUNTIME_PAYLOADS = {
-    'os4-official': {'xiaomi-camera': ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json')},
+    'os4-official': {'xiaomi-camera': ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json'),
+                    'parrot-camera': ('lib_aion_buffer.so', 'receipt.json')},
     'os4-pad': {'pad-camera-native': ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json'),
-                'weather-angle': ('libEGL_angle.so', 'libGLESv2_angle.so', 'libhgl.so', 'receipt.json')},
+                'weather-angle': ('libEGL_angle.so', 'libGLESv2_angle.so', 'libhgl.so', 'receipt.json'),
+                'parrot-camera': ('lib_aion_buffer.so', 'receipt.json')},
 }
 
 
@@ -534,6 +536,12 @@ def runtime_files():
         if not path.is_file():
             raise RuntimeError('Missing portable native module source: ' + name)
         paths[path.relative_to(REPO_ROOT).as_posix()] = path
+    module = REPO_ROOT / 'modules/app-bridge'
+    for name in ('customize.sh', 'runtime.sh', 'service.sh', 'uninstall.sh'):
+        path = module / name
+        if not path.is_file():
+            raise RuntimeError('Missing portable private bridge source: ' + name)
+        paths[path.relative_to(REPO_ROOT).as_posix()] = path
     return paths
 
 
@@ -626,6 +634,8 @@ def main():
         for path in build_host_color(root):
             paths['tools/' + path.name] = path
     if metadata['format'] == 3:
+        from apply_camera_fix import prepare_prebuilt as prepare_parrot_prebuilt
+        prepare_parrot_prebuilt(root, sdk_path())
         for folder, names in RUNTIME_PAYLOADS[args.variant].items():
             paths.update({'tools/' + folder + '/' + name: root / 'tools' / folder / name for name in names})
         paths.update({'runtime/' + relative: path for relative, path in runtime_files().items()})
