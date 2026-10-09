@@ -5,6 +5,8 @@ PROC=${HYPEROS_NATIVE_PROC:-/proc}
 PACKAGES_XML=${HYPEROS_NATIVE_PACKAGES_XML:-/data/system/packages.xml}
 NATIVE_INTERVAL=30
 NATIVE_CHAIN_LIMIT=8
+# KernelSU may invoke hooks with umask 000. Runtime state is module-private.
+umask 077
 
 native_blocked() {
     [ -e "$MODDIR/disable" ] || [ -L "$MODDIR/disable" ] ||
@@ -63,7 +65,7 @@ native_assets() {
     (cd "$MODDIR" && "$BB" sha256sum -c SHA256SUMS >/dev/null 2>&1) || return 1
     for file in profiles.tsv targets.tsv; do [ -f "$MODDIR/$file" ] && [ ! -L "$MODDIR/$file" ] || return 1; done
     [ ! -L "$MODDIR/cache" ] && [ ! -L "$MODDIR/state" ] || return 1
-    mkdir -p "$MODDIR/cache" "$MODDIR/state"
+    mkdir -p "$MODDIR/cache" "$MODDIR/state" && chmod 700 "$MODDIR/cache" "$MODDIR/state"
 }
 
 native_pids() {
@@ -578,22 +580,70 @@ native_package_token() {
     "$BB" stat -c '%i:%Y:%s' "$MODDIR/features.disabled" 2>/dev/null || printf 'enabled\n'
 }
 
-native_service_lock() {
-    local lock=$1 boot oldpid oldboot
-    boot=$(cat "$PROC/sys/kernel/random/boot_id") || return 1
-    if ! mkdir "$lock" 2>/dev/null; then
-        [ -d "$lock" ] && [ ! -L "$lock" ] || return 1
-        sleep 1
-        oldpid=$(cat "$lock/pid" 2>/dev/null); oldboot=$(cat "$lock/boot" 2>/dev/null)
-        case "$oldpid" in ''|*[!0-9]*) return 1 ;; esac
-        [ -n "$oldboot" ] || return 1
-        if [ "$oldboot" = "$boot" ] && [ -r "$PROC/$oldpid/cmdline" ] &&
-            "$BB" tr '\000' '\n' < "$PROC/$oldpid/cmdline" | "$BB" grep -Fxq "$MODDIR/service.sh"; then return 1; fi
-        rm -f "$lock/pid" "$lock/boot"
-        rmdir "$lock" && mkdir "$lock" || return 1
+native_lock_directory_safe() {
+    local lock=$1 entry
+    [ -d "$lock" ] && [ ! -L "$lock" ] || return 1
+    for entry in "$lock"/* "$lock"/.[!.]* "$lock"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        case "$entry" in "$lock/pid"|"$lock/boot") ;; *) return 1 ;; esac
+        [ -f "$entry" ] && [ ! -L "$entry" ] || return 1
+    done
+}
+
+native_service_owner_live() {
+    local directory pid
+    for directory in "$PROC"/[0-9]*; do
+        pid=${directory##*/}; [ "$pid" != "$$" ] || continue
+        [ -r "$directory/cmdline" ] || continue
+        if "$BB" tr '\000' '\n' < "$directory/cmdline" | "$BB" grep -Fxq "$MODDIR/service.sh"; then return 0; fi
+    done
+    return 1
+}
+
+native_service_release() {
+    # The trap runs after native_service has returned. These captured ownership
+    # values deliberately outlive its local variables.
+    if [ "${NATIVE_LOCK_HELD:-false}" = true ] &&
+            [ "${NATIVE_LOCK_PATH:-}" = "$MODDIR/service.lock" ] &&
+            native_lock_directory_safe "$NATIVE_LOCK_PATH" &&
+            [ "$(cat "$NATIVE_LOCK_PATH/pid" 2>/dev/null)" = "$NATIVE_LOCK_PID" ] &&
+            [ "$(cat "$NATIVE_LOCK_PATH/boot" 2>/dev/null)" = "$NATIVE_LOCK_BOOT" ]; then
+        rm -f "$NATIVE_LOCK_PATH/pid" "$NATIVE_LOCK_PATH/boot"
+        rmdir "$NATIVE_LOCK_PATH" 2>/dev/null || :
     fi
-    printf '%s\n' "$$" > "$lock/pid"
-    printf '%s\n' "$boot" > "$lock/boot"
+    exec 9>&-
+    NATIVE_LOCK_HELD=false
+}
+
+native_service_lock() {
+    local lock=$1 guard="$1.guard" boot oldpid oldboot
+    [ "$lock" = "$MODDIR/service.lock" ] || return 1
+    boot=$(cat "$PROC/sys/kernel/random/boot_id") || return 1
+    [ -n "$boot" ] || return 1
+    [ ! -L "$guard" ] && { [ ! -e "$guard" ] || [ -f "$guard" ]; } || return 1
+    # This lease serializes recovery with acquisition and is dropped by the
+    # kernel on a crash. The directory remains a human-readable owner receipt.
+    exec 9>"$guard" || return 1
+    if ! "$BB" flock -n 9; then exec 9>&-; return 1; fi
+    NATIVE_LOCK_HELD=true
+    NATIVE_LOCK_PATH="$lock"; NATIVE_LOCK_PID=$$; NATIVE_LOCK_BOOT="$boot"
+    chmod 600 "$guard" || { native_service_release; return 1; }
+    if ! mkdir "$lock" 2>/dev/null; then
+        native_lock_directory_safe "$lock" || { native_service_release; return 1; }
+        # Give a legacy hook time to publish owner fields, then reject any live
+        # exact owner, including one still acquiring an incomplete lock.
+        sleep 1
+        native_lock_directory_safe "$lock" || { native_service_release; return 1; }
+        native_service_owner_live && { native_service_release; return 1; }
+        oldpid=$(cat "$lock/pid" 2>/dev/null); oldboot=$(cat "$lock/boot" 2>/dev/null)
+        case "$oldpid" in *[!0-9]*) native_service_release; return 1 ;; esac
+        if [ "$oldboot" = "$boot" ] && [ -r "$PROC/$oldpid/cmdline" ] &&
+            "$BB" tr '\000' '\n' < "$PROC/$oldpid/cmdline" | "$BB" grep -Fxq "$MODDIR/service.sh"; then native_service_release; return 1; fi
+        rm -f "$lock/pid" "$lock/boot"
+        rmdir "$lock" && mkdir "$lock" || { native_service_release; return 1; }
+    fi
+    chmod 700 "$lock" &&
+        printf '%s\n' "$$" > "$lock/pid" && printf '%s\n' "$boot" > "$lock/boot" || { native_service_release; return 1; }
 }
 
 native_service() {
@@ -602,7 +652,7 @@ native_service() {
     native_blocked && return 0
     native_assets || { native_log 'Module asset verification failed; preserving all native targets.'; return 1; }
     native_service_lock "$lock" || return 0
-    trap 'rm -f "$lock/pid" "$lock/boot"; rmdir "$lock" 2>/dev/null' EXIT
+    trap 'native_service_release' EXIT
     while [ "$(getprop sys.boot_completed)" != 1 ]; do
         native_blocked && return 0
         count=$((count + 1)); [ "$count" -lt 300 ] || return 1

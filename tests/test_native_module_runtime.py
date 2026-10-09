@@ -20,7 +20,7 @@ def digest(data):
 
 
 BUSYBOX = r'''#!/usr/bin/env python3
-import hashlib, os, pathlib, stat, subprocess, sys
+import fcntl, hashlib, os, pathlib, stat, subprocess, sys
 args = sys.argv[1:]
 command, args = args[0], args[1:]
 if command == 'nsenter':
@@ -48,6 +48,12 @@ if command == 'stat' and args[0] == '-c':
         print(form.replace('%a', format(stat.S_IMODE(value.st_mode), 'o'))
               .replace('%s', str(value.st_size)).replace('%i', str(value.st_ino))
               .replace('%Y', str(int(value.st_mtime))).replace('%d', str(value.st_dev)))
+    except OSError:
+        sys.exit(1)
+    sys.exit(0)
+if command == 'flock':
+    try:
+        fcntl.flock(int(args[-1]), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         sys.exit(1)
     sys.exit(0)
@@ -623,6 +629,101 @@ class NativeModuleRuntimeTests(unittest.TestCase):
         self.shell('sleep() { :; }; native_service_lock "$MODDIR/service.lock"')
         self.assertEqual((lock / 'boot').read_text(), 'test-boot\n')
         self.assertNotEqual((lock / 'pid').read_text(), '123\n')
+
+    def test_empty_crash_lock_is_recovered_and_new_state_is_private(self):
+        lock = self.module / 'service.lock'
+        lock.mkdir(mode=0o777)
+        (lock / 'pid').touch()
+        (lock / 'boot').touch()
+        self.shell('sleep() { :; }; native_service_lock "$MODDIR/service.lock"')
+        self.assertTrue((lock / 'pid').read_text().strip().isdigit())
+        self.assertEqual((lock / 'boot').read_text(), 'test-boot\n')
+        self.assertEqual(lock.stat().st_mode & 0o777, 0o700)
+        self.assertEqual((lock / 'pid').stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.module / 'service.lock.guard').stat().st_mode & 0o777, 0o600)
+        self.shell('mkdir "$MODDIR/new-private-state"; umask')
+        self.assertEqual((self.module / 'new-private-state').stat().st_mode & 0o777, 0o700)
+
+    def test_missing_owner_fields_are_recovered_after_grace(self):
+        lock = self.module / 'service.lock'
+        lock.mkdir()
+        self.shell('sleep() { :; }; native_service_lock "$MODDIR/service.lock"')
+        self.assertEqual((lock / 'boot').read_text(), 'test-boot\n')
+
+    def test_live_service_acquiring_empty_lock_is_preserved(self):
+        lock = self.module / 'service.lock'
+        lock.mkdir()
+        (lock / 'pid').touch()
+        (lock / 'boot').touch()
+        owner = self.proc / '123'
+        owner.mkdir()
+        overrides = 'sleep() { printf "%s\\000%s\\000" /system/bin/sh "$MODDIR/service.sh" > "$PROC/123/cmdline"; }'
+        result = self.shell('native_service_lock "$MODDIR/service.lock"', overrides=overrides, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((lock / 'pid').read_bytes(), b'')
+        self.assertEqual((lock / 'boot').read_bytes(), b'')
+
+    def test_lock_recovery_rejects_aliases_and_unexpected_entries(self):
+        lock = self.module / 'service.lock'
+        lock.mkdir()
+        unrelated = self.root / 'unrelated-lock-data'
+        unrelated.write_text('preserve')
+        (lock / 'pid').symlink_to(unrelated)
+        result = self.shell('sleep() { :; }; native_service_lock "$MODDIR/service.lock"', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(unrelated.read_text(), 'preserve')
+        (lock / 'pid').unlink()
+        (lock / 'unexpected').write_text('preserve')
+        result = self.shell('sleep() { :; }; native_service_lock "$MODDIR/service.lock"', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((lock / 'unexpected').read_text(), 'preserve')
+
+    def test_service_exit_cleanup_survives_function_return(self):
+        overrides = textwrap.dedent('''
+            native_guard() { return 0; }
+            native_assets() { return 0; }
+            native_reconcile() { :; }
+            native_cleanup() { :; }
+            sleep() { touch "$MODDIR/disable"; }
+        ''')
+        result = self.shell('native_service; echo function-returned; test -d "$MODDIR/service.lock"', overrides=overrides)
+        self.assertEqual(result.stdout, 'function-returned\n')
+        self.assertFalse((self.module / 'service.lock').exists())
+
+    def test_service_lock_release_preserves_new_owner_receipt(self):
+        self.shell('native_service_lock "$MODDIR/service.lock"; '
+                   'printf "999\\n" > "$MODDIR/service.lock/pid"; '
+                   'printf "another-owner-boot\\n" > "$MODDIR/service.lock/boot"; '
+                   'native_service_release')
+        lock = self.module / 'service.lock'
+        self.assertTrue(lock.is_dir())
+        self.assertEqual((lock / 'pid').read_text(), '999\n')
+        self.assertEqual((lock / 'boot').read_text(), 'another-owner-boot\n')
+
+    def test_service_lease_preserves_concurrently_acquired_lock(self):
+        ready = self.root / 'owner-ready'
+        release = self.root / 'owner-release'
+        script = ('MODDIR=' + shlex.quote(str(self.module)) + '\n. "$MODDIR/runtime.sh"\n'
+                  'native_service_lock "$MODDIR/service.lock" || exit 1\n'
+                  'touch ' + shlex.quote(str(ready)) + '\n'
+                  'while [ ! -e ' + shlex.quote(str(release)) + ' ]; do sleep 0.01; done\n'
+                  'native_service_release\n')
+        owner = subprocess.Popen(['sh', '-c', script], env=self.environment, text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(lambda: owner.kill() if owner.poll() is None else None)
+        import time
+        deadline = time.monotonic() + 5
+        while not ready.exists() and owner.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(ready.exists())
+        before = (self.module / 'service.lock/pid').read_bytes()
+        result = self.shell('native_service_lock "$MODDIR/service.lock"', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.module / 'service.lock/pid').read_bytes(), before)
+        release.touch()
+        _, stderr = owner.communicate(timeout=5)
+        self.assertEqual(owner.returncode, 0, stderr)
+        self.assertFalse((self.module / 'service.lock').exists())
 
     def test_service_reconciles_only_on_debounced_tokens_and_stops_when_disabled(self):
         token = self.root / 'token'
