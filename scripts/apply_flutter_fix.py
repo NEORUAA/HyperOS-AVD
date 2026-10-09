@@ -16,7 +16,7 @@ MODULE = '/data/adb/modules/' + MODULE_ID
 SYSTEM_LIB = '/system_ext/lib64/libhyper_os_flutter.so'
 ENGINE_ENTRY = 'lib/arm64-v8a/libhyper_os_flutter.so'
 PACKAGES = ('com.miui.home', 'com.miui.weather2')
-REVISION = 7
+REVISION = 8
 EMPTY = hashlib.sha256(b'').hexdigest()
 PAD_SOURCE = 'official-yingtian-ota'
 PAD_WEATHER_APK = '/product/data-app/MIUIWeather/MIUIWeather.apk'
@@ -133,6 +133,23 @@ def guarded_boot_script(script, source, firmware):
         if script.count(early) != 1:
             raise RuntimeError('Unexpected phone early APK loop.')
         script = script.replace(early, '        [ "$package" = com.miui.weather2 ] && continue\n' + early)
+    # A baked previous patch is a verified upgrade input, not an unknown ELF.
+    # Bind guards remain literal OTA/profile hashes rather than configurable
+    # wildcards; data-app engines retain their existing exact-input checks.
+    from patch_flutter import PROFILES
+    original = firmware['shared_input_sha256']
+    engine = PROFILES.get(original, {})
+    if engine.get('glyph_raster_site') and engine.get('legacy'):
+        check = '    [ "$actual" = "$before" ] || { log "Refused target: $target ($actual)"; return 1; }\n'
+        if script.count(check) != 1:
+            raise RuntimeError('Unexpected native input guard.')
+        cases = '|'.join(shlex.quote(SYSTEM_LIB + '|' + original + '|' + engine['output'] + '|' + old)
+                         for old in engine['legacy'])
+        script = script.replace(check, '    if [ "$actual" != "$before" ]; then\n'
+                                '        case "$target|$before|$after|$actual" in\n'
+                                '            ' + cases + ') ;;\n'
+                                '            *) log "Refused target: $target ($actual)"; return 1 ;;\n'
+                                '        esac\n    fi\n')
     return script
 
 
@@ -255,7 +272,7 @@ def old_targets(manifest):
     if manifest.get('revision') == 1:
         return [{'target': SYSTEM_LIB, 'before': manifest['system_before'], 'after': manifest['system_after']},
                 {'target': manifest['home_target'], 'before': manifest['home_before'], 'after': manifest['home_after']}]
-    if manifest.get('revision') in (2, 3, 4, 5, 6, REVISION):
+    if manifest.get('revision') in (2, 3, 4, 5, 6, 7, REVISION):
         return [manifest['system'], *manifest['apks']]
     raise RuntimeError('Unknown existing Flutter overlay revision.')
 

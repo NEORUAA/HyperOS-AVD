@@ -85,6 +85,32 @@ class PhoneRuntimeUpgradeTests(unittest.TestCase):
         self.assertFalse(flutter.reusable_manifest(saved, targets, other_firmware, apks, 'd' * 64, script_hash))
         self.assertFalse(flutter.reusable_manifest(saved, targets, firmware, apks, 'd' * 64, 'e' * 64))
 
+    def test_flutter_previous_shared_patch_is_a_literal_scoped_upgrade_input(self):
+        from patch_flutter import PROFILES
+        original = '7f88d7f4d9a464fdd56fb255642c9d300f28f50272ccf5fd31f082c1a52e17f4'
+        item = PROFILES[original]
+        firmware = {'source': 'official-hongkong-ota', 'incremental': 'OS4.0.18.0.XFRCNXM',
+                    'shared_input_sha256': original}
+        script = flutter.boot_script(firmware=firmware)
+        expected = '|'.join((flutter.SYSTEM_LIB, original, item['output'], item['legacy'][0]))
+        self.assertIn(expected, script)
+        self.assertIn('case "$target|$before|$after|$actual"', script)
+        guard = script.split('    if [ "$actual" != "$before" ]; then\n', 1)[1].split('    fi\n', 1)[0]
+        shell = 'guard() { if [ "$actual" != "$before" ]; then\n' + guard + 'fi; }; log() { :; }; guard'
+        for target, actual, allowed in ((flutter.SYSTEM_LIB, item['legacy'][0], True),
+                                       (flutter.SYSTEM_LIB, original, True),
+                                       ('/data/app/unknown/lib/arm64/libhyper_os_flutter.so', item['legacy'][0], False),
+                                       (flutter.SYSTEM_LIB, 'f' * 64, False)):
+            env = dict(os.environ, target=target, actual=actual, before=original, after=item['output'])
+            result = subprocess.run(['sh', '-c', shell], env=env, capture_output=True)
+            self.assertEqual(result.returncode == 0, allowed)
+        old = {'revision': 7, 'system': {'target': flutter.SYSTEM_LIB}, 'apks': []}
+        self.assertEqual(flutter.old_targets(old), [old['system']])
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'module.sh'
+            path.write_text(script)
+            self.assertEqual(subprocess.run(['sh', '-n', str(path)]).returncode, 0)
+
     def test_flutter_guard_precedes_mounts_and_weather_rescan_is_deferred(self):
         firmware = {'source': 'official-hongkong-ota', 'incremental': 'OS4.0.18.0.XFRCNXM',
                     'shared_input_sha256': 'a' * 64}

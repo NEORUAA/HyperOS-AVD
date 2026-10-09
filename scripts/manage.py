@@ -589,7 +589,7 @@ def validate_owned_module(module_id, prop, manifest, system_prop='', has_system=
         from phone_profile import LEGACY_PINS
         from patch_flutter import PROFILES
         native = manifest.get('system', {})
-        valid = (revision in (6, 7) and isinstance(manifest.get('packages'), dict)
+        valid = (revision in (6, 7, 8) and isinstance(manifest.get('packages'), dict)
                  and set(manifest['packages']) <= {'com.miui.home', 'com.miui.weather2'}
                  and native.get('target') == '/system_ext/lib64/libhyper_os_flutter.so'
                  and native.get('before') == LEGACY_PINS['flutter']
