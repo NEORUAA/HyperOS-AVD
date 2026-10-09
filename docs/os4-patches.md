@@ -47,7 +47,7 @@ HYPEROS_AVD_WORKSPACE="$PWD/work/os4-official" python3 scripts/apply_native_comp
 HYPEROS_AVD_WORKSPACE="$PWD/work/os4-official" python3 scripts/apply_native_compat.py --status
 ```
 
-模块通过 KernelSU 正常安装生命周期激活。early 阶段处理系统目标；late 阶段从包管理器解析当前原生库路径，每 30 秒检查包数据库变化，稳定后重新核验；无变化时不反复提取 APK。完整输入/历史输出 hash、每个原字节、完整输出 hash 均需匹配；未知内容仅跳过对应特性并记录状态，不能中断系统开机或回退为猜测 offset。已有八类专用模块及其关闭选择保留，不自动删除。
+模块通过 KernelSU 正常安装生命周期激活。early 阶段处理系统目标；late 阶段从包管理器解析当前原生库路径，每 30 秒检查包数据库变化，稳定后重新核验；无变化时不反复提取 APK。服务使用内核 `flock` 租约，崩溃后可自动恢复模块自己的空锁，同时保留仍存活的旧服务；运行状态只允许 root 访问。完整输入/历史输出 hash、每个原字节、完整输出 hash 均需匹配；未知内容仅跳过对应特性并记录状态，不能中断系统开机或回退为猜测 offset。已有八类专用模块及其关闭选择保留，不自动删除。
 
 状态位于 `/data/adb/modules/hyperos_avd_native_compat/state/status.tsv`，每行是 `feature|target|state|reason`；运行日志为同目录的 `runtime.log`。
 
@@ -59,18 +59,18 @@ HYPEROS_AVD_WORKSPACE="$PWD/work/os4-official" python3 scripts/apply_native_comp
 | `pending / reboot-required` | 早期目标尚未加载新修复，需正常重启。 |
 | `disabled`、`not-activated` | 用户关闭对应功能/模块，或尚未产生运行状态。 |
 
-安装完成、挂载完成、当前进程加载新代码是不同状态：系统库可能已经由 zygote、system_server 或 HAL 缓存；**模块不会自动重启 zygote、系统服务或 AVD**。首次安装/更新早期补丁后需正常重启一次；late 新挂载会结束对应应用的旧进程，重新打开应用即可，zygote 预加载代码仍需冷启动。KernelSU 中关闭模块并重启可撤回其挂载，镜像内已烘焙的基线修复仍保留。
+安装完成、挂载完成、当前进程加载新代码是不同状态：系统库可能已经由 zygote、system_server 或 HAL 缓存；**模块不会自动重启 zygote、系统服务或 AVD**。新暂存的早期补丁需正常重启激活；已有内容不同的 pending 包时，先保留并完成其激活，下一次启动器再暂存当前包，因此可能还需第二次正常重启。late 新挂载会结束对应应用的旧进程，重新打开应用即可，zygote 预加载代码仍需冷启动。KernelSU 中关闭模块并重启可撤回其挂载，镜像内已烘焙的基线修复仍保留。
 
 恢复出厂会清除 `/data/adb`，因此纯 userdata 模块不保证重置后的第一次开机。现有可启动的镜像、必要的内核/SELinux/首次扫描修复仍必须保留。启动器会在基线启动后安装通用模块，可能还需一次重启；新的镜像内 KSU 自举尚未经过恢复出厂验证，不将它写成已完成能力。
 
-本轮已在手机 `4.0.18.0.XFRCNXM` 上验证标准 KSU 安装、待重启复用和正常重启；临时关闭旧 Flutter 模块后，新模块独立生成并让桌面实际加载了修复库。Android ID、序列号、引导状态、应用列表及抽查的用户设置保持一致，Vulkan 和 SELinux Enforcing 保留，原模块启用选择已恢复。Android 17 的 `legacyNativeLibraryDir`、停用出厂包与空 ZIP 原生条目也有回归覆盖；当前 Rust 桌面没有某些可选私有库，使用共享引擎并安全跳过这些目标。Pad 本轮未做实际冷启动验收，未知未来版本仍需上述内容和 ABI 审计。
+本轮已在手机 `4.0.18.0.XFRCNXM` 上验证标准 KSU 安装、待重启复用和正常重启；临时关闭旧 Flutter 模块后，新模块独立生成并让桌面实际加载了修复库。保留宿主崩溃留下的空锁后再次冷启动，也确认服务自动恢复并持续持有租约。Android ID、序列号、引导状态、应用列表及抽查的用户设置保持一致，Vulkan 和 SELinux Enforcing 保留，原模块启用选择已恢复。Android 17 的 `legacyNativeLibraryDir`、停用出厂包与空 ZIP 原生条目也有回归覆盖；当前 Rust 桌面没有某些可选私有库，使用共享引擎并安全跳过这些目标。Pad 本轮未做实际冷启动验收，未知未来版本仍需上述内容和 ABI 审计。
 
 连续 Android 软重启还触发过一次宿主崩溃，堆栈位于 SDK 的 macOS OpenGL/gfxstream 合成路径；正常冷启动后已恢复，用户数据保留。该连续重启问题尚未定位根因或增加修复，不将 guest 模块核验扩大为宿主稳定性保证。
 
 ## 新增兼容 profile
 
 1. 取得并审计目标原始 ELF：架构、可执行段、函数/ABI、完整 SHA-256、每个原字节及预期输出；保留变更前后真实复现证据。
-2. 在对应 `patch_*.py`（导航为 `apply_navigation_fix.py`）增加一个已核验 profile，供镜像与 catalog 共用；不要另写一套模块 offset 或用 OTA 名称代替内容身份。需要新目标/新特性时再更新 `native_patch_catalog.py` 的白名单和生命周期。
+2. 在对应 `patch_*.py`（导航为 `apply_navigation_fix.py`）保留旧 profile 并增加已核验的新 profile，供镜像与 catalog 共用；不要另写一套模块 offset 或用 OTA 名称代替内容身份。Flutter/HWUI 的 `PROFILES` 自动进入 catalog，其余特性还需扩展 `native_patch_catalog.py` 的 profile 序列并引用同一份原始常量，不能直接替换旧常量。新目标/新特性另需更新白名单和生命周期。
 3. 添加原始→输出、幂等、旧输出迁移、错误 hash/site 拒绝测试；重新打包，检查包/路径变更及重命名 AVD。编译桥接另外检查 JNI/C++/framework/HAL ABI，不能因源文件名相同就复用。
 4. 验证 cold boot、实际加载库、用户数据/选择保留和对应功能；一次静态测试不能代替音频、动画、拍照或 UI 验收。仅发布实际验证过的组合，并保留未知特性跳过原因。
 
