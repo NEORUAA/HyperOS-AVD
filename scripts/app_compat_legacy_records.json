@@ -1,0 +1,738 @@
+{
+  "bridge_source_commit": "a701b36",
+  "records": [
+    {
+      "feature": "weather",
+      "hashes": {
+        "SHA256SUMS": "cfeece002811bbf04c15eb4bea9746b35371143fcf39695adecf88fed0acbef7",
+        "callers.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "libraries.tsv": "0722295335056e4024da876eaaa5d55f2cb3a6df8e4191980a9262ac9cc4e37a",
+        "manifest.json": "64c6ddefbf928ca8660a50cb683790554f2e7a74f00bff712468441843a113f0",
+        "module.prop": "59168e38635b7e58ba0e2fc43f50e644cf6180d3da5e081c15622bc92aed161e",
+        "package.txt": "6cfa936abaec167c845ba1859ebbadc44af80dc98f50a4761bb78a4088306a40",
+        "payloads/libhgl.so": "bfaad823f56f9aa0c7b78a3d52bdbae26195a7ec8e04e1f686d4da577835a1cc",
+        "payloads/libhyper_opengl.so": "8d4562cf050c01369e5a2c764ebe1594230b06f4d5b40ec899727a2023fbbc50",
+        "payloads/libmglnative.so": "99c5e15d91d01c148b072c98e1aa96363a620524ac2f43aa0c869867efa13fe5",
+        "profiles.tsv": "1526102032b2fe0179e8854458e8d8d3c4bc653d5d068121f59f5c292a0dccbe",
+        "runtime.sh": "84b37d80cbbe7633e4b5debabf694a3252e7e1b8ac1b85f7f979e6b5c71dd59a",
+        "service.sh": "1d590d21b37dcf2f50a7ed792e11068b9f23d71bd082b66d3bf447d83a02ff65",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "systems.tsv": "0f7fff63187fddcaa68cc50b10886814d20e028151ae99eef1bc68fae9bb081a",
+        "uninstall.sh": "df403cdfbf6ae769316ef0bed34940e3b218d470f5687a93ef136b199151d219"
+      },
+      "id": "hyperos_avd_weather_gl",
+      "manifest": {
+        "automatic_reboot": false,
+        "delivery": "guest-private-exact-workload",
+        "files_sha256": {
+          "callers.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "customize.sh": "b9adfba3adee98b24a8ca5663e726d698a4294c956e6244c55dc13d5358c4488",
+          "libraries.tsv": "0722295335056e4024da876eaaa5d55f2cb3a6df8e4191980a9262ac9cc4e37a",
+          "module.prop": "59168e38635b7e58ba0e2fc43f50e644cf6180d3da5e081c15622bc92aed161e",
+          "package.txt": "6cfa936abaec167c845ba1859ebbadc44af80dc98f50a4761bb78a4088306a40",
+          "payloads/libhgl.so": "bfaad823f56f9aa0c7b78a3d52bdbae26195a7ec8e04e1f686d4da577835a1cc",
+          "payloads/libhyper_opengl.so": "8d4562cf050c01369e5a2c764ebe1594230b06f4d5b40ec899727a2023fbbc50",
+          "payloads/libmglnative.so": "99c5e15d91d01c148b072c98e1aa96363a620524ac2f43aa0c869867efa13fe5",
+          "profiles.tsv": "1526102032b2fe0179e8854458e8d8d3c4bc653d5d068121f59f5c292a0dccbe",
+          "runtime.sh": "84b37d80cbbe7633e4b5debabf694a3252e7e1b8ac1b85f7f979e6b5c71dd59a",
+          "service.sh": "1d590d21b37dcf2f50a7ed792e11068b9f23d71bd082b66d3bf447d83a02ff65",
+          "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "systems.tsv": "0f7fff63187fddcaa68cc50b10886814d20e028151ae99eef1bc68fae9bb081a",
+          "uninstall.sh": "df403cdfbf6ae769316ef0bed34940e3b218d470f5687a93ef136b199151d219"
+        },
+        "id": "hyperos_avd_weather_gl",
+        "install_only_files": [
+          "customize.sh"
+        ],
+        "package": "com.miui.weather2",
+        "profiles": [
+          {
+            "apk_sha256": "017d613137c0512a937dc6b8565da856099e988feab47b9eabc5c3d0a13f06e6",
+            "factory_apk": "/product/app/MIUIWeather/MIUIWeather.apk",
+            "id": "phone-hongkong",
+            "libraries": [
+              {
+                "after": "8d4562cf050c01369e5a2c764ebe1594230b06f4d5b40ec899727a2023fbbc50",
+                "before": "d35b0a3ca29bc08e4822a70705eea3db846e3cf5a48a7cf01bc0baf78a93bcce",
+                "name": "libhyper_opengl.so",
+                "placeholder": false
+              },
+              {
+                "after": "99c5e15d91d01c148b072c98e1aa96363a620524ac2f43aa0c869867efa13fe5",
+                "before": "241623acab6ae56379701adf9ae542fb67cbd7e475e40463e3336dd229171cc5",
+                "name": "libmglnative.so",
+                "placeholder": false
+              },
+              {
+                "after": "bfaad823f56f9aa0c7b78a3d52bdbae26195a7ec8e04e1f686d4da577835a1cc",
+                "before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "name": "libhgl.so",
+                "placeholder": true
+              }
+            ],
+            "native": "/product/app/MIUIWeather/lib/arm64",
+            "system_libraries": {
+              "/system/lib64/libEGL_angle.so": "ce0dba9be7b69be54a1e64ade4aec71645b276175c2c143973bdd7f0512a5dc9",
+              "/system/lib64/libGLESv2_angle.so": "efd2a33a303f8f4271afe49536db3f13360f1eb340025c74b322ff8a05d0e999"
+            }
+          }
+        ],
+        "revision": 2,
+        "schema": 1
+      },
+      "optional_hashes": {
+        "customize.sh": "b9adfba3adee98b24a8ca5663e726d698a4294c956e6244c55dc13d5358c4488"
+      },
+      "properties": "id=hyperos_avd_weather_gl\nname=HyperOS AVD Weather ANGLE bridge\nversion=2\nversionCode=2\nauthor=HyperOS-AVD\ndescription=Private Vulkan EGL for verified signed Xiaomi Weather workloads\n"
+    },
+    {
+      "feature": "weather",
+      "hashes": {
+        "SHA256SUMS": "e637f3c21aa76ee4102b3ea124c82469903fd32ffce4c5ff61d86be4248de9e0",
+        "callers.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "libraries.tsv": "8c2fcdc910da7dde0690f28e92faddfd2d5b10436c253d88acf7cd1e9e366267",
+        "manifest.json": "e08fb1139bacda5f42dd68a57b3c3e67429d6f55a2e3445e2615842b98455c1b",
+        "module.prop": "59168e38635b7e58ba0e2fc43f50e644cf6180d3da5e081c15622bc92aed161e",
+        "package.txt": "6cfa936abaec167c845ba1859ebbadc44af80dc98f50a4761bb78a4088306a40",
+        "payloads/libEGL_angle.so": "ce0dba9be7b69be54a1e64ade4aec71645b276175c2c143973bdd7f0512a5dc9",
+        "payloads/libGLESv2_angle.so": "efd2a33a303f8f4271afe49536db3f13360f1eb340025c74b322ff8a05d0e999",
+        "payloads/libhgl.so": "bfaad823f56f9aa0c7b78a3d52bdbae26195a7ec8e04e1f686d4da577835a1cc",
+        "payloads/libhyper_opengl.so": "8a9d12020e4cf576487927eff94d30fb6bdabfbe8d4309de69711bfa666c90e9",
+        "payloads/libmglnative.so": "99c5e15d91d01c148b072c98e1aa96363a620524ac2f43aa0c869867efa13fe5",
+        "profiles.tsv": "bd50a014fd3d07540a39a131680b9ea251e29276568b899af5a0287a60671947",
+        "runtime.sh": "84b37d80cbbe7633e4b5debabf694a3252e7e1b8ac1b85f7f979e6b5c71dd59a",
+        "service.sh": "1d590d21b37dcf2f50a7ed792e11068b9f23d71bd082b66d3bf447d83a02ff65",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "systems.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "uninstall.sh": "df403cdfbf6ae769316ef0bed34940e3b218d470f5687a93ef136b199151d219"
+      },
+      "id": "hyperos_avd_weather_gl",
+      "manifest": {
+        "automatic_reboot": false,
+        "delivery": "guest-private-exact-workload",
+        "files_sha256": {
+          "callers.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "customize.sh": "b9adfba3adee98b24a8ca5663e726d698a4294c956e6244c55dc13d5358c4488",
+          "libraries.tsv": "8c2fcdc910da7dde0690f28e92faddfd2d5b10436c253d88acf7cd1e9e366267",
+          "module.prop": "59168e38635b7e58ba0e2fc43f50e644cf6180d3da5e081c15622bc92aed161e",
+          "package.txt": "6cfa936abaec167c845ba1859ebbadc44af80dc98f50a4761bb78a4088306a40",
+          "payloads/libEGL_angle.so": "ce0dba9be7b69be54a1e64ade4aec71645b276175c2c143973bdd7f0512a5dc9",
+          "payloads/libGLESv2_angle.so": "efd2a33a303f8f4271afe49536db3f13360f1eb340025c74b322ff8a05d0e999",
+          "payloads/libhgl.so": "bfaad823f56f9aa0c7b78a3d52bdbae26195a7ec8e04e1f686d4da577835a1cc",
+          "payloads/libhyper_opengl.so": "8a9d12020e4cf576487927eff94d30fb6bdabfbe8d4309de69711bfa666c90e9",
+          "payloads/libmglnative.so": "99c5e15d91d01c148b072c98e1aa96363a620524ac2f43aa0c869867efa13fe5",
+          "profiles.tsv": "bd50a014fd3d07540a39a131680b9ea251e29276568b899af5a0287a60671947",
+          "runtime.sh": "84b37d80cbbe7633e4b5debabf694a3252e7e1b8ac1b85f7f979e6b5c71dd59a",
+          "service.sh": "1d590d21b37dcf2f50a7ed792e11068b9f23d71bd082b66d3bf447d83a02ff65",
+          "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "systems.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "uninstall.sh": "df403cdfbf6ae769316ef0bed34940e3b218d470f5687a93ef136b199151d219"
+        },
+        "id": "hyperos_avd_weather_gl",
+        "install_only_files": [
+          "customize.sh"
+        ],
+        "package": "com.miui.weather2",
+        "profiles": [
+          {
+            "apk_sha256": "50f5dd5a06818f9613bf92ae2861beb58426895e6ae86364ed472e4c0aec5652",
+            "factory_apk": "/product/data-app/MIUIWeather/MIUIWeather.apk",
+            "id": "tablet-yingtian",
+            "libraries": [
+              {
+                "after": "8a9d12020e4cf576487927eff94d30fb6bdabfbe8d4309de69711bfa666c90e9",
+                "before": "ab39421d8b046cee3ebf7265e949a69c5820cbda4e1be3c77b5380a6fbc3c993",
+                "name": "libhyper_opengl.so",
+                "placeholder": false
+              },
+              {
+                "after": "99c5e15d91d01c148b072c98e1aa96363a620524ac2f43aa0c869867efa13fe5",
+                "before": "241623acab6ae56379701adf9ae542fb67cbd7e475e40463e3336dd229171cc5",
+                "name": "libmglnative.so",
+                "placeholder": false
+              },
+              {
+                "after": "bfaad823f56f9aa0c7b78a3d52bdbae26195a7ec8e04e1f686d4da577835a1cc",
+                "before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "name": "libhgl.so",
+                "placeholder": true
+              },
+              {
+                "after": "ce0dba9be7b69be54a1e64ade4aec71645b276175c2c143973bdd7f0512a5dc9",
+                "before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "name": "libEGL_angle.so",
+                "placeholder": true
+              },
+              {
+                "after": "efd2a33a303f8f4271afe49536db3f13360f1eb340025c74b322ff8a05d0e999",
+                "before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "name": "libGLESv2_angle.so",
+                "placeholder": true
+              }
+            ],
+            "native": "/data/app-lib/MIUIWeather/arm64",
+            "system_libraries": {}
+          }
+        ],
+        "revision": 2,
+        "schema": 1
+      },
+      "optional_hashes": {
+        "customize.sh": "b9adfba3adee98b24a8ca5663e726d698a4294c956e6244c55dc13d5358c4488"
+      },
+      "properties": "id=hyperos_avd_weather_gl\nname=HyperOS AVD Weather ANGLE bridge\nversion=2\nversionCode=2\nauthor=HyperOS-AVD\ndescription=Private Vulkan EGL for verified signed Xiaomi Weather workloads\n"
+    },
+    {
+      "feature": "parrot-camera",
+      "hashes": {
+        "SHA256SUMS": "3f2052fedbcfaef6321b914f33fe00626754dc5e9c1634d865afbe1bf90a0e23",
+        "callers.tsv": "c13b19ad38207cc0a517a3f5d63012d2bac297a3d184a12b946f8ad698a16636",
+        "libraries.tsv": "ec477ce08ffa2d2bb892e44ded6f57d742aef86f005c0c584f90209ab9ca7679",
+        "manifest.json": "10cfc86db7383b68876f70a17b725c41bc6de937b2494e10859254e537942633",
+        "module.prop": "d1c215584944ed3a26ea3838767c29f4ecbcdf8654ad806bdce738d18c5e8d90",
+        "package.txt": "721061a46fb06ce6568baf9f4c5d431a66a1d5cdd1b97dcdbc499c213b51e76a",
+        "payloads/lib_aion_buffer.so": "37f845d5f45a207da895345f57ee13e8f252b30a132977b04d1b7543b881664d",
+        "profiles.tsv": "d1b05b96195d3da35c4accf27427e72bbc7b43ed32364753e20a933cea25d086",
+        "runtime.sh": "84b37d80cbbe7633e4b5debabf694a3252e7e1b8ac1b85f7f979e6b5c71dd59a",
+        "service.sh": "1d590d21b37dcf2f50a7ed792e11068b9f23d71bd082b66d3bf447d83a02ff65",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "systems.tsv": "d7c6d2e9472b902ec5b81512b600d77ad91d12931433bfbab693793db307186a",
+        "uninstall.sh": "df403cdfbf6ae769316ef0bed34940e3b218d470f5687a93ef136b199151d219"
+      },
+      "id": "hyperos_avd_parrot_camera",
+      "manifest": {
+        "automatic_reboot": false,
+        "delivery": "guest-private-exact-workload",
+        "files_sha256": {
+          "callers.tsv": "c13b19ad38207cc0a517a3f5d63012d2bac297a3d184a12b946f8ad698a16636",
+          "customize.sh": "b9adfba3adee98b24a8ca5663e726d698a4294c956e6244c55dc13d5358c4488",
+          "libraries.tsv": "ec477ce08ffa2d2bb892e44ded6f57d742aef86f005c0c584f90209ab9ca7679",
+          "module.prop": "d1c215584944ed3a26ea3838767c29f4ecbcdf8654ad806bdce738d18c5e8d90",
+          "package.txt": "721061a46fb06ce6568baf9f4c5d431a66a1d5cdd1b97dcdbc499c213b51e76a",
+          "payloads/lib_aion_buffer.so": "37f845d5f45a207da895345f57ee13e8f252b30a132977b04d1b7543b881664d",
+          "profiles.tsv": "d1b05b96195d3da35c4accf27427e72bbc7b43ed32364753e20a933cea25d086",
+          "runtime.sh": "84b37d80cbbe7633e4b5debabf694a3252e7e1b8ac1b85f7f979e6b5c71dd59a",
+          "service.sh": "1d590d21b37dcf2f50a7ed792e11068b9f23d71bd082b66d3bf447d83a02ff65",
+          "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "systems.tsv": "d7c6d2e9472b902ec5b81512b600d77ad91d12931433bfbab693793db307186a",
+          "uninstall.sh": "df403cdfbf6ae769316ef0bed34940e3b218d470f5687a93ef136b199151d219"
+        },
+        "id": "hyperos_avd_parrot_camera",
+        "install_only_files": [
+          "customize.sh"
+        ],
+        "package": "com.google.android.GoogleCamera.parrot",
+        "profiles": [
+          {
+            "apk_sha256": "2d5db1f5185ae09c9f0dc1e13fd3bc0a6babdbf6587487361258d7d89be07376",
+            "libraries": [
+              {
+                "after": "37f845d5f45a207da895345f57ee13e8f252b30a132977b04d1b7543b881664d",
+                "before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "legacy_direct": [
+                  "37f845d5f45a207da895345f57ee13e8f252b30a132977b04d1b7543b881664d",
+                  "fbe115ff5d3e87beadae31c3bd9da344fdc8dd28cd44e5b02f9e42be83d1cd65"
+                ],
+                "name": "lib_aion_buffer.so",
+                "placeholder": true
+              }
+            ],
+            "native_libraries": {
+              "libgcastartup.so": "ddf45ea66324f1e653095358213d104d23431d2ca0f433f1df70f8bb6bb25aaf"
+            },
+            "system_libraries": {
+              "/system/lib64/libandroid_runtime.so": "22b624d7bfa130cb66ad841b0af152d975c5329449dd804e077d106c57a89c3a"
+            }
+          }
+        ],
+        "revision": 2,
+        "schema": 1
+      },
+      "optional_hashes": {
+        "customize.sh": "b9adfba3adee98b24a8ca5663e726d698a4294c956e6244c55dc13d5358c4488"
+      },
+      "properties": "id=hyperos_avd_parrot_camera\nname=HyperOS AVD Parrot camera bridge\nversion=2\nversionCode=2\nauthor=HyperOS-AVD\ndescription=Optional verified CPU allocator and private GL query bridge\n"
+    },
+    {
+      "allowed_hashes": {
+        "manifest.json": [
+          "4da7754826298a8fe62fe91e5087c4dfe6bb62e6dbcdc48ebf8573b6a1e6c901",
+          "fa67da42ec5ee0b0bd2ec54bec0f201461c1b7529a29a526d0f42abf9989f541"
+        ]
+      },
+      "feature": "oem-camera",
+      "hashes": {
+        "app/MiuiCamera.apk": "729b0b193d1684e7c14ed0ca56ba15247d58016c70164329de233b49727a2c48",
+        "app/lib/arm64/libcamera_yuv_jni.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8",
+        "hwl.so": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+        "module.prop": "a48f1cb8c0c1719d6949d75a36df9eee42dc301e04b1d38e5982314ff366f919",
+        "post-fs-data.sh": "6539e65199a55ec5870660109fd8cff5817750112ebd834db887cbce831a72c2",
+        "provider": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+        "service.sh": "bb24b5b0e8e4c22f121d23e86f776b0c9e7821baf4d3eadce434db4af1b70515",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "targets.conf": "6212576b74375ed6271a4ee3501d56d44334bba4b3ebb4bb839dbae01abffd3f"
+      },
+      "id": "hyperos_avd_xiaomi_camera",
+      "manifest": {
+        "apk_sha256": "729b0b193d1684e7c14ed0ca56ba15247d58016c70164329de233b49727a2c48",
+        "experimental": true,
+        "firmware": {
+          "incremental": "OS4.0.18.0.XFRCNXM",
+          "source": "official-hongkong-ota"
+        },
+        "native_abi": {
+          "capture_contract_sha256": "edff86b65363d64ff6004d477a52ed32b2fa34db00a64d7c7adaf172a82de0a8",
+          "jni_sha256": "51f3c6ec355423d9013dfdbac42d001a7c146bf30c84d650d962edbbc04450b8"
+        },
+        "revision": 2,
+        "runtime_sha256": "22b624d7bfa130cb66ad841b0af152d975c5329449dd804e077d106c57a89c3a",
+        "targets": [
+          {
+            "after": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+            "before": "1424c5afc7f60824a640896d42af131d06ac0fc5eaa2e4985f804f43451c1068",
+            "payload": "provider",
+            "target": "/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google"
+          },
+          {
+            "after": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+            "before": "e9566298975e3346c5c5a797f0a96bf48f5901b2391fae4b56b58e9befb8cb83",
+            "payload": "hwl.so",
+            "target": "/vendor/lib64/libgooglecamerahwl_impl.so"
+          }
+        ],
+        "yuv_sha256": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "optional_hashes": {
+        "yuv.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "properties": "id=hyperos_avd_xiaomi_camera\nname=HyperOS AVD Xiaomi camera bridge\nversion=2\nversionCode=2\nauthor=HyperOS-AVD\ndescription=Experimental ranchu photo/video stream, role and private YUV compatibility\n"
+    },
+    {
+      "allowed_hashes": {
+        "manifest.json": [
+          "4da7754826298a8fe62fe91e5087c4dfe6bb62e6dbcdc48ebf8573b6a1e6c901",
+          "fa67da42ec5ee0b0bd2ec54bec0f201461c1b7529a29a526d0f42abf9989f541"
+        ]
+      },
+      "feature": "oem-camera",
+      "hashes": {
+        "app/MiuiCamera.apk": "729b0b193d1684e7c14ed0ca56ba15247d58016c70164329de233b49727a2c48",
+        "app/lib/arm64/libcamera_yuv_jni.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8",
+        "hwl.so": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+        "module.prop": "a48f1cb8c0c1719d6949d75a36df9eee42dc301e04b1d38e5982314ff366f919",
+        "post-fs-data.sh": "66b692805faf3aece1a7c798cd8b77a3ca096473c609bce9fdced1bf0d1d5c46",
+        "provider": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+        "service.sh": "cb83126bcff4562ee5885667efd530a37e3abe15329f762fc4b57e232014e674",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "targets.conf": "6212576b74375ed6271a4ee3501d56d44334bba4b3ebb4bb839dbae01abffd3f"
+      },
+      "id": "hyperos_avd_xiaomi_camera",
+      "manifest": {
+        "apk_sha256": "729b0b193d1684e7c14ed0ca56ba15247d58016c70164329de233b49727a2c48",
+        "experimental": true,
+        "firmware": {
+          "incremental": "OS4.0.18.0.XFRCNXM",
+          "source": "official-hongkong-ota"
+        },
+        "native_abi": {
+          "capture_contract_sha256": "edff86b65363d64ff6004d477a52ed32b2fa34db00a64d7c7adaf172a82de0a8",
+          "jni_sha256": "51f3c6ec355423d9013dfdbac42d001a7c146bf30c84d650d962edbbc04450b8"
+        },
+        "revision": 2,
+        "runtime_sha256": "22b624d7bfa130cb66ad841b0af152d975c5329449dd804e077d106c57a89c3a",
+        "targets": [
+          {
+            "after": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+            "before": "1424c5afc7f60824a640896d42af131d06ac0fc5eaa2e4985f804f43451c1068",
+            "payload": "provider",
+            "target": "/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google"
+          },
+          {
+            "after": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+            "before": "e9566298975e3346c5c5a797f0a96bf48f5901b2391fae4b56b58e9befb8cb83",
+            "payload": "hwl.so",
+            "target": "/vendor/lib64/libgooglecamerahwl_impl.so"
+          }
+        ],
+        "yuv_sha256": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "optional_hashes": {
+        "yuv.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "properties": "id=hyperos_avd_xiaomi_camera\nname=HyperOS AVD Xiaomi camera bridge\nversion=2\nversionCode=2\nauthor=HyperOS-AVD\ndescription=Experimental ranchu photo/video stream, role and private YUV compatibility\n"
+    },
+    {
+      "feature": "oem-camera",
+      "hashes": {
+        "app/MiuiCamera.apk": "729b0b193d1684e7c14ed0ca56ba15247d58016c70164329de233b49727a2c48",
+        "app/lib/arm64/libcamera_yuv_jni.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8",
+        "hwl.so": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+        "manifest.json": "92356eabd041b59325aab8bdd92ceb3a6332f67c334868502c5aa69f2bc08e0a",
+        "module.prop": "a48f1cb8c0c1719d6949d75a36df9eee42dc301e04b1d38e5982314ff366f919",
+        "post-fs-data.sh": "6539e65199a55ec5870660109fd8cff5817750112ebd834db887cbce831a72c2",
+        "provider": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+        "service.sh": "bb24b5b0e8e4c22f121d23e86f776b0c9e7821baf4d3eadce434db4af1b70515",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "targets.conf": "6212576b74375ed6271a4ee3501d56d44334bba4b3ebb4bb839dbae01abffd3f"
+      },
+      "id": "hyperos_avd_xiaomi_camera",
+      "manifest": {
+        "apk_sha256": "729b0b193d1684e7c14ed0ca56ba15247d58016c70164329de233b49727a2c48",
+        "experimental": true,
+        "revision": 2,
+        "runtime_sha256": "22b624d7bfa130cb66ad841b0af152d975c5329449dd804e077d106c57a89c3a",
+        "targets": [
+          {
+            "after": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+            "before": "1424c5afc7f60824a640896d42af131d06ac0fc5eaa2e4985f804f43451c1068",
+            "payload": "provider",
+            "target": "/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google"
+          },
+          {
+            "after": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+            "before": "e9566298975e3346c5c5a797f0a96bf48f5901b2391fae4b56b58e9befb8cb83",
+            "payload": "hwl.so",
+            "target": "/vendor/lib64/libgooglecamerahwl_impl.so"
+          }
+        ],
+        "yuv_sha256": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "optional_hashes": {
+        "yuv.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "properties": "id=hyperos_avd_xiaomi_camera\nname=HyperOS AVD Xiaomi camera bridge\nversion=2\nversionCode=2\nauthor=HyperOS-AVD\ndescription=Experimental ranchu photo/video stream, role and private YUV compatibility\n"
+    },
+    {
+      "feature": "oem-camera",
+      "hashes": {
+        "app/MiuiCamera.apk": "729b0b193d1684e7c14ed0ca56ba15247d58016c70164329de233b49727a2c48",
+        "app/lib/arm64/libcamera_yuv_jni.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8",
+        "hwl.so": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+        "manifest.json": "92356eabd041b59325aab8bdd92ceb3a6332f67c334868502c5aa69f2bc08e0a",
+        "module.prop": "a48f1cb8c0c1719d6949d75a36df9eee42dc301e04b1d38e5982314ff366f919",
+        "post-fs-data.sh": "66b692805faf3aece1a7c798cd8b77a3ca096473c609bce9fdced1bf0d1d5c46",
+        "provider": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+        "service.sh": "cb83126bcff4562ee5885667efd530a37e3abe15329f762fc4b57e232014e674",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "targets.conf": "6212576b74375ed6271a4ee3501d56d44334bba4b3ebb4bb839dbae01abffd3f"
+      },
+      "id": "hyperos_avd_xiaomi_camera",
+      "manifest": {
+        "apk_sha256": "729b0b193d1684e7c14ed0ca56ba15247d58016c70164329de233b49727a2c48",
+        "experimental": true,
+        "revision": 2,
+        "runtime_sha256": "22b624d7bfa130cb66ad841b0af152d975c5329449dd804e077d106c57a89c3a",
+        "targets": [
+          {
+            "after": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+            "before": "1424c5afc7f60824a640896d42af131d06ac0fc5eaa2e4985f804f43451c1068",
+            "payload": "provider",
+            "target": "/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google"
+          },
+          {
+            "after": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+            "before": "e9566298975e3346c5c5a797f0a96bf48f5901b2391fae4b56b58e9befb8cb83",
+            "payload": "hwl.so",
+            "target": "/vendor/lib64/libgooglecamerahwl_impl.so"
+          }
+        ],
+        "yuv_sha256": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "optional_hashes": {
+        "yuv.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "properties": "id=hyperos_avd_xiaomi_camera\nname=HyperOS AVD Xiaomi camera bridge\nversion=2\nversionCode=2\nauthor=HyperOS-AVD\ndescription=Experimental ranchu photo/video stream, role and private YUV compatibility\n"
+    },
+    {
+      "allowed_hashes": {
+        "manifest.json": [
+          "3521ceb73ad26dc4170fd48ab776dc42436058bdbad0c653e67bf17a35e029fd",
+          "ffa426be0d338bf65291a5cde4965b161368cccebf4d7fbb5237560c0812bd72"
+        ]
+      },
+      "feature": "oem-camera",
+      "hashes": {
+        "app/MiuiCamera.apk": "d378b495e71f6fa416adf3513e6d56acee4c8309371ac837f0bc28c9a0f7fca7",
+        "app/lib/arm64/libcamera_yuv_jni.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8",
+        "hwl.so": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+        "module.prop": "a48f1cb8c0c1719d6949d75a36df9eee42dc301e04b1d38e5982314ff366f919",
+        "post-fs-data.sh": "f7788951fbefbd522786d3bf15a955fabfc72e14f4d65bb8f95cf4cdf0512d69",
+        "provider": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+        "service.sh": "bb24b5b0e8e4c22f121d23e86f776b0c9e7821baf4d3eadce434db4af1b70515",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "targets.conf": "6212576b74375ed6271a4ee3501d56d44334bba4b3ebb4bb839dbae01abffd3f"
+      },
+      "id": "hyperos_avd_xiaomi_camera",
+      "manifest": {
+        "apk_sha256": "d378b495e71f6fa416adf3513e6d56acee4c8309371ac837f0bc28c9a0f7fca7",
+        "experimental": true,
+        "firmware": {
+          "incremental": "OS4.0.17.0.XFRCNXM",
+          "source": "official-hongkong-ota"
+        },
+        "native_abi": {
+          "capture_contract_sha256": "edff86b65363d64ff6004d477a52ed32b2fa34db00a64d7c7adaf172a82de0a8",
+          "jni_sha256": "51f3c6ec355423d9013dfdbac42d001a7c146bf30c84d650d962edbbc04450b8"
+        },
+        "revision": 2,
+        "runtime_sha256": "22b624d7bfa130cb66ad841b0af152d975c5329449dd804e077d106c57a89c3a",
+        "targets": [
+          {
+            "after": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+            "before": "1424c5afc7f60824a640896d42af131d06ac0fc5eaa2e4985f804f43451c1068",
+            "payload": "provider",
+            "target": "/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google"
+          },
+          {
+            "after": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+            "before": "e9566298975e3346c5c5a797f0a96bf48f5901b2391fae4b56b58e9befb8cb83",
+            "payload": "hwl.so",
+            "target": "/vendor/lib64/libgooglecamerahwl_impl.so"
+          }
+        ],
+        "yuv_sha256": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "optional_hashes": {
+        "yuv.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "properties": "id=hyperos_avd_xiaomi_camera\nname=HyperOS AVD Xiaomi camera bridge\nversion=2\nversionCode=2\nauthor=HyperOS-AVD\ndescription=Experimental ranchu photo/video stream, role and private YUV compatibility\n"
+    },
+    {
+      "allowed_hashes": {
+        "manifest.json": [
+          "3521ceb73ad26dc4170fd48ab776dc42436058bdbad0c653e67bf17a35e029fd",
+          "ffa426be0d338bf65291a5cde4965b161368cccebf4d7fbb5237560c0812bd72"
+        ]
+      },
+      "feature": "oem-camera",
+      "hashes": {
+        "app/MiuiCamera.apk": "d378b495e71f6fa416adf3513e6d56acee4c8309371ac837f0bc28c9a0f7fca7",
+        "app/lib/arm64/libcamera_yuv_jni.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8",
+        "hwl.so": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+        "module.prop": "a48f1cb8c0c1719d6949d75a36df9eee42dc301e04b1d38e5982314ff366f919",
+        "post-fs-data.sh": "151ca9c9f0149898956a2223ac1737406779a3b784010b4e2b4f403ba3b8d786",
+        "provider": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+        "service.sh": "cb83126bcff4562ee5885667efd530a37e3abe15329f762fc4b57e232014e674",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "targets.conf": "6212576b74375ed6271a4ee3501d56d44334bba4b3ebb4bb839dbae01abffd3f"
+      },
+      "id": "hyperos_avd_xiaomi_camera",
+      "manifest": {
+        "apk_sha256": "d378b495e71f6fa416adf3513e6d56acee4c8309371ac837f0bc28c9a0f7fca7",
+        "experimental": true,
+        "firmware": {
+          "incremental": "OS4.0.17.0.XFRCNXM",
+          "source": "official-hongkong-ota"
+        },
+        "native_abi": {
+          "capture_contract_sha256": "edff86b65363d64ff6004d477a52ed32b2fa34db00a64d7c7adaf172a82de0a8",
+          "jni_sha256": "51f3c6ec355423d9013dfdbac42d001a7c146bf30c84d650d962edbbc04450b8"
+        },
+        "revision": 2,
+        "runtime_sha256": "22b624d7bfa130cb66ad841b0af152d975c5329449dd804e077d106c57a89c3a",
+        "targets": [
+          {
+            "after": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+            "before": "1424c5afc7f60824a640896d42af131d06ac0fc5eaa2e4985f804f43451c1068",
+            "payload": "provider",
+            "target": "/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google"
+          },
+          {
+            "after": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+            "before": "e9566298975e3346c5c5a797f0a96bf48f5901b2391fae4b56b58e9befb8cb83",
+            "payload": "hwl.so",
+            "target": "/vendor/lib64/libgooglecamerahwl_impl.so"
+          }
+        ],
+        "yuv_sha256": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "optional_hashes": {
+        "yuv.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "properties": "id=hyperos_avd_xiaomi_camera\nname=HyperOS AVD Xiaomi camera bridge\nversion=2\nversionCode=2\nauthor=HyperOS-AVD\ndescription=Experimental ranchu photo/video stream, role and private YUV compatibility\n"
+    },
+    {
+      "feature": "oem-camera",
+      "hashes": {
+        "app/MiuiCamera.apk": "d378b495e71f6fa416adf3513e6d56acee4c8309371ac837f0bc28c9a0f7fca7",
+        "app/lib/arm64/libcamera_yuv_jni.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8",
+        "hwl.so": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+        "manifest.json": "3890381d990d16e0681fed467b7f5931b8c5674267d7ef9eabfa13441eacc0ca",
+        "module.prop": "a48f1cb8c0c1719d6949d75a36df9eee42dc301e04b1d38e5982314ff366f919",
+        "post-fs-data.sh": "f7788951fbefbd522786d3bf15a955fabfc72e14f4d65bb8f95cf4cdf0512d69",
+        "provider": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+        "service.sh": "bb24b5b0e8e4c22f121d23e86f776b0c9e7821baf4d3eadce434db4af1b70515",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "targets.conf": "6212576b74375ed6271a4ee3501d56d44334bba4b3ebb4bb839dbae01abffd3f"
+      },
+      "id": "hyperos_avd_xiaomi_camera",
+      "manifest": {
+        "apk_sha256": "d378b495e71f6fa416adf3513e6d56acee4c8309371ac837f0bc28c9a0f7fca7",
+        "experimental": true,
+        "revision": 2,
+        "runtime_sha256": "22b624d7bfa130cb66ad841b0af152d975c5329449dd804e077d106c57a89c3a",
+        "targets": [
+          {
+            "after": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+            "before": "1424c5afc7f60824a640896d42af131d06ac0fc5eaa2e4985f804f43451c1068",
+            "payload": "provider",
+            "target": "/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google"
+          },
+          {
+            "after": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+            "before": "e9566298975e3346c5c5a797f0a96bf48f5901b2391fae4b56b58e9befb8cb83",
+            "payload": "hwl.so",
+            "target": "/vendor/lib64/libgooglecamerahwl_impl.so"
+          }
+        ],
+        "yuv_sha256": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "optional_hashes": {
+        "yuv.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "properties": "id=hyperos_avd_xiaomi_camera\nname=HyperOS AVD Xiaomi camera bridge\nversion=2\nversionCode=2\nauthor=HyperOS-AVD\ndescription=Experimental ranchu photo/video stream, role and private YUV compatibility\n"
+    },
+    {
+      "feature": "oem-camera",
+      "hashes": {
+        "app/MiuiCamera.apk": "d378b495e71f6fa416adf3513e6d56acee4c8309371ac837f0bc28c9a0f7fca7",
+        "app/lib/arm64/libcamera_yuv_jni.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8",
+        "hwl.so": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+        "manifest.json": "3890381d990d16e0681fed467b7f5931b8c5674267d7ef9eabfa13441eacc0ca",
+        "module.prop": "a48f1cb8c0c1719d6949d75a36df9eee42dc301e04b1d38e5982314ff366f919",
+        "post-fs-data.sh": "151ca9c9f0149898956a2223ac1737406779a3b784010b4e2b4f403ba3b8d786",
+        "provider": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+        "service.sh": "cb83126bcff4562ee5885667efd530a37e3abe15329f762fc4b57e232014e674",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "targets.conf": "6212576b74375ed6271a4ee3501d56d44334bba4b3ebb4bb839dbae01abffd3f"
+      },
+      "id": "hyperos_avd_xiaomi_camera",
+      "manifest": {
+        "apk_sha256": "d378b495e71f6fa416adf3513e6d56acee4c8309371ac837f0bc28c9a0f7fca7",
+        "experimental": true,
+        "revision": 2,
+        "runtime_sha256": "22b624d7bfa130cb66ad841b0af152d975c5329449dd804e077d106c57a89c3a",
+        "targets": [
+          {
+            "after": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+            "before": "1424c5afc7f60824a640896d42af131d06ac0fc5eaa2e4985f804f43451c1068",
+            "payload": "provider",
+            "target": "/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google"
+          },
+          {
+            "after": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+            "before": "e9566298975e3346c5c5a797f0a96bf48f5901b2391fae4b56b58e9befb8cb83",
+            "payload": "hwl.so",
+            "target": "/vendor/lib64/libgooglecamerahwl_impl.so"
+          }
+        ],
+        "yuv_sha256": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "optional_hashes": {
+        "yuv.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8"
+      },
+      "properties": "id=hyperos_avd_xiaomi_camera\nname=HyperOS AVD Xiaomi camera bridge\nversion=2\nversionCode=2\nauthor=HyperOS-AVD\ndescription=Experimental ranchu photo/video stream, role and private YUV compatibility\n"
+    },
+    {
+      "feature": "oem-camera",
+      "hashes": {
+        "app/MiuiCamera.apk": "70e32c772c406d2a0ccd21af23d001d26acbef4b46d07cee6b4b55cf1070e8c0",
+        "app/lib/arm64/libcamera_yuv_jni.so": "575008309cb9c588b7b871c680cd50a26dcf364db03708d6ac52fe5cc9ef550a",
+        "hwl.so": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+        "manifest.json": "15e6a7f17b3d9761fe628c04b587731ae2c65853e6abdc304bbd9b89fe3973d2",
+        "module.prop": "f468aedd13013f172515781b976af0f61c6c8946a84b39560e5b2d289771445f",
+        "post-fs-data.sh": "edaf37e0df13c8d40055a4f600f520269b466784e5d3133c6da40911f16641e5",
+        "provider": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+        "service.sh": "8aa60858043a4edf0d4c5792d42392b8ba4fb4a8149ed8f55b87a171f30ce0fc",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "targets.conf": "6212576b74375ed6271a4ee3501d56d44334bba4b3ebb4bb839dbae01abffd3f"
+      },
+      "id": "hyperos_avd_pad_camera",
+      "manifest": {
+        "apk_sha256": "70e32c772c406d2a0ccd21af23d001d26acbef4b46d07cee6b4b55cf1070e8c0",
+        "cpp_sha256": "2267f93b8b3c9d1967f1833d5f71c7312213c43bb291250cf772800763037fb9",
+        "embedded_yuv_sha256": "4d7e594c0550fb40ae96c094dcb09fc3b5d057e5bb912033c962c0d98b165c2a",
+        "experimental": true,
+        "plane_offset": "0x1a310c",
+        "recovery": false,
+        "revision": 1,
+        "runtime_sha256": "5aad1f635b6e8ca93a5bf190f07188d5b04e8c38d39d6a772a6ccdb0f02a13e3",
+        "source": "official-yingtian-ota",
+        "sources": {
+          "camera_hwl_roles.cpp": "ef601e79de5cc2c786b8a3004b70b9cff77e560a72ba476b91a1f30fc2fc4ca1",
+          "camera_pad_yuv_planes.c": "f95d2cbf94fed90a37731c9efa5fa10d9cec292b504e857e1d74adaa83a41f1f"
+        },
+        "targets": [
+          {
+            "after": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+            "before": "1424c5afc7f60824a640896d42af131d06ac0fc5eaa2e4985f804f43451c1068",
+            "payload": "provider",
+            "target": "/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google"
+          },
+          {
+            "after": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+            "before": "e9566298975e3346c5c5a797f0a96bf48f5901b2391fae4b56b58e9befb8cb83",
+            "payload": "hwl.so",
+            "target": "/vendor/lib64/libgooglecamerahwl_impl.so"
+          }
+        ],
+        "yuv_sha256": "575008309cb9c588b7b871c680cd50a26dcf364db03708d6ac52fe5cc9ef550a"
+      },
+      "optional_hashes": {
+        "yuv.so": "575008309cb9c588b7b871c680cd50a26dcf364db03708d6ac52fe5cc9ef550a"
+      },
+      "properties": "id=hyperos_avd_pad_camera\nname=HyperOS AVD Pad camera bridge\nversion=1\nversionCode=1\nauthor=HyperOS-AVD\ndescription=Pinned yingtian stream, role and private I420 to NV21 compatibility\n"
+    },
+    {
+      "feature": "oem-camera",
+      "hashes": {
+        "app/MiuiCamera.apk": "70e32c772c406d2a0ccd21af23d001d26acbef4b46d07cee6b4b55cf1070e8c0",
+        "app/lib/arm64/libcamera_yuv_jni.so": "575008309cb9c588b7b871c680cd50a26dcf364db03708d6ac52fe5cc9ef550a",
+        "hwl.so": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+        "manifest.json": "15e6a7f17b3d9761fe628c04b587731ae2c65853e6abdc304bbd9b89fe3973d2",
+        "module.prop": "f468aedd13013f172515781b976af0f61c6c8946a84b39560e5b2d289771445f",
+        "post-fs-data.sh": "de21c77ea1106c014fd35cd10808b42d9a6489283c2ba78de71ddf5f2cb00b91",
+        "provider": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+        "service.sh": "f7d75bab61181f43073097e4747dd343510ce8872dc7ac5b374f6116c8c68b32",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "targets.conf": "6212576b74375ed6271a4ee3501d56d44334bba4b3ebb4bb839dbae01abffd3f"
+      },
+      "id": "hyperos_avd_pad_camera",
+      "manifest": {
+        "apk_sha256": "70e32c772c406d2a0ccd21af23d001d26acbef4b46d07cee6b4b55cf1070e8c0",
+        "cpp_sha256": "2267f93b8b3c9d1967f1833d5f71c7312213c43bb291250cf772800763037fb9",
+        "embedded_yuv_sha256": "4d7e594c0550fb40ae96c094dcb09fc3b5d057e5bb912033c962c0d98b165c2a",
+        "experimental": true,
+        "plane_offset": "0x1a310c",
+        "recovery": false,
+        "revision": 1,
+        "runtime_sha256": "5aad1f635b6e8ca93a5bf190f07188d5b04e8c38d39d6a772a6ccdb0f02a13e3",
+        "source": "official-yingtian-ota",
+        "sources": {
+          "camera_hwl_roles.cpp": "ef601e79de5cc2c786b8a3004b70b9cff77e560a72ba476b91a1f30fc2fc4ca1",
+          "camera_pad_yuv_planes.c": "f95d2cbf94fed90a37731c9efa5fa10d9cec292b504e857e1d74adaa83a41f1f"
+        },
+        "targets": [
+          {
+            "after": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+            "before": "1424c5afc7f60824a640896d42af131d06ac0fc5eaa2e4985f804f43451c1068",
+            "payload": "provider",
+            "target": "/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google"
+          },
+          {
+            "after": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+            "before": "e9566298975e3346c5c5a797f0a96bf48f5901b2391fae4b56b58e9befb8cb83",
+            "payload": "hwl.so",
+            "target": "/vendor/lib64/libgooglecamerahwl_impl.so"
+          }
+        ],
+        "yuv_sha256": "575008309cb9c588b7b871c680cd50a26dcf364db03708d6ac52fe5cc9ef550a"
+      },
+      "optional_hashes": {
+        "yuv.so": "575008309cb9c588b7b871c680cd50a26dcf364db03708d6ac52fe5cc9ef550a"
+      },
+      "properties": "id=hyperos_avd_pad_camera\nname=HyperOS AVD Pad camera bridge\nversion=1\nversionCode=1\nauthor=HyperOS-AVD\ndescription=Pinned yingtian stream, role and private I420 to NV21 compatibility\n"
+    }
+  ],
+  "schema": 1
+}

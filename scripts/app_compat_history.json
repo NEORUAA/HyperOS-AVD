@@ -1,0 +1,364 @@
+{
+  "manifests": {
+    "7dddf04e3aeadf1064e5e177dcc43ed6ff3561051bd0e09f2ea5caf302405332": {
+      "automatic_reboot": false,
+      "delivery": "guest-app-universal-catalog",
+      "features": {
+        "oem-camera": "recipe",
+        "parrot-camera": false,
+        "weather": true
+      },
+      "files_sha256": {
+        "catalog.sh": "73a25ef6a1a70e5a3fef9ea706389d62ca9c9ae016a6fb0dc57ee39502e9e0dc",
+        "catalog.tsv": "c05c7873262f7bcdd97dbee92419645bed8fb4cd5f72689435cd3b604e94a72e",
+        "contexts/camera-imagereader-22b624-729b0b193d16/angle.tsv": "957de70ceb8a9715d87450027b1dba2cffba37aaf5f5ba49f8db3f18de01937d",
+        "contexts/camera-imagereader-22b624-729b0b193d16/callers.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/camera-imagereader-22b624-729b0b193d16/embedded.tsv": "86ac8a5ecfd2a8907ebce4f623f837985dfd7ae19d0e1664c949a05e0bb49c1d",
+        "contexts/camera-imagereader-22b624-729b0b193d16/libraries.tsv": "a81fa790bf906c1c8b40c5c7a4e760b315594d04f5466b8e716dc3d53cfb8d9e",
+        "contexts/camera-imagereader-22b624-729b0b193d16/mirror.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+        "contexts/camera-imagereader-22b624-729b0b193d16/package.txt": "f423288d1c788fcb06aa4f5dc887425e14766862881b86fb703ea6cc358b2575",
+        "contexts/camera-imagereader-22b624-729b0b193d16/profiles.tsv": "814788acffea77672af576dd08b2685a7f25487eecbd0e02fa52820822249226",
+        "contexts/camera-imagereader-22b624-729b0b193d16/systems.tsv": "a4bf38c55209539f8d7addd4bf92f47f3f29a9dd864df1f63cb5f1b21869ee44",
+        "contexts/camera-imagereader-22b624-729b0b193d16/targets.tsv": "31aa64c524cd8cdf5d7984587d6e09858b18a170f188e73aa95036365ad8d263",
+        "contexts/camera-imagereader-22b624-d378b495e71f/angle.tsv": "957de70ceb8a9715d87450027b1dba2cffba37aaf5f5ba49f8db3f18de01937d",
+        "contexts/camera-imagereader-22b624-d378b495e71f/callers.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/camera-imagereader-22b624-d378b495e71f/embedded.tsv": "86ac8a5ecfd2a8907ebce4f623f837985dfd7ae19d0e1664c949a05e0bb49c1d",
+        "contexts/camera-imagereader-22b624-d378b495e71f/libraries.tsv": "84eab7ec2e4ff99172bf07d8868eb07982843b64968387ae7a06de6f001d5257",
+        "contexts/camera-imagereader-22b624-d378b495e71f/mirror.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+        "contexts/camera-imagereader-22b624-d378b495e71f/package.txt": "f423288d1c788fcb06aa4f5dc887425e14766862881b86fb703ea6cc358b2575",
+        "contexts/camera-imagereader-22b624-d378b495e71f/profiles.tsv": "4c8c9abb47c7a65148f6a9c513e3fb9d0c71d66763bdf8f6467cd4b1f4f22588",
+        "contexts/camera-imagereader-22b624-d378b495e71f/systems.tsv": "86e3b37ef7a6a12945b139121d3fb97a7076e71922ad82149a918df5b2a2cdc8",
+        "contexts/camera-imagereader-22b624-d378b495e71f/targets.tsv": "31aa64c524cd8cdf5d7984587d6e09858b18a170f188e73aa95036365ad8d263",
+        "contexts/camera-imagereader-5aad1f/angle.tsv": "957de70ceb8a9715d87450027b1dba2cffba37aaf5f5ba49f8db3f18de01937d",
+        "contexts/camera-imagereader-5aad1f/callers.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/camera-imagereader-5aad1f/embedded.tsv": "5e7a0c7d3b53e308e29f6938d6c830c6493e5d21b5e140dfdf31ef89d87b1068",
+        "contexts/camera-imagereader-5aad1f/libraries.tsv": "f37c2954f7554516953151a5076ea49e459d14a693de55e00734333747800f7c",
+        "contexts/camera-imagereader-5aad1f/mirror.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+        "contexts/camera-imagereader-5aad1f/package.txt": "f423288d1c788fcb06aa4f5dc887425e14766862881b86fb703ea6cc358b2575",
+        "contexts/camera-imagereader-5aad1f/profiles.tsv": "c537997aad2dba5a0dfca0bdd86c97debc907cb3ea25721694599a600a9eaf79",
+        "contexts/camera-imagereader-5aad1f/systems.tsv": "d130aadfedb57c9196756a08e2b411473cc45c0f633faf0285e726c198006af4",
+        "contexts/camera-imagereader-5aad1f/targets.tsv": "31aa64c524cd8cdf5d7984587d6e09858b18a170f188e73aa95036365ad8d263",
+        "contexts/parrot-aion-ddf45e/angle.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/parrot-aion-ddf45e/callers.tsv": "07e82c778d28e97a8e83152366ba0fdcc4b935ac70362071727854a03c7f0b22",
+        "contexts/parrot-aion-ddf45e/embedded.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/parrot-aion-ddf45e/libraries.tsv": "3daf1a4a1e43520dd266dc079a85e9dd7bf36e642c80ff2628e20ef924670755",
+        "contexts/parrot-aion-ddf45e/mirror.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "contexts/parrot-aion-ddf45e/package.txt": "721061a46fb06ce6568baf9f4c5d431a66a1d5cdd1b97dcdbc499c213b51e76a",
+        "contexts/parrot-aion-ddf45e/profiles.tsv": "dbee7ffc4c6247afa258b3d9da92fc7b76ddb7db02c257994895faf640073f7b",
+        "contexts/parrot-aion-ddf45e/systems.tsv": "0fa784c231f45c37949560523ea506a1648a283c97f3cff681370d763d881720",
+        "contexts/parrot-aion-ddf45e/targets.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/weather-mgl-ab3942/angle.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/weather-mgl-ab3942/callers.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/weather-mgl-ab3942/embedded.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/weather-mgl-ab3942/libraries.tsv": "77828c8c2404ec47a818d1d4653d23f5f1a7730fc34294f03c893feb1ea3fbb1",
+        "contexts/weather-mgl-ab3942/mirror.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "contexts/weather-mgl-ab3942/package.txt": "6cfa936abaec167c845ba1859ebbadc44af80dc98f50a4761bb78a4088306a40",
+        "contexts/weather-mgl-ab3942/profiles.tsv": "b8734908987585c16d03be7399fe7a4892e91a11eae2df2c037bbc041ac0855d",
+        "contexts/weather-mgl-ab3942/systems.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/weather-mgl-ab3942/targets.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/weather-mgl-d35b0a/angle.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/weather-mgl-d35b0a/callers.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/weather-mgl-d35b0a/embedded.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contexts/weather-mgl-d35b0a/libraries.tsv": "b12e9a6070ceb3f1b2e55f7138b9a236bdaca9cd75a7361e9608ee4baa5b76da",
+        "contexts/weather-mgl-d35b0a/mirror.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "contexts/weather-mgl-d35b0a/package.txt": "6cfa936abaec167c845ba1859ebbadc44af80dc98f50a4761bb78a4088306a40",
+        "contexts/weather-mgl-d35b0a/profiles.tsv": "3c2fc5476f33fac6047c045353d5acd5482e128d382c6528d7a609d8f77d8b96",
+        "contexts/weather-mgl-d35b0a/systems.tsv": "404b07db2b677c5c6c3c022c086061399eb0c2764d5334b288622f446a82fb96",
+        "contexts/weather-mgl-d35b0a/targets.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "customize.sh": "5242580bbc510c8df6f340dca13a66044d6a10ae8630f40fa054490585fdbc59",
+        "module.prop": "203fab0db31093617adeb46592fc4dc625f2858596d3552d078be46385f52434",
+        "objects/286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8.so": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8",
+        "objects/37f845d5f45a207da895345f57ee13e8f252b30a132977b04d1b7543b881664d.so": "37f845d5f45a207da895345f57ee13e8f252b30a132977b04d1b7543b881664d",
+        "objects/575008309cb9c588b7b871c680cd50a26dcf364db03708d6ac52fe5cc9ef550a.so": "575008309cb9c588b7b871c680cd50a26dcf364db03708d6ac52fe5cc9ef550a",
+        "objects/812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84.so": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+        "objects/8a9d12020e4cf576487927eff94d30fb6bdabfbe8d4309de69711bfa666c90e9.so": "8a9d12020e4cf576487927eff94d30fb6bdabfbe8d4309de69711bfa666c90e9",
+        "objects/8d4562cf050c01369e5a2c764ebe1594230b06f4d5b40ec899727a2023fbbc50.so": "8d4562cf050c01369e5a2c764ebe1594230b06f4d5b40ec899727a2023fbbc50",
+        "objects/99c5e15d91d01c148b072c98e1aa96363a620524ac2f43aa0c869867efa13fe5.so": "99c5e15d91d01c148b072c98e1aa96363a620524ac2f43aa0c869867efa13fe5",
+        "objects/b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889.so": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+        "objects/bfaad823f56f9aa0c7b78a3d52bdbae26195a7ec8e04e1f686d4da577835a1cc.so": "bfaad823f56f9aa0c7b78a3d52bdbae26195a7ec8e04e1f686d4da577835a1cc",
+        "objects/ce0dba9be7b69be54a1e64ade4aec71645b276175c2c143973bdd7f0512a5dc9.so": "ce0dba9be7b69be54a1e64ade4aec71645b276175c2c143973bdd7f0512a5dc9",
+        "objects/efd2a33a303f8f4271afe49536db3f13360f1eb340025c74b322ff8a05d0e999.so": "efd2a33a303f8f4271afe49536db3f13360f1eb340025c74b322ff8a05d0e999",
+        "post-fs-data.sh": "699b7ad1fa5391fe6aff328d9bb83bbf5a88bbc7d5d86b9b897a675d42a456cf",
+        "runtime.sh": "3493c5645d8f6e0c4a3c1e5c89fd9a59dba5c02c5e68137a2ef80b743b3fe460",
+        "service.sh": "1760bfefabe1b9522c0c0d0ebe22d8fc915f4b310dbad745fc5517691ed4666e",
+        "skip_mount": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "uninstall.sh": "80b143484b8977b92fdc16f7ad90a1c287b4702079bfbb40cb2b239032c3dcae",
+        "webroot/app.js": "91ffc8f86c514e612a2fe78fc94d9d159905018058f109cc0a523b8b10b7d616",
+        "webroot/index.html": "27eb4c971635827aabcf0b7bbc3239a6c3660e6c6adb45bd2a7115400ccfa0e6",
+        "webroot/style.css": "50caafd27f45b9671e040f09e3cba6f8facbfa00495fe7eb90d49a9f8a25aba7",
+        "webui-status.sh": "f4f6095a26987232144504b4c2985d8fb7d39899efb2928e4dff353a9ba4a5bf"
+      },
+      "id": "hyperos_avd_app_compat",
+      "install_only_files": [
+        "customize.sh"
+      ],
+      "recipes": [
+        {
+          "apk_libraries": {
+            "lib/arm64-v8a/libcamera_yuv_jni.so": "51f3c6ec355423d9013dfdbac42d001a7c146bf30c84d650d962edbbc04450b8"
+          },
+          "apk_sha256": "729b0b193d1684e7c14ed0ca56ba15247d58016c70164329de233b49727a2c48",
+          "default_enabled": false,
+          "factory_apk": "/product/priv-app/MiuiCamera/MiuiCamera.apk",
+          "factory_overlay": true,
+          "feature": "oem-camera",
+          "id": "camera-imagereader-22b624-729b0b193d16",
+          "libraries": [
+            {
+              "after": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8",
+              "before": "51f3c6ec355423d9013dfdbac42d001a7c146bf30c84d650d962edbbc04450b8",
+              "name": "libcamera_yuv_jni.so",
+              "placeholder": true
+            }
+          ],
+          "native": "/product/priv-app/MiuiCamera/lib/arm64",
+          "native_libraries": {},
+          "package": "com.android.camera",
+          "policy": {
+            "angle": {
+              "driver": "angle",
+              "features": [
+                "exposeES32ForTesting"
+              ]
+            }
+          },
+          "system_libraries": {
+            "/system/lib64/libandroid_runtime.so": "22b624d7bfa130cb66ad841b0af152d975c5329449dd804e077d106c57a89c3a",
+            "/vendor/lib64/libc++.so": "2267f93b8b3c9d1967f1833d5f71c7312213c43bb291250cf772800763037fb9"
+          },
+          "system_targets": [
+            {
+              "after": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+              "before": "1424c5afc7f60824a640896d42af131d06ac0fc5eaa2e4985f804f43451c1068",
+              "mount_flags": "ro,suid,exec",
+              "target": "/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google"
+            },
+            {
+              "after": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+              "before": "e9566298975e3346c5c5a797f0a96bf48f5901b2391fae4b56b58e9befb8cb83",
+              "mount_flags": "ro,nosuid,nodev",
+              "target": "/vendor/lib64/libgooglecamerahwl_impl.so"
+            }
+          ]
+        },
+        {
+          "apk_libraries": {
+            "lib/arm64-v8a/libcamera_yuv_jni.so": "51f3c6ec355423d9013dfdbac42d001a7c146bf30c84d650d962edbbc04450b8"
+          },
+          "apk_sha256": "d378b495e71f6fa416adf3513e6d56acee4c8309371ac837f0bc28c9a0f7fca7",
+          "default_enabled": false,
+          "factory_apk": "/product/priv-app/MiuiCamera/MiuiCamera.apk",
+          "factory_overlay": true,
+          "feature": "oem-camera",
+          "id": "camera-imagereader-22b624-d378b495e71f",
+          "libraries": [
+            {
+              "after": "286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8",
+              "before": "51f3c6ec355423d9013dfdbac42d001a7c146bf30c84d650d962edbbc04450b8",
+              "name": "libcamera_yuv_jni.so",
+              "placeholder": true
+            }
+          ],
+          "native": "/product/priv-app/MiuiCamera/lib/arm64",
+          "native_libraries": {},
+          "package": "com.android.camera",
+          "policy": {
+            "angle": {
+              "driver": "angle",
+              "features": [
+                "exposeES32ForTesting"
+              ]
+            }
+          },
+          "system_libraries": {
+            "/system/lib64/libandroid_runtime.so": "22b624d7bfa130cb66ad841b0af152d975c5329449dd804e077d106c57a89c3a",
+            "/vendor/lib64/libc++.so": "2267f93b8b3c9d1967f1833d5f71c7312213c43bb291250cf772800763037fb9"
+          },
+          "system_targets": [
+            {
+              "after": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+              "before": "1424c5afc7f60824a640896d42af131d06ac0fc5eaa2e4985f804f43451c1068",
+              "mount_flags": "ro,suid,exec",
+              "target": "/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google"
+            },
+            {
+              "after": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+              "before": "e9566298975e3346c5c5a797f0a96bf48f5901b2391fae4b56b58e9befb8cb83",
+              "mount_flags": "ro,nosuid,nodev",
+              "target": "/vendor/lib64/libgooglecamerahwl_impl.so"
+            }
+          ]
+        },
+        {
+          "apk_libraries": {
+            "lib/arm64-v8a/libcamera_yuv_jni.so": "4d7e594c0550fb40ae96c094dcb09fc3b5d057e5bb912033c962c0d98b165c2a"
+          },
+          "apk_sha256": "70e32c772c406d2a0ccd21af23d001d26acbef4b46d07cee6b4b55cf1070e8c0",
+          "default_enabled": true,
+          "factory_apk": "/product/priv-app/MiuiCamera/MiuiCamera.apk",
+          "factory_overlay": true,
+          "feature": "oem-camera",
+          "id": "camera-imagereader-5aad1f",
+          "libraries": [
+            {
+              "after": "575008309cb9c588b7b871c680cd50a26dcf364db03708d6ac52fe5cc9ef550a",
+              "before": "4d7e594c0550fb40ae96c094dcb09fc3b5d057e5bb912033c962c0d98b165c2a",
+              "name": "libcamera_yuv_jni.so",
+              "placeholder": true
+            }
+          ],
+          "native": "/product/priv-app/MiuiCamera/lib/arm64",
+          "native_libraries": {},
+          "package": "com.android.camera",
+          "policy": {
+            "angle": {
+              "driver": "angle",
+              "features": [
+                "exposeES32ForTesting"
+              ]
+            }
+          },
+          "system_libraries": {
+            "/system/lib64/libandroid_runtime.so": "5aad1f635b6e8ca93a5bf190f07188d5b04e8c38d39d6a772a6ccdb0f02a13e3",
+            "/vendor/lib64/libc++.so": "2267f93b8b3c9d1967f1833d5f71c7312213c43bb291250cf772800763037fb9"
+          },
+          "system_targets": [
+            {
+              "after": "b8b09bf20e4cb786e31837e2e6ed597e43614b71042f28511a68f6d6867f7889",
+              "before": "1424c5afc7f60824a640896d42af131d06ac0fc5eaa2e4985f804f43451c1068",
+              "mount_flags": "ro,suid,exec",
+              "target": "/vendor/bin/hw/android.hardware.camera.provider@2.7-service-google"
+            },
+            {
+              "after": "812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84",
+              "before": "e9566298975e3346c5c5a797f0a96bf48f5901b2391fae4b56b58e9befb8cb83",
+              "mount_flags": "ro,nosuid,nodev",
+              "target": "/vendor/lib64/libgooglecamerahwl_impl.so"
+            }
+          ]
+        },
+        {
+          "apk_sha256": "2d5db1f5185ae09c9f0dc1e13fd3bc0a6babdbf6587487361258d7d89be07376",
+          "default_enabled": false,
+          "feature": "parrot-camera",
+          "id": "parrot-aion-ddf45e",
+          "libraries": [
+            {
+              "after": "37f845d5f45a207da895345f57ee13e8f252b30a132977b04d1b7543b881664d",
+              "before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "legacy_direct": [
+                "37f845d5f45a207da895345f57ee13e8f252b30a132977b04d1b7543b881664d",
+                "fbe115ff5d3e87beadae31c3bd9da344fdc8dd28cd44e5b02f9e42be83d1cd65"
+              ],
+              "name": "lib_aion_buffer.so",
+              "placeholder": true
+            }
+          ],
+          "native_libraries": {
+            "libgcastartup.so": "ddf45ea66324f1e653095358213d104d23431d2ca0f433f1df70f8bb6bb25aaf"
+          },
+          "package": "com.google.android.GoogleCamera.parrot",
+          "system_libraries": {
+            "/system/lib64/libandroid_runtime.so": "22b624d7bfa130cb66ad841b0af152d975c5329449dd804e077d106c57a89c3a"
+          },
+          "system_targets": []
+        },
+        {
+          "apk_sha256": "50f5dd5a06818f9613bf92ae2861beb58426895e6ae86364ed472e4c0aec5652",
+          "default_enabled": true,
+          "factory_apk": "/product/data-app/MIUIWeather/MIUIWeather.apk",
+          "feature": "weather",
+          "id": "weather-mgl-ab3942",
+          "libraries": [
+            {
+              "after": "8a9d12020e4cf576487927eff94d30fb6bdabfbe8d4309de69711bfa666c90e9",
+              "before": "ab39421d8b046cee3ebf7265e949a69c5820cbda4e1be3c77b5380a6fbc3c993",
+              "name": "libhyper_opengl.so",
+              "placeholder": false
+            },
+            {
+              "after": "99c5e15d91d01c148b072c98e1aa96363a620524ac2f43aa0c869867efa13fe5",
+              "before": "241623acab6ae56379701adf9ae542fb67cbd7e475e40463e3336dd229171cc5",
+              "name": "libmglnative.so",
+              "placeholder": false
+            },
+            {
+              "after": "bfaad823f56f9aa0c7b78a3d52bdbae26195a7ec8e04e1f686d4da577835a1cc",
+              "before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "legacy_direct": [
+                "bfaad823f56f9aa0c7b78a3d52bdbae26195a7ec8e04e1f686d4da577835a1cc"
+              ],
+              "name": "libhgl.so",
+              "placeholder": true
+            },
+            {
+              "after": "ce0dba9be7b69be54a1e64ade4aec71645b276175c2c143973bdd7f0512a5dc9",
+              "before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "legacy_direct": [
+                "ce0dba9be7b69be54a1e64ade4aec71645b276175c2c143973bdd7f0512a5dc9"
+              ],
+              "name": "libEGL_angle.so",
+              "placeholder": true
+            },
+            {
+              "after": "efd2a33a303f8f4271afe49536db3f13360f1eb340025c74b322ff8a05d0e999",
+              "before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "legacy_direct": [
+                "efd2a33a303f8f4271afe49536db3f13360f1eb340025c74b322ff8a05d0e999"
+              ],
+              "name": "libGLESv2_angle.so",
+              "placeholder": true
+            }
+          ],
+          "native": "/data/app-lib/MIUIWeather/arm64",
+          "native_libraries": {},
+          "package": "com.miui.weather2",
+          "system_libraries": {},
+          "system_targets": []
+        },
+        {
+          "apk_sha256": "017d613137c0512a937dc6b8565da856099e988feab47b9eabc5c3d0a13f06e6",
+          "default_enabled": true,
+          "factory_apk": "/product/app/MIUIWeather/MIUIWeather.apk",
+          "feature": "weather",
+          "id": "weather-mgl-d35b0a",
+          "libraries": [
+            {
+              "after": "8d4562cf050c01369e5a2c764ebe1594230b06f4d5b40ec899727a2023fbbc50",
+              "before": "d35b0a3ca29bc08e4822a70705eea3db846e3cf5a48a7cf01bc0baf78a93bcce",
+              "name": "libhyper_opengl.so",
+              "placeholder": false
+            },
+            {
+              "after": "99c5e15d91d01c148b072c98e1aa96363a620524ac2f43aa0c869867efa13fe5",
+              "before": "241623acab6ae56379701adf9ae542fb67cbd7e475e40463e3336dd229171cc5",
+              "name": "libmglnative.so",
+              "placeholder": false
+            },
+            {
+              "after": "bfaad823f56f9aa0c7b78a3d52bdbae26195a7ec8e04e1f686d4da577835a1cc",
+              "before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "legacy_direct": [
+                "bfaad823f56f9aa0c7b78a3d52bdbae26195a7ec8e04e1f686d4da577835a1cc"
+              ],
+              "name": "libhgl.so",
+              "placeholder": true
+            }
+          ],
+          "native": "/product/app/MIUIWeather/lib/arm64",
+          "native_libraries": {},
+          "package": "com.miui.weather2",
+          "system_libraries": {
+            "/system/lib64/libEGL_angle.so": "ce0dba9be7b69be54a1e64ade4aec71645b276175c2c143973bdd7f0512a5dc9",
+            "/system/lib64/libGLESv2_angle.so": "efd2a33a303f8f4271afe49536db3f13360f1eb340025c74b322ff8a05d0e999"
+          },
+          "system_targets": []
+        }
+      ],
+      "revision": 1,
+      "schema": 2
+    }
+  },
+  "module": "hyperos_avd_app_compat",
+  "schema": 1
+}

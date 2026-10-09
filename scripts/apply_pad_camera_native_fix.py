@@ -67,6 +67,35 @@ def validate_manifest(value):
     return value
 
 
+def verify_universal_prebuilt(folder):
+    """Authenticate the second JNI ABI without introducing a second runtime."""
+    folder = Path(folder)
+    if not folder.is_dir() or folder.is_symlink():
+        raise RuntimeError('Invalid precompiled Camera JNI directory.')
+    for name, checksum in SOURCES.items():
+        source = REPO_ROOT / 'native' / name
+        if (not source.is_file() or source.is_symlink() or source.stat().st_nlink != 1
+                or sha256(source) != checksum):
+            raise RuntimeError('Camera JNI source differs from its audited producer.')
+    for name in (*PAYLOADS, 'manifest.json', 'receipt.json'):
+        path = folder / name
+        if not path.is_file() or path.is_symlink() or path.stat().st_nlink != 1:
+            raise RuntimeError('Invalid precompiled Camera JNI asset: ' + name)
+    try:
+        saved = json.loads((folder / 'manifest.json').read_text())
+        receipt = json.loads((folder / 'receipt.json').read_text())
+    except (OSError, ValueError) as error:
+        raise RuntimeError('Invalid precompiled Camera JNI receipt.') from error
+    expected = {**PAYLOADS, 'manifest.json': hashlib.sha256(
+        (json.dumps(manifest(), indent=2) + '\n').encode()).hexdigest()}
+    if saved != manifest() or receipt != {'sources': SOURCES, 'files': expected}:
+        raise RuntimeError('Unknown precompiled Camera JNI recipe or receipt.')
+    for name, checksum in expected.items():
+        if sha256(folder / name) != checksum:
+            raise RuntimeError('Precompiled Camera JNI payload changed: ' + name)
+    return saved
+
+
 def validate_runtime(data):
     if hashlib.sha256(data).hexdigest() != RUNTIME_HASH:
         raise RuntimeError('Unsupported Pad ImageReader runtime; refusing private offsets.')

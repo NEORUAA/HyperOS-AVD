@@ -6,19 +6,20 @@ BRIDGE_INTERVAL=30
 umask 077
 
 bridge_blocked() {
-    [ -e "$MODDIR/disable" ] || [ -L "$MODDIR/disable" ] ||
-        [ -e "$MODDIR/remove" ] || [ -L "$MODDIR/remove" ] ||
-        [ -e "/data/adb/modules_update/${MODDIR##*/}" ] ||
-        [ -L "/data/adb/modules_update/${MODDIR##*/}" ]
+    local owner=${OWNERDIR:-$MODDIR}
+    [ -e "$owner/disable" ] || [ -L "$owner/disable" ] ||
+        [ -e "$owner/remove" ] || [ -L "$owner/remove" ] ||
+        [ -e "/data/adb/modules_update/${owner##*/}" ] ||
+        [ -L "/data/adb/modules_update/${owner##*/}" ]
 }
 bridge_hash() { "$BB" sha256sum "$1" 2>/dev/null | "$BB" cut -d ' ' -f 1; }
 bridge_ns() { local pid=$1; shift; "$BB" nsenter -t "$pid" -m -- "$@"; }
 bridge_ns_hash() { bridge_ns "$1" "$BB" sha256sum "$2" 2>/dev/null | "$BB" cut -d ' ' -f 1; }
 bridge_word() { case "$1" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac; }
 bridge_path() {
-    case "$1" in /product/*|/system/*|/system_ext/*|/data/app/*|/data/app-lib/*) ;; *) return 1 ;; esac
-    case "$1" in *'/../'*|*'/./'*|*'//'*) return 1 ;; esac
-    [ "$(printf '%s' "$1" | "$BB" tr -d 'A-Za-z0-9_./=+~-')" = '' ]
+    case "$1" in /vendor/*|/product/*|/system/*|/system_ext/*|/data/app/*|/data/app-lib/*) ;; *) return 1 ;; esac
+    case "$1" in *'/../'*|*'/./'*|*'//'*|*/..|*/.|*/) return 1 ;; esac
+    [ "$(printf '%s' "$1" | "$BB" tr -d 'A-Za-z0-9_./=+~@-')" = '' ]
 }
 bridge_hex() { [ "${#1}" = 64 ] || return 1; case "$1" in *[!0-9a-f]*) return 1 ;; esac; }
 bridge_log() {
@@ -31,6 +32,7 @@ bridge_log() {
 }
 bridge_assets() {
     local file
+    [ "${BRIDGE_CATALOG:-0}" != 1 ] || { catalog_context_assets; return; }
     [ -d "$MODDIR" ] && [ ! -L "$MODDIR" ] && [ -x "$BB" ] || return 1
     for file in SHA256SUMS profiles.tsv libraries.tsv systems.tsv callers.tsv package.txt payloads cache state; do
         [ ! -L "$MODDIR/$file" ] || return 1
@@ -57,7 +59,9 @@ bridge_state_file() {
 bridge_guard() {
     [ "$(id -u)" = 0 ] && [ "$(getprop ro.boot.hardware)" = ranchu ] || return 1
     case "$(getprop ro.mi.os.version.incremental)" in OS4.*|4.*) ;; *) return 1 ;; esac
-    ! bridge_blocked
+    ! bridge_blocked || return 1
+    [ "${BRIDGE_CATALOG:-0}" != 1 ] || [ -z "${BRIDGE_FEATURE:-}" ] ||
+        catalog_choice "$BRIDGE_FEATURE" "$BRIDGE_DEFAULT"
 }
 bridge_pids() {
     { printf '1\n'; getprop init.svc_debug_pid.hyos_spawner; pidof zygote64 2>/dev/null || :;
@@ -120,19 +124,20 @@ bridge_loaded() {
     local target=$1 directory
     for directory in "$PROC"/[0-9]*; do
         [ -r "$directory/maps" ] || continue
-        "$BB" awk -v target="$target" '$6 == target && $5 != 0 {found=1} END {exit !found}' "$directory/maps" &&
+        "$BB" awk -v target="$target" '($6 == target || index($6,target "/")==1) && $5 != 0 {found=1} END {exit !found}' "$directory/maps" &&
             return 0
     done
     return 1
 }
 bridge_cleanup() {
-    local keep=${1:-} target pid marker identity current remaining="$MODDIR/state/owned.next.$$"
+    local keep=${1:-} target pid marker identity current remaining
     [ -f "$MODDIR/state/owned.tsv" ] || return 0
-    bridge_state_file "$MODDIR/state/owned.tsv" && [ ! -e "$remaining" ] && [ ! -L "$remaining" ] || return 1
-    : > "$remaining" || return 1
+    bridge_state_file "$MODDIR/state/owned.tsv" || return 1
+    remaining=$("$BB" mktemp "$MODDIR/state/owned.cleanup.XXXXXX") || return 1
     while IFS='|' read -r target marker identity; do
         bridge_path "$target" || { rm -f "$remaining"; return 1; }
-        if { [ -n "$keep" ] && [ "${target%/*}" = "$keep" ]; } || bridge_loaded "$target"; then
+        if { [ -n "$keep" ] && [ "${target%/*}" = "$keep" ]; } ||
+                { [ "${BRIDGE_KEEP_EARLY:-0}" = 1 ] && catalog_early_target "$target"; } || bridge_loaded "$target"; then
             printf '%s|%s|%s\n' "$target" "$marker" "$identity" >> "$remaining"; continue
         fi
         current=0
@@ -240,7 +245,9 @@ bridge_context() {
         "$BB" awk '{for(i=1;i<=NF;i++) if($i ~ /^u:object_r:[A-Za-z0-9_]+:s0$/) {print $i; exit}}'
 }
 bridge_payload() {
-    local target=$1 name=$2 after=$3 placeholder=$4 mode owner context key working result
+    local target=$1 name=$2 after=$3 placeholder=$4 mode owner context key working result source
+    source="$MODDIR/payloads/$name"
+    [ "${BRIDGE_CATALOG:-0}" != 1 ] || source="$OWNERDIR/objects/$after.so"
     if bridge_ns 1 test -f "$target"; then
         mode=$(bridge_ns 1 "$BB" stat -c %a "$target")
         owner=$(bridge_ns 1 "$BB" stat -c %u:%g "$target")
@@ -262,7 +269,7 @@ bridge_payload() {
             [ "$(bridge_context 1 "$result")" = "$context" ] || return 1
     else
         working="$result.next.$$"; [ ! -e "$working" ] && [ ! -L "$working" ] || return 1
-        (set -C; cat "$MODDIR/payloads/$name" > "$working") &&
+        (set -C; cat "$source" > "$working") &&
             [ "$(bridge_hash "$working")" = "$after" ] &&
             chown "$owner" "$working" && chmod "$mode" "$working" && chcon "$context" "$working" &&
             mv "$working" "$result" || { rm -f "$working"; return 1; }
@@ -321,7 +328,7 @@ bridge_migrate_direct() {
 }
 bridge_apply() {
     local apk=$1 profile=$2 native=$3 pids pid selected name before after placeholder legacy extra target actual payload
-    local system expected transaction="$MODDIR/state/transaction.$$" changed=0 current
+    local system expected transaction="$MODDIR/state/transaction.$$" changed=0 current source
     pids=$(bridge_pids)
     for pid in $pids; do
         [ -d "$PROC/$pid" ] || continue
@@ -344,7 +351,9 @@ bridge_apply() {
             target="$native/$name"
             [ -z "$extra" ] && bridge_word "$name" && bridge_hex "$before" && bridge_hex "$after" &&
                 bridge_regular "$pid" "$target" "$placeholder" || return 1
-            [ "$(bridge_hash "$MODDIR/payloads/$name")" = "$after" ] || return 1
+            source="$MODDIR/payloads/$name"
+            [ "${BRIDGE_CATALOG:-0}" != 1 ] || source="$OWNERDIR/objects/$after.so"
+            [ "$(bridge_hash "$source")" = "$after" ] || return 1
             actual=$(bridge_ns_hash "$pid" "$target")
             [ -n "$actual" ] || actual=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
             case ",$before,$after,$legacy," in *",$actual,"*) ;; *) return 1 ;; esac

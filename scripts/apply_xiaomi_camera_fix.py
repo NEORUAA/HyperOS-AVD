@@ -34,6 +34,15 @@ APK18_HASH = '729b0b193d1684e7c14ed0ca56ba15247d58016c70164329de233b49727a2c48'
 # two pinned APKs; notifyCaptureFailed's complete smali body is also identical.
 CAPTURE_ABI = 'edff86b65363d64ff6004d477a52ed32b2fa34db00a64d7c7adaf172a82de0a8'
 CAMERA_VERSIONS = {APK_HASH: '4.0.17.0.XFRCNXM', APK18_HASH: '4.0.18.0.XFRCNXM'}
+SOURCES = {
+    'camera_hwl_roles.cpp': 'ef601e79de5cc2c786b8a3004b70b9cff77e560a72ba476b91a1f30fc2fc4ca1',
+    'camera_yuv_planes.c': '12db8e944726863f2daec400f2e725bfbc1cdd18f3b9ad7bbd14da69a7823074',
+}
+PAYLOADS = {
+    'provider': PROVIDER_AFTER,
+    'hwl.so': '812cc14c4cfb23d6401277dd90c795729654e9b3c2e818165748785172035e84',
+    'yuv.so': '286b2c5abc6eee0243035b862b4ff26e131a013ccca9d0fa43f69828fc8d50c8',
+}
 OFFSET = 0x29b1c
 BEFORE = bytes.fromhex('1f2003d5f322ef10e2fefff042040991e3fefff063740891c0008052e10313aa85030094')
 AFTER = bytes.fromhex('a80092529f00086b80000054880090529f00086b61000054e4031f2ad8ffff171322ef10')
@@ -84,6 +93,41 @@ def normalized_manifest(manifest, firmware=None):
                 'incremental': 'OS' + CAMERA_VERSIONS.get(manifest.get('apk_sha256'), '')}):
         raise RuntimeError('Unsupported precompiled camera manifest.')
     return {**manifest, **selected}
+
+
+def verify_universal_prebuilt(folder):
+    """Authenticate an existing producer bundle for the common content catalog."""
+    folder = Path(folder)
+    if not folder.is_dir() or folder.is_symlink():
+        raise RuntimeError('Invalid precompiled Xiaomi camera directory.')
+    for name, checksum in SOURCES.items():
+        source = REPO_ROOT / 'native' / name
+        if (not source.is_file() or source.is_symlink() or source.stat().st_nlink != 1
+                or sha256(source) != checksum):
+            raise RuntimeError('Xiaomi camera source differs from its audited producer.')
+    names = {*PAYLOADS, 'manifest.json', 'receipt.json'}
+    for name in names:
+        path = folder / name
+        if not path.is_file() or path.is_symlink() or path.stat().st_nlink != 1:
+            raise RuntimeError('Invalid precompiled Xiaomi camera asset: ' + name)
+    try:
+        receipt = json.loads((folder / 'receipt.json').read_text())
+        saved = json.loads((folder / 'manifest.json').read_text())
+        from phone_profile import profile
+        selected = profile(CAMERA_VERSIONS[saved['apk_sha256']])
+        normalized = normalized_manifest(saved, selected)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise RuntimeError('Invalid precompiled Xiaomi camera recipe.') from error
+    expected = {**PAYLOADS, 'manifest.json': sha256(folder / 'manifest.json')}
+    if (receipt != {'sources': SOURCES, 'files': expected}
+            or normalized['yuv_sha256'] != PAYLOADS['yuv.so']
+            or {item['payload']: item['after'] for item in normalized['targets']} != {
+                name: PAYLOADS[name] for name in ('provider', 'hwl.so')}):
+        raise RuntimeError('Unknown precompiled Xiaomi camera recipe or receipt.')
+    for name, checksum in PAYLOADS.items():
+        if sha256(folder / name) != checksum:
+            raise RuntimeError('Precompiled Xiaomi camera payload changed: ' + name)
+    return normalized
 
 
 def build(sdk, folder, firmware=None):

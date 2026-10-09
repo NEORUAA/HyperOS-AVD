@@ -27,7 +27,7 @@ def _hex(value):
 
 def _path(value):
     return (isinstance(value, str)
-            and re.fullmatch(r'/(?:product|system|system_ext|data/app|data/app-lib)/[A-Za-z0-9_./=+~-]+', value)
+            and re.fullmatch(r'/(?:vendor|product|system|system_ext|data/app|data/app-lib)/[A-Za-z0-9_./=+~@-]+', value)
             and not any(part in ('', '.', '..') for part in value.split('/')[1:]))
 
 
@@ -154,7 +154,7 @@ def package_module(output, **kwargs):
     return files
 
 
-def _inspect(config, directory, module_id):
+def _inspect(config, directory, module_id, *, allowed_revisions=None):
     value = root(config, f'''for parent in /data /data/adb /data/adb/modules /data/adb/modules_update; do
     [ ! -L "$parent" ] || exit 1
 done
@@ -179,7 +179,7 @@ else printf 'absent\\n'; fi''')
     if values.get('id') != module_id or values.get('author') != 'HyperOS-AVD':
         raise RuntimeError('Refused unrelated private bridge module ownership.')
     revision = values.get('versionCode')
-    if revision not in ('1', str(REVISION)):
+    if revision not in (allowed_revisions if allowed_revisions is not None else ('1', str(REVISION))):
         raise RuntimeError('Unknown private bridge module revision.')
     flags = root(config, f'''for flag in disable remove; do
     if [ -e {directory}/"$flag" ] || [ -L {directory}/"$flag" ]; then printf '%s\\n' "$flag"; fi
