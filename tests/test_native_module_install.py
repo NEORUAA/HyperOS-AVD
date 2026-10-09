@@ -14,6 +14,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / 'scripts'))
 import apply_native_compat as install
 import package_native_module as package
+import native_module_history as history
 
 PROPERTY = f'id={install.MODULE_ID}\nauthor=HyperOS-AVD\nversionCode={install.REVISION}'
 
@@ -137,6 +138,57 @@ class NativeModuleInstallTests(unittest.TestCase):
         self.assertIn('customize.sh', original['files_sha256'])
         self.assertEqual(original['revision'], install.REVISION)
 
+    def previous_manifest(self):
+        return (REPO / 'tests/fixtures/native-compat-v2-manifest.json').read_text()
+
+    def test_reviewed_previous_core_verifies_its_original_assets_before_staging(self):
+        previous = self.previous_manifest()
+        checksum = history.checksum_for(json.loads(previous))
+        self.assertEqual(checksum, history.REVIEWED[0]['checksums_sha256'])
+        prop = PROPERTY.rsplit('=', 1)[0] + '=2'
+        result, commands, adb = self.run_install(active={'ownership': prop, 'manifest': previous})
+        self.assertTrue(result['installed']); self.assertTrue(result['reboot_required'])
+        verification = next(command for command in commands if 'sha256sum -c SHA256SUMS' in command)
+        self.assertIn(checksum, verification)
+        stage = next(command for command in commands if 'module install' in command)
+        self.assertLess(commands.index(verification), commands.index(stage))
+        self.assertEqual(adb.call_count, 1)
+
+    def test_core3_standard_update_uses_frozen_webui_controls_after_core4_change(self):
+        previous = (REPO / 'tests/fixtures/native-compat-v3-manifest.json').read_text()
+        saved = json.loads(previous)
+        self.assertEqual(saved['revision'], 3)
+        checksum = history.checksum_for(saved)
+        self.assertEqual(checksum, 'fa204e270753618e9ff114c1131d118265eb359da682801679c546105833f355')
+        current = json.loads(self.current_manifest())
+        self.assertEqual(current['revision'], 4)
+        self.assertNotEqual(saved['files_sha256']['webroot/app.js'], current['files_sha256']['webroot/app.js'])
+        prop = PROPERTY.rsplit('=', 1)[0] + '=3'
+        result, commands, adb = self.run_install(active={'ownership': prop, 'manifest': previous})
+        self.assertTrue(result['installed']); self.assertTrue(result['reboot_required'])
+        stage = next(command for command in commands if 'module install' in command)
+        self.assertIn(checksum, stage)
+        self.assertEqual(adb.call_count, 1)
+
+    def test_reviewed_previous_receipt_with_changed_controls_is_preserved(self):
+        def changed(command):
+            raise RuntimeError('Modified hook under the original receipt')
+        prop = PROPERTY.rsplit('=', 1)[0] + '=2'
+        result, commands, adb = self.run_install(active={'ownership': prop, 'manifest': self.previous_manifest()}, verify=changed)
+        self.assertEqual(result['reason'], 'changed-core-controls')
+        self.assertFalse(any('module install' in command or 'rm -f' in command for command in commands))
+        adb.assert_not_called()
+
+    def test_unknown_control_revision_never_uses_guest_receipt_as_authorization(self):
+        previous = json.loads(self.previous_manifest())
+        previous['files_sha256']['service.sh'] = 'b' * 64
+        self.assertIsNone(history.checksum_for(previous))
+        prop = PROPERTY.rsplit('=', 1)[0] + '=2'
+        result, commands, adb = self.run_install(active={'ownership': prop, 'manifest': json.dumps(previous)})
+        self.assertEqual(result['reason'], 'unreviewed-core-controls')
+        self.assertFalse(any('module install' in command or 'features.disabled' in command for command in commands))
+        adb.assert_not_called()
+
 
 class NativeModuleShellGuardTests(unittest.TestCase):
     """Execute the emitted read/verification guards on disposable local files."""
@@ -188,6 +240,23 @@ class NativeModuleShellGuardTests(unittest.TestCase):
         (self.active / 'remove').symlink_to(self.folder / 'missing')
         with patch.object(install, 'root', side_effect=lambda config, command: self.shell(command)):
             self.assertEqual(install._module({}, install.MODULE)['flags'], ['remove'])
+
+    def test_control_alias_or_late_hook_edit_is_not_replaced(self):
+        files = package.module_files(); self.active.mkdir()
+        for name, body in files.items():
+            target = self.active / name; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(body)
+        checksum = hashlib.sha256(files['SHA256SUMS']).hexdigest()
+        hook = self.active / 'service.sh'; foreign = self.folder / 'foreign-hook'
+        hook.rename(foreign); hook.symlink_to(foreign)
+        with patch.object(install, 'root', side_effect=lambda config, command: self.shell(command)), self.assertRaises(RuntimeError):
+            install._verify_assets({}, install.MODULE, checksum)
+        self.assertTrue(hook.is_symlink()); self.assertEqual(foreign.read_bytes(), files['service.sh'])
+        hook.unlink(); foreign.rename(hook)
+        active = {'properties': (self.active / 'module.prop').read_text().strip(), 'checksums_sha256': checksum}
+        hook.write_bytes(files['service.sh'] + b'\n# Changed after authentication\n')
+        with self.assertRaises(RuntimeError):
+            self.shell(install._stage_guard(active))
+        self.assertFalse(self.pending.exists())
 
     def test_module_directory_link_is_not_followed(self):
         self.pending.mkdir()

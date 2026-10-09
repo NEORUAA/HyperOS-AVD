@@ -7,9 +7,9 @@
     refresh:'显示帧率', 'boot-services':'启动服务', 'rear-wake':'背屏唤醒',
     weather:'天气桥接', 'oem-camera':'系统相机', camera:'系统相机',
     'parrot-camera':'Google 相机', parrot:'Google 相机'};
-  const labels = {ready:'已就绪', verified:'已核验', failed:'检查失败', disabled:'已停用',
+  const labels = {enabled:'已启用', ready:'已就绪', verified:'已核验', failed:'检查失败', disabled:'已停用',
     skipped:'已跳过', unsupported:'未匹配', pending:'待激活', 'reboot-required':'待重启',
-    'not-activated':'未激活', 'not-installed':'未安装'};
+    'not-activated':'未激活', 'not-installed':'未安装', 'pending-removal':'待卸载'};
   const reasons = {'verified-bind':'挂载与文件已核验', 'already-patched':'当前文件已包含修复',
     'unsupported-elf':'此版本的原生库尚未适配，已保留原文件',
     'unsupported-apk':'此应用版本尚未匹配，已保留原文件',
@@ -18,13 +18,14 @@
   function parse(text) {
     const data={module:{},health:{},patches:[],logs:[]}; let section='';
     for (const raw of String(text).slice(0,65536).split('\n')) {
+      // Runtime logs are untrusted text, including strings resembling headers.
+      if (section==='log') { data.logs.push(raw); continue; }
       if (/^\[(module|health|status|log)\]$/.test(raw)) { section=raw.slice(1,-1); continue; }
       if (section==='status') {
         const row=raw.split('|');
         if (row.length===4 && /^[a-z0-9-]+$/.test(row[0]) && /^[a-z0-9-]+$/.test(row[2]))
           data.patches.push({feature:row[0],target:row[1],state:row[2],reason:row[3]});
-      } else if (section==='log') data.logs.push(raw);
-      else if (section==='module'||section==='health') {
+      } else if (section==='module'||section==='health') {
         const i=raw.indexOf('='); if(i>0) data[section][raw.slice(0,i)]=raw.slice(i+1);
       }
     }

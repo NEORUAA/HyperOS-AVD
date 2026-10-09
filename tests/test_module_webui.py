@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -8,6 +9,72 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
 import module_webui
+
+
+class ModuleWebUIShellTests(unittest.TestCase):
+    """Read actual lifecycle flags from disposable Android-like directories."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='hyperos-webui-status-')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.base = self.root / 'adb'; self.bin = self.root / 'bin'; self.bin.mkdir()
+        self.module = self.base / 'modules/hyperos_avd_native_compat'
+        (self.module / 'state').mkdir(parents=True)
+        (self.module / 'module.prop').write_text('id=hyperos_avd_native_compat\nauthor=HyperOS-AVD\n')
+        (self.module / 'state/status.tsv').write_text('flutter|/system/lib.so|failed|patch-verification\n')
+        self.collector = self.root / 'status.sh'; self.collector.write_bytes(module_webui.files('core')['webui-status.sh'])
+        self.busybox = self.bin / 'busybox'
+        self.busybox.write_text('#!' + sys.executable + '\n' + '''import os,pathlib,sys
+args=sys.argv[1:]
+if args[:3] == ['stat','-c','%h:%u']:
+    print(str(pathlib.Path(args[3]).stat().st_nlink)+':0'); sys.exit(0)
+os.execvp(args[0],args)
+''')
+        self.busybox.chmod(0o755)
+        for name, value in (('getprop', 'skiavk'), ('getenforce', 'Enforcing')):
+            path = self.bin / name; path.write_text('#!/bin/sh\necho ' + value + '\n'); path.chmod(0o755)
+
+    def collect(self):
+        environment = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ['PATH'],
+                           HYPEROS_STATUS_BB=str(self.busybox), HYPEROS_STATUS_BASE=str(self.base))
+        return subprocess.run(['sh', str(self.collector)], env=environment, check=True,
+                              capture_output=True, text=True).stdout
+
+    def snapshot(self):
+        return {str(path.relative_to(self.base)): (path.read_bytes(), path.stat().st_ino, path.stat().st_mode)
+                for path in self.base.rglob('*') if path.is_file() and not path.is_symlink()}
+
+    def test_enabled_lifecycle_does_not_claim_all_patches_are_ready_and_is_read_only(self):
+        before = self.snapshot(); output = self.collect()
+        self.assertIn('state=enabled\n', output)
+        self.assertIn('flutter|/system/lib.so|failed|patch-verification', output)
+        self.assertEqual(before, self.snapshot())
+
+    def test_disable_remove_and_pending_flags_have_distinct_lifecycle_states(self):
+        for flag, state in (('disable', 'disabled'), ('remove', 'pending-removal')):
+            for broken_alias in (False, True):
+                with self.subTest(flag=flag, broken_alias=broken_alias):
+                    marker = self.module / flag
+                    if broken_alias: marker.symlink_to(self.root / 'missing')
+                    else: marker.touch()
+                    self.assertIn('state=' + state + '\n', self.collect())
+                    if broken_alias: self.assertTrue(marker.is_symlink())
+                    marker.unlink()
+        stage = self.base / 'modules_update/hyperos_avd_native_compat'; stage.mkdir(parents=True)
+        self.assertIn('state=pending\n', self.collect())
+        (self.module / 'remove').touch(); (self.module / 'disable').touch()
+        self.assertIn('state=pending-removal\n', self.collect())
+
+    def test_unactivated_or_aliased_state_is_not_treated_as_verified(self):
+        state = self.module / 'state/status.tsv'; state.unlink()
+        self.assertIn('state=not-activated\n', self.collect())
+        foreign = self.root / 'foreign-status'; foreign.write_text('SECRET_EXTERNAL_STATE\n')
+        state.symlink_to(foreign)
+        output = self.collect()
+        self.assertIn('state=not-activated\n', output)
+        self.assertNotIn('SECRET_EXTERNAL_STATE', output)
+        self.assertTrue(state.is_symlink())
 
 
 class ModuleWebUITests(unittest.TestCase):
@@ -81,6 +148,23 @@ assert.equal(nodes['module-state'].textContent,'已停用');
 assert.equal(nodes.patches.children[0].children[1].textContent,'<script>x</script>');
 assert.equal(nodes.patches.children[0].children[2].textContent,'$(touch /data/pwn)');
 assert.equal(nodes.logs.textContent,'<img src=x onerror=alert(1)>');
+view.render({module:{state:'enabled'},health:{},patches:[],logs:[]},document);
+assert.equal(nodes['module-state'].textContent,'已启用');
+view.render({module:{state:'pending-removal'},health:{},patches:[],logs:[]},document);
+assert.equal(nodes['module-state'].textContent,'待卸载');
+'''
+        subprocess.run([shutil.which('node'), '-e', javascript, str(source)], check=True, timeout=20)
+
+    @unittest.skipUnless(shutil.which('node'), 'JavaScript runtime is optional')
+    def test_log_section_markers_are_literal_and_cannot_forge_actual_status(self):
+        source = module_webui.ROOT / 'modules/compat-webui/app.js'
+        javascript = r'''
+const assert=require('node:assert/strict'),view=require(process.argv[1]);
+const log='subprocess output\n[module]\nstate=ready\n[health]\nrenderer=forged\n[status]\nflutter|forged.so|ready|verified-bind\n[log]\nend';
+const data=view.parse('[module]\nstate=disabled\n[health]\nrenderer=skiavk\n[status]\nflutter|real.so|disabled|user-choice\n[log]\n'+log);
+assert.equal(data.module.state,'disabled');assert.equal(data.health.renderer,'skiavk');
+assert.equal(data.patches.length,1);assert.equal(data.patches[0].target,'real.so');
+assert.equal(data.logs.join('\n'),log);
 '''
         subprocess.run([shutil.which('node'), '-e', javascript, str(source)], check=True, timeout=20)
 

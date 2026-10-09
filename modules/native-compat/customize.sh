@@ -35,7 +35,7 @@ if [ -e "$existing/features.disabled" ] || [ -L "$existing/features.disabled" ];
         [ -f "$existing/features.disabled" ] && [ ! -L "$existing/features.disabled" ] || abort 'Unsafe prior native feature choices.'
     while IFS= read -r feature || [ -n "$feature" ]; do
         [ -n "$feature" ] || continue
-        "$BB" awk -F '|' -v feature="$feature" '$4 == feature {found=1} END {exit !found}' "$MODPATH/profiles.tsv" || abort 'Unknown prior native feature choice.'
+        "$BB" grep -Fxq "$feature" "$MODPATH/features.tsv" || abort 'Unknown prior native feature choice.'
         printf '%s\n' "$feature" >> "$choices"
     done < "$existing/features.disabled"
     inherited=true
@@ -53,6 +53,7 @@ fi
 rm "$choices"
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm "$MODPATH/runtime.sh" 0 0 0755
+set_perm "$MODPATH/platform.sh" 0 0 0755
 set_perm "$MODPATH/post-fs-data.sh" 0 0 0755
 set_perm "$MODPATH/service.sh" 0 0 0755
 set_perm "$MODPATH/dex2oat-cpu-policy.sh" 0 0 0755

@@ -9,7 +9,7 @@ import zipfile
 
 REPO = Path(__file__).resolve().parent.parent
 MODULE_ID = 'hyperos_avd_native_compat'
-REVISION = 2
+REVISION = 4
 
 
 def module_files(value=None, template=None):
@@ -19,10 +19,12 @@ def module_files(value=None, template=None):
     validate_catalog(value)
     template = REPO / 'modules/native-compat' if template is None else Path(template)
     files = {}
-    for name in ('module.prop', 'customize.sh', 'runtime.sh', 'post-fs-data.sh', 'service.sh'):
+    for name in ('module.prop', 'customize.sh', 'runtime.sh', 'platform.sh', 'post-fs-data.sh', 'service.sh'):
         files[name] = (template / name).read_bytes()
     from dex2oat_cpu_policy import policy_script
     files['dex2oat-cpu-policy.sh'] = policy_script()
+    from module_webui import files as webui_files
+    files.update(webui_files('core'))
     properties = dict(line.split('=', 1) for line in files['module.prop'].decode().splitlines() if '=' in line)
     if properties.get('id') != MODULE_ID or properties.get('author') != 'HyperOS-AVD':
         raise RuntimeError('Unexpected native module template ownership.')
@@ -48,13 +50,16 @@ def module_files(value=None, template=None):
     rows = ['|'.join((item['phase'], item['kind'], item['feature'], item['path'],
                       item['package'], item['library'])) for item in value['targets']]
     files['targets.tsv'] = ('\n'.join(rows) + '\n').encode()
+    features = sorted({profile['feature'] for profile in value['profiles']} |
+                      {'identity', 'serial', 'thermal', 'refresh', 'boot-services', 'rear-wake'})
+    files['features.tsv'] = ('\n'.join(features) + '\n').encode()
     manifest = {'schema': 1, 'id': MODULE_ID, 'revision': REVISION,
                 'catalog_sha256': hashlib.sha256(files['catalog.json']).hexdigest(),
                 'files_sha256': {name: hashlib.sha256(body).hexdigest()
                                  for name, body in sorted(files.items())},
                 'profile_count': len(value['profiles']),
-                'features': sorted({profile['feature'] for profile in value['profiles']}),
-                'delivery': 'guest-native-exact-content', 'automatic_reboot': False,
+                'features': features,
+                'delivery': 'guest-core-exact-content-and-capabilities', 'automatic_reboot': False,
                 'install_only_files': ['customize.sh']}
     files['manifest.json'] = (json.dumps(manifest, sort_keys=True, indent=2) + '\n').encode()
     # KernelSU removes the install-time customizer after a successful install.

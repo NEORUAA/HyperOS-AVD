@@ -80,6 +80,7 @@ def _verify_assets(config, directory, checksum):
     """Anchor the guest checksum list to the newly built, verified package."""
     root(config, f'''[ -d {directory} ] && [ ! -L {directory} ] || exit 1
 [ -f {directory}/SHA256SUMS ] && [ ! -L {directory}/SHA256SUMS ] || exit 1
+[ -z "$(find {directory} -type l -print)" ] || exit 1
 test "$(/data/adb/ksu/bin/busybox sha256sum {directory}/SHA256SUMS | cut -d ' ' -f 1)" = {checksum}
 cd {directory}
 /data/adb/ksu/bin/busybox sha256sum -c SHA256SUMS >/dev/null''')
@@ -96,11 +97,20 @@ def _stage_guard(active):
                          f'test "$(cat {MODULE}/module.prop)" = {shlex.quote(active["properties"])}'))
         for flag in ('disable', 'remove'):
             commands.append(f'[ ! -e {MODULE}/{flag} ] && [ ! -L {MODULE}/{flag} ]')
-    return '\n'.join(command + ' || exit 1' for command in commands) + '\n'
+    guard = '\n'.join(command + ' || exit 1' for command in commands) + '\n'
+    if active is not None and active.get('checksums_sha256'):
+        guard += f'''[ -z "$(find {MODULE} -type l -print)" ] || exit 1
+test "$(/data/adb/ksu/bin/busybox sha256sum {MODULE}/SHA256SUMS | cut -d ' ' -f 1)" = {active['checksums_sha256']} || exit 1
+(cd {MODULE} && /data/adb/ksu/bin/busybox sha256sum -c SHA256SUMS >/dev/null) || exit 1
+'''
+    return guard
 
 
-def install(config):
+def install(config, platform_context=None):
     """Leave user choices and KernelSU stages intact; activation happens at boot."""
+    if platform_context is not None:
+        from core_platform import context_files
+        context_files(platform_context)
     guest_supported(config)
     active, pending = _module(config, MODULE), _module(config, PENDING)
     for module in (active, pending):
@@ -125,13 +135,35 @@ def install(config):
             # Keep a non-identical stage, including its feature choices, until
             # a normal boot activates it. The next launch can then update it.
             print('Native compatibility update is staged; reboot normally to activate it.', flush=True)
-            return {'installed': identical, 'reused': identical, 'pending': True,
+            result = {'installed': identical, 'reused': identical, 'pending': True,
                     'deferred': not identical, 'revision': pending['revision'], 'reboot_required': True}
+            if identical and platform_context is not None:
+                from core_platform import configure
+                result['platform'] = configure(root, config, platform_context, PENDING, checksum)
+            return result
         if active is not None:
-            if _manifest(config, active) == current:
+            saved = _manifest(config, active)
+            if saved == current:
                 _verify_assets(config, MODULE, checksum)
                 print('Portable native module is already installed.', flush=True)
-                return {'installed': True, 'reused': True, 'revision': REVISION}
+                result = {'installed': True, 'reused': True, 'revision': REVISION}
+                if platform_context is not None:
+                    from core_platform import configure
+                    result['platform'] = configure(root, config, platform_context, MODULE, checksum)
+                return result
+            from native_module_history import checksum_for
+            prior_checksum = checksum_for(saved)
+            if prior_checksum is None:
+                print('Unknown Core controls are preserved; automatic replacement was skipped.', flush=True)
+                return {'installed': False, 'preserved': True, 'reason': 'unreviewed-core-controls',
+                        'revision': active['revision']}
+            try:
+                _verify_assets(config, MODULE, prior_checksum)
+            except RuntimeError:
+                print('Changed Core controls are preserved; automatic replacement was skipped.', flush=True)
+                return {'installed': False, 'preserved': True, 'reason': 'changed-core-controls',
+                        'revision': active['revision']}
+            active['checksums_sha256'] = prior_checksum
         remote = '/data/local/tmp/hyperos-native-compat-' + receipt['sha256'][:16] + '.zip'
         adb(config, 'push', str(archive), remote, capture_output=True, check=True, timeout=30)
         try:
@@ -140,8 +172,22 @@ def install(config):
                  f'/data/adb/ksud module install {shlex.quote(remote)}')
         finally:
             root(config, 'rm -f ' + shlex.quote(remote))
+        platform = None
+        if platform_context is not None:
+            # Standard KernelSU versions may activate a first install directly
+            # or publish a staged update. Authenticate whichever it published.
+            staged, installed = _module(config, PENDING), _module(config, MODULE)
+            selected = staged or installed
+            if selected is None or selected['flags'] or _manifest(config, selected) != current:
+                raise RuntimeError('Core platform migration deferred: installed owner is not verified.')
+            _verify_assets(config, selected['directory'], checksum)
+            from core_platform import configure
+            platform = configure(root, config, platform_context, selected['directory'], checksum)
     print('Portable native module installed. Reboot once to activate early patches.', flush=True)
-    return {'installed': True, 'reused': False, 'revision': REVISION, 'reboot_required': True}
+    result = {'installed': True, 'reused': False, 'revision': REVISION, 'reboot_required': True}
+    if platform is not None:
+        result['platform'] = platform
+    return result
 
 
 def status(config):

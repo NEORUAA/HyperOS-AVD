@@ -11,8 +11,8 @@ safe_dir "$BASE" && safe_dir "$BASE/modules" && safe_dir "$MODDIR" || exit 1
 safe_file "$MODDIR/module.prop" || exit 1
 [ "$("$BB" sed -n 's/^id=//p' "$MODDIR/module.prop")" = "$ID" ] || exit 1
 printf '[module]\nid=%s\n' "$ID"
-state=ready
-if [ -e "$MODDIR/remove" ] || [ -L "$MODDIR/remove" ]; then state=pending
+state=enabled
+if [ -e "$MODDIR/remove" ] || [ -L "$MODDIR/remove" ]; then state=pending-removal
 elif [ -e "$MODDIR/disable" ] || [ -L "$MODDIR/disable" ]; then state=disabled
 elif [ -e "$BASE/modules_update/$ID" ] || [ -L "$BASE/modules_update/$ID" ]; then state=pending
 elif ! safe_dir "$MODDIR/state" || ! safe_file "$MODDIR/state/status.tsv"; then state=not-activated

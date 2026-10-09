@@ -10,7 +10,9 @@ umask 077
 
 native_blocked() {
     [ -e "$MODDIR/disable" ] || [ -L "$MODDIR/disable" ] ||
-        [ -e "$MODDIR/remove" ] || [ -L "$MODDIR/remove" ]
+        [ -e "$MODDIR/remove" ] || [ -L "$MODDIR/remove" ] ||
+        [ -e "${HYPEROS_CORE_PENDING:-/data/adb/modules_update/hyperos_avd_native_compat}" ] ||
+        [ -L "${HYPEROS_CORE_PENDING:-/data/adb/modules_update/hyperos_avd_native_compat}" ]
 }
 
 native_guard() {
@@ -45,6 +47,8 @@ native_log() {
 
 native_status() {
     local feature=$1 target=$2 state=$3 reason=$4 next="$MODDIR/state/status.tsv.next.$$"
+    if [ -f "$MODDIR/state/status.tsv" ] &&
+            "$BB" grep -Fxq "$feature|$target|$state|$reason" "$MODDIR/state/status.tsv"; then return 0; fi
     if [ -f "$MODDIR/state/status.tsv" ]; then
         "$BB" awk -F '|' -v feature="$feature" -v target="$target" \
             '!($1 == feature && $2 == target)' "$MODDIR/state/status.tsv" > "$next" || return 1
@@ -57,7 +61,13 @@ native_status() {
 }
 
 native_enabled() {
-    [ ! -f "$MODDIR/features.disabled" ] || ! "$BB" grep -Fxq "$1" "$MODDIR/features.disabled"
+    local file
+    for file in "$MODDIR/features.disabled" "${HYPEROS_CORE_STATE:-/data/adb/hyperos-avd-core}/legacy-blocked.features"; do
+        [ ! -L "$file" ] || return 1
+        [ ! -e "$file" ] || [ -f "$file" ] || return 1
+        if [ -f "$file" ] && "$BB" grep -Fxq "$1" "$file"; then return 1; fi
+    done
+    return 0
 }
 
 native_eligible() {
@@ -659,6 +669,9 @@ native_start() {
     native_guard || return 1
     native_blocked && return 0
     native_assets || { native_log 'Module asset verification failed; preserving all native targets.'; return 1; }
+    . "$MODDIR/platform.sh"
+    core_early || native_log 'A platform capability was preserved or unavailable.'
+    native_blocked && return 0
     "$BB" sh "$MODDIR/dex2oat-cpu-policy.sh" apply || native_log 'ART CPU policy could not be applied.'
     native_reconcile "$1"
 }
@@ -666,6 +679,8 @@ native_start() {
 native_package_token() {
     "$BB" stat -c '%i:%Y:%s' "$PACKAGES_XML" 2>/dev/null || printf 'missing\n'
     "$BB" stat -c '%i:%Y:%s' "$MODDIR/features.disabled" 2>/dev/null || printf 'enabled\n'
+    "$BB" stat -c '%i:%Y:%s' "${HYPEROS_CORE_STATE:-/data/adb/hyperos-avd-core}/legacy-blocked.features" 2>/dev/null || printf 'no-legacy-conflicts\n'
+    "$BB" stat -c '%i:%Y:%s' "${HYPEROS_CORE_STATE:-/data/adb/hyperos-avd-core}/image.tsv" 2>/dev/null || printf 'no-platform-context\n'
 }
 
 native_lock_directory_safe() {
@@ -748,18 +763,22 @@ native_service() {
     done
     native_blocked && return 0
     native_assets || { native_log 'Module assets changed while waiting for boot; preserving targets.'; return 1; }
+    . "$MODDIR/platform.sh"
+    core_late || native_log 'A late platform capability was preserved or unavailable.'
+    native_blocked && return 0
     "$BB" sh "$MODDIR/dex2oat-cpu-policy.sh" apply || native_log 'ART CPU policy could not be applied.'
     native_reconcile late
     previous=$(native_package_token)
     while :; do
         sleep "$NATIVE_INTERVAL"
-        if native_blocked; then native_cleanup; return 0; fi
+        if native_blocked; then native_cleanup; core_rear_cleanup; return 0; fi
         token=$(native_package_token)
         [ "$token" != "$previous" ] || continue
         sleep 2
         stable=$(native_package_token)
         [ "$stable" = "$token" ] || continue
         native_reconcile late
+        core_late || native_log 'A changed platform capability was preserved or unavailable.'
         previous=$stable
     done
 }

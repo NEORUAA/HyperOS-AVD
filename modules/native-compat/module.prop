@@ -1,6 +1,6 @@
 id=hyperos_avd_native_compat
-name=HyperOS AVD native compatibility
-version=2
-versionCode=2
+name=HyperOS AVD Core
+version=4
+versionCode=4
 author=HyperOS-AVD
-description=Verified native compatibility and topology-aware ART compilation
+description=Unified verified native, identity, display and kernel capability compatibility
