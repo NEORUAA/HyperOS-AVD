@@ -13,6 +13,7 @@ from unittest.mock import patch
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'scripts'))
 import patch_flutter
+import patch_boot_services
 import phone_profile
 import prepare_release_image as prepare
 
@@ -58,21 +59,31 @@ class ReleasePreparationTests(unittest.TestCase):
             'system_dlkm': b'accepted kernel modules', 'vendor_dlkm': b'unrelated logical partition',
         }
         self.cloned, self.builds, self.packs = [], [], []
+        self.boot_receipt = {'schema': 1, 'targets': {'accepted-init': {'after': 'fixture'}}}
 
     def write_info(self):
         (self.source / 'local/build.json').write_text(json.dumps(self.info))
+
+    def use_pad_profile(self):
+        import os4_pad
+        value = os4_pad.PROFILE
+        self.info.update(source=os4_pad.SOURCE, device=value['device'], hyperos=value['hyperos'],
+                         archive_sha256=value['source_archive_sha256'], display=value['display'],
+                         model_xml_sha256=value['model_xml_sha256'], identity_source_sha256=value['source_sha256'])
+        self.write_info()
 
     def source_files(self):
         return {str(path.relative_to(self.source)): path.read_bytes()
                 for path in self.source.rglob('*') if path.is_file()}
 
-    def mocked_pipeline(self):
+    def mocked_pipeline(self, *, boot_kind='defaults'):
         stack = ExitStack()
         self.addCleanup(stack.close)
 
         def clone(source, target):
             source, target = Path(source), Path(target)
-            self.assertFalse(self.source / 'work' in source.parents)
+            if boot_kind != 'pad':
+                self.assertFalse(self.source / 'work' in source.parents)
             self.cloned.append((source, target))
             target.parent.mkdir(parents=True, exist_ok=True)
             return shutil.copy2(source, target)
@@ -100,11 +111,30 @@ class ReleasePreparationTests(unittest.TestCase):
             self.packs.append([(name, path.read_bytes()) for name, path in partitions])
             target.write_bytes(b'updated accepted packed image')
 
+        def boot_edits(raw, vendor, edits, work):
+            self.assertEqual(raw, self.output / 'work/accepted/system.img')
+            self.assertEqual(vendor, self.output / 'work/accepted/vendor.img')
+            self.assertEqual(work, self.output / 'work/boot-policy')
+            if boot_kind == 'defaults':
+                self.assertEqual(edits[prepare.SHARED_FLUTTER][0], self.latest)
+                self.assertTrue(edits['system_ext/etc/init/init.hyperos_avd.rc'][0].endswith(b'latest defaults\n'))
+            elif boot_kind == 'services':
+                for _, (path, _, _) in patch_boot_services.TARGETS.items():
+                    self.assertIn(path.lstrip('/'), edits)
+                self.assertTrue(edits['system_ext/etc/init/init.hyperos_avd.rc'][0].endswith(
+                    patch_boot_services.BOOT_INIT))
+            else:
+                self.assertIn(b'ro.adb.secure=1', edits['system/build.prop'][0])
+            edits['system/etc/hyperos-init-capabilities.sh'] = (b'bounded boot helper', 0o755,
+                                                               'u:object_r:system_file:s0')
+            return self.boot_receipt
+
         stack.enter_context(patch.object(prepare, 'clone', side_effect=clone))
         stack.enter_context(patch.object(prepare, 'unpack', side_effect=unpack))
         stack.enter_context(patch.object(prepare, 'erofs', side_effect=read))
         stack.enter_context(patch.object(prepare, 'build', side_effect=build))
         stack.enter_context(patch.object(prepare, 'pack', side_effect=pack))
+        self.boot_mock = stack.enter_context(patch.object(prepare, 'shared_boot_edits', side_effect=boot_edits))
         stack.enter_context(patch.object(prepare, 'sdk_path', return_value=self.root / 'sdk'))
         self.defaults_mock = stack.enter_context(patch.object(prepare, 'image_replacements', return_value=(
             {'product/etc/accepted-new-default': (b'new default', 0o644, 'u:object_r:system_file:s0')},
@@ -145,6 +175,9 @@ class ReleasePreparationTests(unittest.TestCase):
             b'accepted OTA boot services\n'))
         self.profile_mock.assert_called_once_with(self.engine)
         self.patch_mock.assert_called_once_with(self.engine)
+        self.boot_mock.assert_called_once()
+        self.assertEqual(edits['system/etc/hyperos-init-capabilities.sh'],
+                         (b'bounded boot helper', 0o755, 'u:object_r:system_file:s0'))
         info = json.loads((self.output / 'local/build.json').read_text())
         for key in ('hyperos', 'archive_sha256', 'source', 'identity_source_sha256',
                     'rear_display', 'boot_service_fix', 'flutter_render_fix'):
@@ -153,6 +186,7 @@ class ReleasePreparationTests(unittest.TestCase):
                          {'before': self.selected['pins']['flutter'], 'after': digest(self.latest)})
         self.assertEqual(info['system_sha256'], digest(b'updated accepted packed image'))
         self.assertEqual(info['raw_sha256'], digest(b'updated accepted raw system'))
+        self.assertEqual(info['boot_policy'], self.boot_receipt)
 
     def test_stale_cache_cannot_replace_the_accepted_system_or_vendor(self):
         (self.source / 'work/base').mkdir(parents=True)
@@ -202,6 +236,84 @@ class ReleasePreparationTests(unittest.TestCase):
         self.assertEqual(self.builds[0]['edits'][prepare.SHARED_FLUTTER][0], self.engine)
         info = json.loads((self.output / 'local/build.json').read_text())
         self.assertEqual(info['flutter_engine']['after'], digest(self.engine))
+
+    def test_r4_service_preparation_keeps_shared_boot_policy_and_extra_logical_partitions(self):
+        import package_release
+        self.info.pop('boot_service_fix')
+        self.write_info()
+        self.entries['/system_ext/etc/selinux/system_ext_sepolicy.cil'] = b'accepted policy\n'
+        extra = {}
+        for name, (path, _, _) in patch_boot_services.TARGETS.items():
+            self.entries[path] = ('original ' + name).encode()
+            extra[path.lstrip('/')] = (('fixed ' + name).encode(), 0o644, 'u:object_r:system_file:s0')
+        receipt = {'targets': {name: {'after': 'fixture'} for name in patch_boot_services.TARGETS}}
+        original = self.source_files()
+        self.mocked_pipeline(boot_kind='services')
+        with patch.object(patch_boot_services, 'image_replacements', return_value=(extra, receipt)), \
+                patch.object(package_release, 'release_metadata', return_value={'verified': True}), \
+                patch.object(package_release, 'verify_os4_image') as verify:
+            prepare.prepare_boot_services(self.source, self.output)
+        self.assertEqual(verify.call_count, 2)
+        self.assertEqual(self.source_files(), original)
+        self.assertFalse((self.output / 'avd').exists())
+        packed = dict(self.packs[0])
+        for name, value in self.partitions.items():
+            if name != 'system':
+                self.assertEqual(packed[name], value)
+        for path, edit in extra.items():
+            self.assertEqual(self.builds[0]['edits'][path], edit)
+        self.boot_mock.assert_called_once()
+        info = json.loads((self.output / 'local/build.json').read_text())
+        self.assertEqual(info['boot_service_fix'], receipt)
+        self.assertEqual(info['boot_policy'], self.boot_receipt)
+
+    def test_pad_preparation_keeps_shared_boot_policy_and_extra_logical_partitions(self):
+        import apply_pad_camera_native_fix as camera
+        import patch_weather as weather
+        self.use_pad_profile()
+        self.entries['/system/build.prop'] = b'ro.adb.secure=0\nro.debuggable=0\nro.product.device=yingtian\n'
+        (self.source / 'work/weather-angle-fix').mkdir(parents=True)
+        (self.source / 'work/weather-angle-fix/libhgl.so').write_bytes(b'verified bridge fixture')
+        (self.source / 'tools/weather-angle').mkdir()
+        angle = {'libEGL_angle.so': b'verified EGL fixture', 'libGLESv2_angle.so': b'verified GLES fixture'}
+        for name, data in angle.items():
+            (self.source / 'tools/weather-angle' / name).write_bytes(data)
+        original = self.source_files()
+        self.mocked_pipeline(boot_kind='pad')
+        with patch.dict(weather.ANGLE, {name: digest(data) for name, data in angle.items()}, clear=True), \
+                patch.object(weather, 'verify_bridge_prebuilt', return_value={'verified': True}) as bridge, \
+                patch.object(camera, 'build', return_value=None) as camera_build:
+            prepare.prepare(self.source, self.output, 'os4-pad')
+        bridge.assert_called_once_with(self.output / 'tools/weather-angle')
+        camera_build.assert_called_once_with(None, self.output / 'work/verified-camera')
+        self.assertEqual(self.source_files(), original)
+        self.assertFalse((self.output / 'avd').exists())
+        packed = dict(self.packs[0])
+        for name, data in self.partitions.items():
+            if name != 'system':
+                self.assertEqual(packed[name], data)
+        self.boot_mock.assert_called_once()
+        self.assertIn('system/etc/hyperos-init-capabilities.sh', self.builds[0]['edits'])
+        self.assertEqual(json.loads((self.output / 'local/build.json').read_text())['boot_policy'], self.boot_receipt)
+        self.patch_mock.assert_not_called()
+
+    def test_pad_present_packed_hash_or_unknown_profile_refuses_before_copying_output(self):
+        self.use_pad_profile()
+        known = self.info.copy()
+        self.mocked_pipeline(boot_kind='pad')
+        for key, value in (('system_sha256', digest(b'foreign packed firmware')),
+                           ('hyperos', 'OS4.999.0.0.UNKNOWN')):
+            with self.subTest(key=key):
+                self.info = dict(known, **{key: value})
+                self.write_info()
+                original = self.source_files()
+                with self.assertRaises(RuntimeError):
+                    prepare.prepare(self.source, self.output, 'os4-pad')
+                self.assertEqual(self.source_files(), original)
+                self.assertFalse(self.output.exists())
+        self.assertEqual(self.cloned, [])
+        self.assertEqual(self.builds, [])
+        self.assertEqual(self.packs, [])
 
 
 class SharedFlutterPreparationTests(unittest.TestCase):

@@ -118,7 +118,8 @@ class BootServiceTests(unittest.TestCase):
                     changes = events.read_text() if events.exists() else ''
                     self.assertEqual(run.returncode, 1 if result == 3 else 0)
                     self.assertEqual('ctl.stop millet_monitor' in changes, result == 2)
-                    self.assertEqual('ctl.stop iorapd' in changes, not present)
+                    self.assertNotIn('ctl.stop iorapd', changes)
+                    self.assertNotIn('persist.sys.stability.PrereadEnable', changes)
                     if result == 0:
                         self.assertIn('sys.hyperos_avd.millet_supported 1', changes)
                     self.assertNotIn('ctl.stop loc_sys_service', changes)

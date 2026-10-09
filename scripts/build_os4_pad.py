@@ -276,12 +276,22 @@ def main():
     services = ROOT / 'work/services-original.jar'
     services.write_bytes(erofs(system, '/system/framework/services.jar'))
     put('system/framework/services.jar', patch_gnss(services, ROOT / 'work/services-gps-fixed.jar'))
+    from os4_boot_policy import (INIT_PATH, init_files,
+                                image_replacements as boot_policy_replacements)
+    merged_partitions = [('', system), *[(name, partitions / (name + '.img'))
+                           for name in ('system_ext', 'product', 'mi_ext')],
+                         ('product:product', partitions / 'mi_product.img'),
+                         *[(name + ':' + name, partitions / 'mi_ext.img')
+                           for name in ('system', 'system_ext', 'product')]]
+    graph = init_files([*merged_partitions, ('vendor', vendor)], edits)
+    qti_script = graph.get('product/bin/init.qti.display.sh')
+    boot_edits, boot_policy_manifest = boot_policy_replacements(
+        graph, qti_script, edits[INIT_PATH][0], erofs(
+            partitions / 'system_ext.img', '/etc/selinux/system_ext_sepolicy.cil'),
+        ROOT / 'work/boot-policy')
+    edits.update(boot_edits)
     image = ROOT / 'work/hyperos-system.img'
-    build(image, [('', system), *[(name, partitions / (name + '.img'))
-          for name in ('system_ext', 'product', 'mi_ext')],
-          ('product:product', partitions / 'mi_product.img'),
-          *[(name + ':' + name, partitions / 'mi_ext.img')
-          for name in ('system', 'system_ext', 'product')]], ROOT / 'work/official-tree', edits)
+    build(image, merged_partitions, ROOT / 'work/official-tree', edits)
     for path in base.iterdir():
         if path.is_file() and path.name not in ('system.img', 'package.xml'):
             shutil.copy2(path, ROOT / 'images' / path.name)
@@ -311,7 +321,8 @@ def main():
         'flutter_engine': {'before': engine_hash, 'after': hashlib.sha256(patched).hexdigest()},
         'assistant_render_fix': assistant_manifest,
         'avd_defaults': default_manifest,
-        'adb_authentication': not args.diagnostic_adb, 'ota_metadata': metadata}
+        'adb_authentication': not args.diagnostic_adb, 'ota_metadata': metadata,
+        'boot_policy': boot_policy_manifest}
     (ROOT / 'local/build.json').write_text(json.dumps(manifest, indent=2) + '\n')
     configure(sdk_path(), instance_name, instance_port)
     print('Tablet candidate ready. Start-HyperOS4-Pad.command boots only this test AVD.', flush=True)

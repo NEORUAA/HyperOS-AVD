@@ -39,6 +39,27 @@ def build_info():
 
 
 class PadReleaseTests(unittest.TestCase):
+    def test_shared_boot_policy_is_preserved_in_release_metadata(self):
+        import dex2oat_cpu_policy as cpu
+        import patch_init_capabilities as gates
+        targets = list(gates.PROFILES)[:2]
+        marker = {'schema': 1,
+                  'targets': {path: {'before': gates.PROFILES[path]['before'],
+                                     'after': gates.PROFILES[path]['after'],
+                                     'capability': gates.PROFILES[path]['capability']}
+                              for path in targets},
+                  'script': {'path': gates.SCRIPT_PATH,
+                             'sha256': hashlib.sha256(gates.SCRIPT_SOURCE.read_bytes()).hexdigest()},
+                  'qti_script_sha256': None, 'dex2oat': cpu.receipt()}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'local').mkdir()
+            (root / 'local/build.json').write_text(json.dumps({**build_info(), 'boot_policy': marker}))
+            value = package_release.release_metadata(root, 'os4-pad')
+            self.assertEqual(value['build']['boot_policy'], marker)
+        with self.assertRaisesRegex(RuntimeError, 'boot policy metadata'):
+            release_pad.validate_build({**build_info(), 'boot_policy': {'unverified': True}})
+
     def test_metadata_is_a_separate_secure_family(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

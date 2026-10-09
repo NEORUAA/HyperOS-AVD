@@ -35,6 +35,9 @@ def validate_build(info):
         'log_script_sha256': hashlib.sha256(LOG_SCRIPT).hexdigest()}
     if any(info['avd_defaults'].get(key) != value for key, value in defaults.items()):
         raise RuntimeError('Unverified Pad awake/log defaults.')
+    if info.get('boot_policy') is not None:
+        from package_release import validate_boot_policy_receipt
+        validate_boot_policy_receipt(info['boot_policy'])
 
 
 def verify_partition(packed, raw, name):
@@ -95,6 +98,11 @@ def verify_image(root, metadata):
     for name, path in (('system', raw), ('vendor', vendor), ('system_dlkm', root / 'work/base/system_dlkm.img')):
         verify_partition(packed, path, name)
     read = lambda path: erofs(raw, path)
+    boot_policy_files = 0
+    if info.get('boot_policy') is not None:
+        from package_release import verify_boot_policy
+        from os4_boot_policy import init_files
+        boot_policy_files = verify_boot_policy(info, read, init_files([('', raw), ('vendor', vendor)]))
     prop = read('/system/build.prop').splitlines()
     verify_properties(prop, {**PROFILE['properties'], 'ro.build.version.sdk': '37',
                        'ro.adb.secure': '1', 'ro.debuggable': '0',
@@ -148,4 +156,4 @@ def verify_image(root, metadata):
         camera.build(None, root / 'work/release-camera-preflight')
     finally:
         camera.ROOT = previous
-    print(f'Pad preflight passed: three packed partitions, official identity/XML, defaults, {len(expected) + len(natives)} signed/native files and prebuilt bridges.', flush=True)
+    print(f'Pad preflight passed: three packed partitions, official identity/XML, defaults, {len(expected) + len(natives) + boot_policy_files} signed/native files and prebuilt bridges.', flush=True)

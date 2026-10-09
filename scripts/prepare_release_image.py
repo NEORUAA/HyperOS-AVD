@@ -4,8 +4,10 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
+import tempfile
 
 from common import sdk_path, sha256
 from build_image import erofs
@@ -15,6 +17,105 @@ from os4_defaults import image_replacements, production_properties, boot_default
 from patch_assistant import APK, image_replacements as assistant_replacements
 
 SHARED_FLUTTER = 'system_ext/lib64/libhyper_os_flutter.so'
+
+
+def validate_pad_source(info):
+    from os4_pad import PROFILE, SOURCE
+    expected = {'source': SOURCE, 'device': PROFILE['device'],
+                'hyperos': PROFILE['hyperos'], 'archive_sha256': PROFILE['source_archive_sha256'],
+                'model_xml_sha256': PROFILE['model_xml_sha256'],
+                'identity_source_sha256': PROFILE['source_sha256'], 'display': PROFILE['display']}
+    if any(info.get(key) != value for key, value in expected.items()):
+        raise RuntimeError('Expected the source-pinned official yingtian image.')
+
+
+def shared_boot_edits(raw, vendor, edits, work):
+    """Audit the effective packed init graph, retaining prior firmware repairs."""
+    from os4_boot_policy import INIT_PATH, POLICY_PATH, init_files, image_replacements, service_definitions
+    partitions = [('', raw), ('vendor', vendor)]
+    partitions.extend((path.stem, path) for path in sorted(Path(raw).parent.glob('*.img'))
+                      if path.stem not in ('system', 'vendor'))
+    graph = init_files(partitions, edits)
+    init = edits.get(INIT_PATH, (erofs(raw, '/' + INIT_PATH),))[0]
+    policy = edits.get(POLICY_PATH, (erofs(raw, '/' + POLICY_PATH),))[0]
+    helpers = [path for path, data in graph.items() if path != 'product/bin/init.qti.display.sh'
+               for _ in service_definitions(data, b'hyperos-kernel-services')]
+    if helpers:
+        from patch_boot_services import BOOT_INIT
+        if helpers != [INIT_PATH] or init.count(BOOT_INIT) != 1:
+            raise RuntimeError('Unknown existing image kernel helper service.')
+        from apply_boot_service_fix import KERNEL_SCRIPT_HASHES, KERNEL_SCRIPT_SHA256, PERF_SCRIPT
+        path = 'system/etc/hyperos-kernel-services.sh'
+        previous = edits[path][0] if path in edits else erofs(raw, '/' + path)
+        if hashlib.sha256(previous).hexdigest() not in KERNEL_SCRIPT_HASHES:
+            raise RuntimeError('Unknown existing image kernel helper.')
+        current = PERF_SCRIPT.read_bytes()
+        if hashlib.sha256(current).hexdigest() != KERNEL_SCRIPT_SHA256:
+            raise RuntimeError('Unexpected image kernel helper source.')
+        edits[path] = (current, 0o755, 'u:object_r:system_file:s0')
+    result, receipt = image_replacements(
+        graph, graph.get('product/bin/init.qti.display.sh'), init, policy, work)
+    edits.update(result)
+    return receipt
+
+
+def prepare_boot_policy(source, output):
+    """Stage only firmware and its receipt; never modify an AVD or userdata."""
+    source, output = Path(source).resolve(), Path(output).resolve()
+    if source == output or source in output.parents or output in source.parents or output.exists():
+        raise RuntimeError('Use a new separate sibling workspace for boot policy preparation.')
+    info = json.loads((source / 'local/build.json').read_text())
+    if info.get('source') not in ('official-hongkong-ota', 'official-yingtian-ota'):
+        raise RuntimeError('Expected an owned official OS4 build.')
+    if info['source'] == 'official-hongkong-ota':
+        from phone_profile import profile_from_build
+        profile_from_build(info)
+    else:
+        validate_pad_source(info)
+    packed = source / 'images/system.img'
+    before = sha256(packed)
+    if info.get('system_sha256') and info['system_sha256'] != before:
+        raise RuntimeError('Source packed image differs from its build receipt.')
+    output.mkdir(parents=True)
+    (output / 'images').mkdir()
+    (output / 'local').mkdir()
+    with tempfile.TemporaryDirectory(prefix='boot-policy-', dir=output) as temporary:
+        work = Path(temporary)
+        unpack(packed, work / 'accepted')
+        raw, vendor = work / 'accepted/system.img', work / 'accepted/vendor.img'
+        edits = {}
+        if info['source'] == 'official-hongkong-ota' and not info.get('boot_service_fix'):
+            from phone_profile import profile_from_build
+            if profile_from_build(info)['hyperos'] == '4.0.18.0.XFRCNXM':
+                from patch_boot_services import TARGETS, BOOT_INIT, BOOT_SEPOLICY
+                from patch_boot_services import image_replacements as service_replacements
+                extra, receipt = service_replacements({
+                    key: erofs(raw, path) for key, (path, _, _) in TARGETS.items()}, work / 'services')
+                edits.update(extra)
+                init_path = 'system_ext/etc/init/init.hyperos_avd.rc'
+                edits[init_path] = (erofs(raw, '/' + init_path) + BOOT_INIT,
+                                   0o644, 'u:object_r:system_file:s0')
+                policy_path = 'system_ext/etc/selinux/system_ext_sepolicy.cil'
+                edits[policy_path] = (erofs(raw, '/' + policy_path) + BOOT_SEPOLICY,
+                                     0o644, 'u:object_r:system_file:s0')
+                info['boot_service_fix'] = receipt
+        info['boot_policy'] = shared_boot_edits(raw, vendor, edits, work / 'policy')
+        candidate = work / 'system-fixed.img'
+        build(candidate, [('', raw)], work / 'tree', edits)
+        for path, (content, _, _) in edits.items():
+            if erofs(candidate, '/' + path) != content:
+                raise RuntimeError('Boot policy image verification failed: ' + path)
+        partitions = [('system', candidate)]
+        partitions.extend((path.stem, path) for path in sorted((work / 'accepted').glob('*.img'))
+                          if path.stem != 'system')
+        pack(packed, output / 'images/system.img', partitions)
+        if sha256(packed) != before:
+            raise RuntimeError('Source firmware changed during boot policy preparation.')
+        info.update(system_sha256=sha256(output / 'images/system.img'), raw_sha256=sha256(candidate))
+    (output / 'local/build.json').write_text(json.dumps(info, indent=2) + '\n')
+    (output / 'local/boot-policy-source.json').write_text(
+        json.dumps({'system_sha256': before, 'boot_policy': info['boot_policy']}, indent=2) + '\n')
+    print('Prepared data-neutral boot policy image: ' + str(output), flush=True)
 
 
 def clone(source, target):
@@ -73,20 +174,24 @@ def prepare_boot_services(source, output):
         {name: erofs(raw, path) for name, (path, _, _) in TARGETS.items()}, work / 'boot-services')
     init_path = 'system_ext/etc/init/init.hyperos_avd.rc'
     init = erofs(raw, '/' + init_path)
-    if b'service hyperos-kernel-services ' in init:
+    from os4_boot_policy import service_definitions
+    if service_definitions(init, b'hyperos-kernel-services'):
         raise RuntimeError('Source image already contains a kernel capability policy.')
     edits[init_path] = (init + BOOT_INIT, 0o644, 'u:object_r:system_file:s0')
     policy_path = 'system_ext/etc/selinux/system_ext_sepolicy.cil'
     edits[policy_path] = (erofs(raw, '/' + policy_path) + BOOT_SEPOLICY,
                           0o644, 'u:object_r:system_file:s0')
+    info['boot_policy'] = shared_boot_edits(raw, work / 'accepted/vendor.img', edits,
+                                           work / 'boot-policy')
     candidate = work / 'hyperos-system.img'
     build(candidate, [('', raw)], work / 'tree', edits)
     for path, (content, _, _) in edits.items():
         if erofs(candidate, '/' + path) != content:
             raise RuntimeError('Boot service preparation mismatch: ' + path)
-    pack(source / 'images/system.img', output / 'images/system.img', [
-        ('system', candidate), ('vendor', work / 'accepted/vendor.img'),
-        ('system_dlkm', work / 'accepted/system_dlkm.img')])
+    partitions = [('system', candidate)]
+    partitions.extend((path.stem, path) for path in sorted((work / 'accepted').glob('*.img'))
+                      if path.stem != 'system')
+    pack(source / 'images/system.img', output / 'images/system.img', partitions)
     info.update(boot_service_fix=receipt, system_sha256=sha256(output / 'images/system.img'),
                 raw_sha256=sha256(candidate))
     (output / 'local/build.json').write_text(json.dumps(info, indent=2) + '\n')
@@ -98,12 +203,7 @@ def prepare_pad(source, output, info):
     from os4_pad import PROFILE, SOURCE
     from patch_weather import ANGLE, bridge_prebuilt_receipt, verify_bridge_prebuilt
     from apply_pad_camera_native_fix import build as camera_build
-    if (info.get('source') != SOURCE or info.get('device') != PROFILE['device']
-            or info.get('hyperos') != PROFILE['hyperos']
-            or info.get('archive_sha256') != PROFILE['source_archive_sha256']
-            or info.get('model_xml_sha256') != PROFILE['model_xml_sha256']
-            or info.get('identity_source_sha256') != PROFILE['source_sha256']):
-        raise RuntimeError('Expected the source-pinned official yingtian image.')
+    validate_pad_source(info)
     # The running candidate may have been replaced after the builder's raw image.
     # Derive every partition from the actual packed image, never its stale cache.
     work = output / 'work'
@@ -111,15 +211,19 @@ def prepare_pad(source, output, info):
     raw = work / 'accepted/system.img'
     prop = authenticated_properties(erofs(raw, '/system/build.prop'))
     candidate = work / 'hyperos-system.img'
-    build(candidate, [('', raw)], work / 'tree', {
-        'system/build.prop': (prop, 0o600, 'u:object_r:system_file:s0')})
-    if erofs(candidate, '/system/build.prop') != prop:
-        raise RuntimeError('Production ADB property was not baked correctly.')
+    edits = {'system/build.prop': (prop, 0o600, 'u:object_r:system_file:s0')}
+    info['boot_policy'] = shared_boot_edits(raw, work / 'accepted/vendor.img', edits,
+                                           work / 'boot-policy')
+    build(candidate, [('', raw)], work / 'tree', edits)
+    for path, (content, _, _) in edits.items():
+        if erofs(candidate, '/' + path) != content:
+            raise RuntimeError('Pad preparation mismatch: ' + path)
     clone(work / 'accepted/vendor.img', work / 'vendor.img')
     clone(work / 'accepted/system_dlkm.img', work / 'base/system_dlkm.img')
-    pack(source / 'images/system.img', output / 'images/system.img', [
-        ('system', candidate), ('vendor', work / 'vendor.img'),
-        ('system_dlkm', work / 'base/system_dlkm.img')])
+    partitions = [('system', candidate)]
+    partitions.extend((path.stem, path) for path in sorted((work / 'accepted').glob('*.img'))
+                      if path.stem != 'system')
+    pack(source / 'images/system.img', output / 'images/system.img', partitions)
     cache = output / 'tools/weather-angle'
     for name, checksum in ANGLE.items():
         if sha256(cache / name) != checksum:
@@ -158,6 +262,10 @@ def prepare(source, output, variant='os4-official'):
         firmware = profile_from_build(info)
         if info.get('system_sha256') != sha256(source / 'images/system.img'):
             raise RuntimeError('Source packed image differs from its accepted release receipt.')
+    else:
+        validate_pad_source(info)
+        if info.get('system_sha256') and info['system_sha256'] != sha256(source / 'images/system.img'):
+            raise RuntimeError('Source packed image differs from its build receipt.')
     output.mkdir(parents=True)
     for directory in ('images', 'tools', 'config'):
         shutil.copytree(source / directory, output / directory, copy_function=clone)
@@ -191,6 +299,8 @@ def prepare(source, output, variant='os4-official'):
         0o644, 'u:object_r:system_file:s0')
     extra, assistant = assistant_replacements(erofs(raw, APK), firmware=firmware)
     edits.update(extra)
+    info['boot_policy'] = shared_boot_edits(raw, accepted / 'vendor.img', edits,
+                                           work / 'boot-policy')
     candidate = work / 'hyperos-system.img'
     build(candidate, [('', raw)], work / 'tree', edits)
     for path, (content, _, _) in edits.items():
@@ -221,8 +331,14 @@ if __name__ == '__main__':
     parser.add_argument('--variant', choices=('os4-official', 'os4-pad'), default='os4-official')
     parser.add_argument('--boot-service-fixes', action='store_true',
                         help='Bake pinned r4 repairs into the accepted r3 phone image')
+    parser.add_argument('--boot-policy', action='store_true',
+                        help='Stage shared boot/ART repairs without copying or editing userdata')
     args = parser.parse_args()
-    if args.boot_service_fixes:
+    if args.boot_policy:
+        if args.boot_service_fixes:
+            parser.error('Select one firmware preparation mode.')
+        prepare_boot_policy(args.source, args.output)
+    elif args.boot_service_fixes:
         if args.variant != 'os4-official':
             parser.error('Boot service fixes only support the phone release.')
         prepare_boot_services(args.source, args.output)

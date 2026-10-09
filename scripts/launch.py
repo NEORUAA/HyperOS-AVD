@@ -95,6 +95,29 @@ def skip_oobe(config):
     print('OOBE skipped. Existing userdata was preserved.', flush=True)
 
 
+def migrate_boot_service_helpers(config):
+    """Refresh only authenticated legacy hooks; keep optional failures local."""
+    from apply_boot_service_fix import migrate_kernel_helper, migrate_uninstall_hook
+    results = {}
+    for name, migrate in (('kernel helper', migrate_kernel_helper),
+                          ('uninstall hook', migrate_uninstall_hook)):
+        try:
+            outcome = migrate(config)
+        except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+            reason = str(error).splitlines()[0][:240] if str(error) else type(error).__name__
+            print(f'Legacy boot-service {name} is preserved: {reason}', flush=True)
+            results[name] = {'migrated': False, 'preserved': True, 'error': reason}
+            continue
+        results[name] = outcome
+        if outcome.get('migrated'):
+            print(f'Legacy boot-service {name} migrated; current user settings are preserved.', flush=True)
+        elif outcome.get('unsupported'):
+            print(outcome['reason'], flush=True)
+        elif outcome.get('pending') or outcome.get('preserved'):
+            print(f'Legacy boot-service {name} lifecycle choice is preserved.', flush=True)
+    return results
+
+
 def initialize(config, bypass_oobe=False, rotate_window=True):
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
@@ -172,6 +195,7 @@ def initialize(config, bypass_oobe=False, rotate_window=True):
         from apply_pad_camera_native_fix import install as install_pad_camera_native
         install_pad_camera_native(config)
     if is_os4():
+        migrate_boot_service_helpers(config)
         # The guest owns subsequent native-library reconciliation. Provision
         # its standard module once; never reboot a user's session implicitly.
         from apply_native_compat import install as install_native_compat

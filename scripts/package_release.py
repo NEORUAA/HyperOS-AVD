@@ -59,7 +59,7 @@ BUILD_KEYS = ('hyperos', 'source', 'android_api', 'archive_sha256', 'kernel_page
               'assistant_render_fix', 'composer_alpha_fix', 'audio_pcm_fix', 'camera_scene_fix',
               'adb_authentication', 'experimental', 'device', 'display', 'model_xml_sha256',
               'identity_source_sha256', 'vendor_fixes', 'hwui',
-              'flutter_engine', 'finddevice_provider_disabled', 'boot_service_fix')
+              'flutter_engine', 'finddevice_provider_disabled', 'boot_service_fix', 'boot_policy')
 RUNTIME_PAYLOADS = {
     'os4-official': {'xiaomi-camera': ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json')},
     'os4-pad': {'pad-camera-native': ('provider', 'hwl.so', 'yuv.so', 'manifest.json', 'receipt.json'),
@@ -194,18 +194,97 @@ def verify_boot_services(build, read):
                 'probe_sha256': PROBE_SHA256}
     if build.get('hyperos') != '4.0.18.0.XFRCNXM' or marker != expected:
         raise RuntimeError('Unexpected boot service fix metadata.')
-    paths = {path: AFTER[name] for name, (path, _, _) in TARGETS.items()}
-    paths['/system/bin/hyperos_kernel_probe'] = PROBE_SHA256
-    paths['/system/etc/hyperos-kernel-services.sh'] = sha256(
-        REPO_ROOT / 'config/check_kernel_services.sh')
-    for path, checksum in paths.items():
-        if hashlib.sha256(read(path)).hexdigest() != checksum:
+    from apply_boot_service_fix import KERNEL_SCRIPT_SHA256, KERNEL_SCRIPT_HASHES
+    paths = {path: (AFTER[name],) for name, (path, _, _) in TARGETS.items()}
+    paths['/system/bin/hyperos_kernel_probe'] = (PROBE_SHA256,)
+    paths['/system/etc/hyperos-kernel-services.sh'] = (
+        (KERNEL_SCRIPT_SHA256,) if build.get('boot_policy') is not None else KERNEL_SCRIPT_HASHES)
+    for path, checksums in paths.items():
+        if hashlib.sha256(read(path)).hexdigest() not in checksums:
             raise RuntimeError('Baked boot service checksum mismatch: ' + path)
     if read('/system_ext/etc/init/init.hyperos_avd.rc').count(BOOT_INIT) != 1:
         raise RuntimeError('Missing boot service kernel capability initialization.')
     if read('/system_ext/etc/selinux/system_ext_sepolicy.cil').count(BOOT_SEPOLICY) != 1:
         raise RuntimeError('Missing boot service init domain transition policy.')
     return len(paths) + 1
+
+
+def validate_boot_policy_receipt(marker, target_paths=None):
+    """Accept only current audited capabilities and topology-helper metadata."""
+    import dex2oat_cpu_policy as cpu
+    import patch_init_capabilities as capabilities
+    if not isinstance(marker, dict) or not isinstance(marker.get('targets'), dict):
+        raise RuntimeError('Unexpected shared boot policy metadata.')
+    targets = set(marker['targets'])
+    mandatory = set(tuple(capabilities.PROFILES)[:2])
+    if (not mandatory <= targets or targets - set(capabilities.PROFILES)
+            or target_paths is not None and targets != set(target_paths)):
+        raise RuntimeError('Unexpected shared boot policy service targets.')
+    qti = 'product/etc/init/init.qti.display.rc' in targets
+    expected = {'schema': 1,
+                'targets': {path: {'before': capabilities.PROFILES[path]['before'],
+                                   'after': capabilities.PROFILES[path]['after'],
+                                   'capability': capabilities.PROFILES[path]['capability']}
+                            for path in targets},
+                'script': {'path': capabilities.SCRIPT_PATH,
+                           'sha256': hashlib.sha256(capabilities.SCRIPT_SOURCE.read_bytes()).hexdigest()},
+                'qti_script_sha256': capabilities.QTI_SCRIPT_SHA256 if qti else None,
+                'dex2oat': cpu.receipt()}
+    if marker != expected:
+        raise RuntimeError('Unexpected shared boot policy metadata.')
+    return expected
+
+
+def verify_boot_policy(build, read, init_graph=None):
+    """Check actual scripts, guarded rc, probe and enforcing helper delivery."""
+    marker = build.get('boot_policy')
+    if marker is None:
+        return 0
+    import dex2oat_cpu_policy as cpu
+    import patch_init_capabilities as capabilities
+    from os4_boot_policy import INIT_PATH, POLICY_PATH, PROBE_PATH, HELPER_POLICY, service_definitions
+    from patch_boot_services import PROBE_SHA256
+    targets = set(capabilities.PROFILES) & set(init_graph) if init_graph is not None else None
+    expected = validate_boot_policy_receipt(marker, targets)
+    paths = {'/' + path: value['after'] for path, value in expected['targets'].items()}
+    paths['/' + capabilities.SCRIPT_PATH] = expected['script']['sha256']
+    paths[cpu.SYSTEM_TARGET] = expected['dex2oat']['policy_sha256']
+    paths['/' + PROBE_PATH] = PROBE_SHA256
+    if expected['qti_script_sha256'] is not None:
+        paths['/' + capabilities.QTI_SCRIPT] = expected['qti_script_sha256']
+    for path, checksum in paths.items():
+        if hashlib.sha256(read(path)).hexdigest() != checksum:
+            raise RuntimeError('Baked shared boot policy checksum mismatch: ' + path)
+    init = read('/' + INIT_PATH)
+    graph = {INIT_PATH: init} if init_graph is None else init_graph
+    if graph.get(INIT_PATH) != init:
+        raise RuntimeError('Shared boot policy init differs from its effective graph.')
+    capabilities.audit_start_commands({path: data for path, data in graph.items()
+                                      if path != capabilities.QTI_SCRIPT})
+    for block, service in ((capabilities.BOOT_INIT, b'hyperos-init-capabilities'),
+                           (cpu.BOOT_INIT, b'hyperos-dex2oat-cpu')):
+        definitions = [path for path, data in graph.items() if path != capabilities.QTI_SCRIPT
+                       for _ in service_definitions(data, service)]
+        if init.count(block) != 1 or definitions != [INIT_PATH]:
+            raise RuntimeError('Missing or duplicate shared boot policy init service: ' + service.decode())
+    policy = read('/' + POLICY_PATH).splitlines()
+    for line in (HELPER_POLICY + cpu.SEPOLICY).splitlines():
+        if line.startswith(b'(allow ') and line not in policy:
+            raise RuntimeError('Missing shared boot policy enforcing rule: ' + line.decode())
+    # r3/r4 may retain the separately audited Phone/GNSS compatibility helper.
+    # It must be refreshed whenever the release claims the new shared policy.
+    legacy = [path for path, data in graph.items() if path != capabilities.QTI_SCRIPT
+              for _ in service_definitions(data, b'hyperos-kernel-services')]
+    if legacy:
+        from patch_boot_services import BOOT_INIT
+        if legacy != [INIT_PATH] or init.count(BOOT_INIT) != 1:
+            raise RuntimeError('Unexpected legacy helper in shared boot policy graph.')
+        from apply_boot_service_fix import KERNEL_SCRIPT_SHA256
+        path = '/system/etc/hyperos-kernel-services.sh'
+        if hashlib.sha256(read(path)).hexdigest() != KERNEL_SCRIPT_SHA256:
+            raise RuntimeError('Legacy Phone helper conflicts with shared boot policy.')
+        paths[path] = KERNEL_SCRIPT_SHA256
+    return len(paths) + 2
 
 
 def verify_os4_image(root, metadata):
@@ -270,6 +349,11 @@ def verify_os4_image(root, metadata):
     template = dict(line.split('=', 1) for line in (root / 'config/avd.ini').read_text().splitlines() if '=' in line)
     rear_files = verify_rear_display(selected, metadata['build'], read, read_vendor, template)
     boot_service_files = verify_boot_services(metadata['build'], read)
+    boot_policy_files = 0
+    if metadata['build'].get('boot_policy') is not None:
+        from os4_boot_policy import init_files
+        graph = init_files([('', raw), ('vendor', vendor)])
+        boot_policy_files = verify_boot_policy(metadata['build'], read, graph)
     if selected['hyperos'] != '4.0.18.0.XFRCNXM':
         if metadata['build'].get('composer_alpha_fix') != COMPOSER_FIX:
             raise RuntimeError('Missing verified ranchu composer alpha fix metadata.')
@@ -375,7 +459,7 @@ def verify_os4_image(root, metadata):
     for path, checksum in expected.items():
         if hashlib.sha256(read(path)).hexdigest() != checksum:
             raise RuntimeError('Baked release checksum mismatch: ' + path)
-    print(f'OS4 preflight passed: packed system/vendor, properties, defaults and {len(expected) + lockscreen_files + rear_files + boot_service_files} pinned APK/native/resource files.', flush=True)
+    print(f'OS4 preflight passed: packed system/vendor, properties, defaults and {len(expected) + lockscreen_files + rear_files + boot_service_files + boot_policy_files} pinned APK/native/resource files.', flush=True)
 
 
 def release_metadata(root, variant):

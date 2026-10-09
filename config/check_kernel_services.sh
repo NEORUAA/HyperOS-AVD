@@ -3,11 +3,6 @@
 [ "$(getprop ro.boot.hardware)" = ranchu ] || exit 0
 [ "$(getprop ro.product.device)" = hongkong ] || exit 0
 [ "$(getprop ro.mi.os.version.incremental)" = OS4.0.18.0.XFRCNXM ] || exit 0
-if [ ! -e /dev/iorap_dev ]; then
-    # Use the service's own documented opt-out; retain data and other preloaders.
-    setprop persist.sys.stability.PrereadEnable false
-    setprop ctl.stop iorapd
-fi
 PROBE=${1:-/system/bin/hyperos_kernel_probe}
 [ -x "$PROBE" ] || exit 1
 "$PROBE" "$(getprop ro.millet.netlink)"

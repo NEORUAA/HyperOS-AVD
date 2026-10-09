@@ -389,14 +389,24 @@ def main():
         rear_wake_edits, rear_wake_manifest = rear_wake_replacements(
             sdk_path(), ROOT / 'work/rear-display-wake')
         replacements.update(rear_wake_edits)
+    from os4_boot_policy import (INIT_PATH, POLICY_PATH, init_files,
+                                image_replacements as boot_policy_replacements)
+    merged_partitions = [('', system), *[(name, partitions / (name + '.img'))
+                           for name in ('system_ext', 'product', 'mi_ext')],
+                         ('product:product', partitions / 'mi_product.img'),
+                         *[(name + ':' + name, partitions / 'mi_ext.img')
+                           for name in ('system', 'system_ext', 'product')]]
+    graph = init_files([*merged_partitions, ('vendor', vendor)], replacements, REMOVALS)
+    policy = replacements.get(POLICY_PATH, (erofs(
+        partitions / 'system_ext.img', '/etc/selinux/system_ext_sepolicy.cil'),))[0]
+    qti_script = graph.get('product/bin/init.qti.display.sh')
+    boot_edits, boot_policy_manifest = boot_policy_replacements(
+        graph, qti_script, replacements[INIT_PATH][0], policy, ROOT / 'work/boot-policy')
+    replacements.update(boot_edits)
     image = ROOT / 'work/hyperos-system.img'
     # Flatten the phone overlay mounts. Merely retaining /mi_ext does not make
     # its permissions, runtime declarations or product resources visible.
-    build(image, [('', system), *[(name, partitions / (name + '.img'))
-                                for name in ('system_ext', 'product', 'mi_ext')],
-                  ('product:product', partitions / 'mi_product.img'),
-                  *[(name + ':' + name, partitions / 'mi_ext.img')
-                    for name in ('system', 'system_ext', 'product')]],
+    build(image, merged_partitions,
           ROOT / 'work/official-tree', replacements, removals=REMOVALS)
     for path in base.iterdir():
         if path.is_file() and path.name not in ('system.img', 'package.xml'):
@@ -444,6 +454,7 @@ def main():
         build_metadata['rear_display_composer_fix'] = rear_composer_manifest
         build_metadata['goldfish_sync_fix'] = sync_manifest
         build_metadata['rear_display_wake_fix'] = rear_wake_manifest
+    build_metadata['boot_policy'] = boot_policy_manifest
     (ROOT / 'local/build.json').write_text(json.dumps(build_metadata, indent=2) + '\n')
     if not args.no_configure:
         configure(sdk_path(), instance_name, instance_port)
