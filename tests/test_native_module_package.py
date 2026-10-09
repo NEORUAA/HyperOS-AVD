@@ -12,6 +12,7 @@ import zipfile
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / 'scripts'))
 import package_native_module as package
+import dex2oat_cpu_policy as cpu_policy
 
 
 class NativeModulePackageTests(unittest.TestCase):
@@ -53,6 +54,33 @@ class NativeModulePackageTests(unittest.TestCase):
                     result = subprocess.run(['sh', '-n', str(target)], capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_cpu_helper_is_self_contained_and_bound_to_installed_integrity_manifest(self):
+        files = package.module_files()
+        name = 'dex2oat-cpu-policy.sh'
+        self.assertEqual(files[name], cpu_policy.policy_script())
+        manifest = json.loads(files['manifest.json'])
+        self.assertEqual(manifest['revision'], package.REVISION)
+        self.assertEqual(manifest['files_sha256'][name], hashlib.sha256(files[name]).hexdigest())
+        checked = dict(row.split('  ', 1)[::-1]
+                       for row in files['SHA256SUMS'].decode().splitlines())
+        self.assertEqual(checked[name], manifest['files_sha256'][name])
+        self.assertNotIn(name, manifest['install_only_files'])
+        self.assertFalse((REPO / 'modules/native-compat' / name).exists(),
+                         'The module must reuse the canonical CPU helper, not a second copy.')
+
+    def test_foreign_template_ownership_is_rejected_before_cpu_policy_delivery(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as temporary:
+            template = Path(temporary) / 'template'
+            shutil.copytree(REPO / 'modules/native-compat', template)
+            props = template / 'module.prop'
+            props.write_text(props.read_text().replace('id=' + package.MODULE_ID, 'id=unrelated_module'))
+            output = Path(temporary) / 'module.zip'
+            with self.assertRaisesRegex(RuntimeError, 'ownership'):
+                package.package(output, template=template)
+            self.assertFalse(output.exists())
+            self.assertFalse(output.with_name(output.name + '.next').exists())
+
     def test_package_does_not_follow_an_output_symlink(self):
         with tempfile.TemporaryDirectory() as temporary:
             original = Path(temporary) / 'original'
@@ -68,6 +96,8 @@ class NativeModulePackageTests(unittest.TestCase):
         paths = package_release.runtime_files()
         for name in ('runtime.sh', 'module.prop', 'customize.sh', 'post-fs-data.sh', 'service.sh'):
             self.assertEqual(paths['modules/native-compat/' + name], REPO / 'modules/native-compat' / name)
+        self.assertEqual(paths['config/dex2oat_cpu_policy.sh'], cpu_policy.POLICY)
+        self.assertEqual(paths['scripts/dex2oat_cpu_policy.py'], REPO / 'scripts/dex2oat_cpu_policy.py')
 
     def test_lost_staging_race_preserves_the_other_packager_file(self):
         with tempfile.TemporaryDirectory() as temporary:

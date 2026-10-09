@@ -55,6 +55,7 @@ set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm "$MODPATH/runtime.sh" 0 0 0755
 set_perm "$MODPATH/post-fs-data.sh" 0 0 0755
 set_perm "$MODPATH/service.sh" 0 0 0755
+set_perm "$MODPATH/dex2oat-cpu-policy.sh" 0 0 0755
 touch "$MODPATH/skip_mount"
 ui_print 'Native compatibility is selected by verified code, independent of AVD names.'
 ui_print 'Unknown native code is preserved. Restart Android normally for early system changes.'

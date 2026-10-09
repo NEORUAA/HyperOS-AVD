@@ -15,7 +15,7 @@ sys.path.insert(0, str(REPO / 'scripts'))
 import apply_native_compat as install
 import package_native_module as package
 
-PROPERTY = f'id={install.MODULE_ID}\nauthor=HyperOS-AVD\nversionCode=1'
+PROPERTY = f'id={install.MODULE_ID}\nauthor=HyperOS-AVD\nversionCode={install.REVISION}'
 
 
 class NativeModuleInstallTests(unittest.TestCase):

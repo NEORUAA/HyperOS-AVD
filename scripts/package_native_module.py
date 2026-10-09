@@ -9,7 +9,7 @@ import zipfile
 
 REPO = Path(__file__).resolve().parent.parent
 MODULE_ID = 'hyperos_avd_native_compat'
-REVISION = 1
+REVISION = 2
 
 
 def module_files(value=None, template=None):
@@ -21,6 +21,8 @@ def module_files(value=None, template=None):
     files = {}
     for name in ('module.prop', 'customize.sh', 'runtime.sh', 'post-fs-data.sh', 'service.sh'):
         files[name] = (template / name).read_bytes()
+    from dex2oat_cpu_policy import policy_script
+    files['dex2oat-cpu-policy.sh'] = policy_script()
     properties = dict(line.split('=', 1) for line in files['module.prop'].decode().splitlines() if '=' in line)
     if properties.get('id') != MODULE_ID or properties.get('author') != 'HyperOS-AVD':
         raise RuntimeError('Unexpected native module template ownership.')

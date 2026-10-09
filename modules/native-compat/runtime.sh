@@ -60,6 +60,27 @@ native_enabled() {
     [ ! -f "$MODDIR/features.disabled" ] || ! "$BB" grep -Fxq "$1" "$MODDIR/features.disabled"
 }
 
+native_eligible() {
+    # Composer bytes are shared by phones and tablets. A matching ELF cannot
+    # prove that this device has Xiaomi's physical rear-panel capability.
+    [ "$1" = rear-display ] || return 0
+    [ "$(getprop persist.sys.multi_display_type)" = 6 ] &&
+        [ "$(getprop persist.sys.dual_screen_cover_mode_enable)" = true ] || return 1
+    local secondary displays
+    secondary=$(getprop persist.sys.secondary_builtin_display_id)
+    case "$secondary" in ''|*[!0-9]*) return 1 ;; esac
+    [ "${#secondary}" -le 10 ] && [ "$secondary" -gt 0 ] || return 1
+    displays=$(getprop ro.boot.qemu.external.displays)
+    case "$displays" in ''|*[!0-9,]*) return 1 ;; esac
+    printf '%s\n' "$displays" | "$BB" awk -F ',' -v secondary="$secondary" '
+        NF == 0 || NF % 5 != 0 {exit 1}
+        {for (i=1; i<=NF; i++) if ($i !~ /^[0-9]+$/ || length($i) > 10) exit 1;
+         for (i=1; i<=NF; i+=5) {
+             if ($i <= 0 || $(i+1) <= 0 || $(i+2) <= 0 || $(i+3) <= 0 || seen[$i+0]++) exit 1;
+             if ($i == secondary) found=1;
+         } exit !found}'
+}
+
 native_assets() {
     [ -f "$MODDIR/SHA256SUMS" ] && [ ! -L "$MODDIR/SHA256SUMS" ] || return 1
     (cd "$MODDIR" && "$BB" sha256sum -c SHA256SUMS >/dev/null 2>&1) || return 1
@@ -112,8 +133,10 @@ native_superseded_output() {
     # An image may already contain composer alpha plus the later rear-display
     # patch. Follow catalog edges for this exact target instead of regressing
     # a verified terminal result to an intermediate composer-only payload.
-    "$BB" awk -F '|' -v feature="$1" -v checksum="$2" -v target="$3" \
-        'FNR == NR {if ($2 == "system" && $4 == target) allowed[$3]=1; next}
+    local rear=0
+    native_eligible rear-display && rear=1
+    "$BB" awk -F '|' -v feature="$1" -v checksum="$2" -v target="$3" -v rear="$rear" \
+        'FNR == NR {if ($2 == "system" && $4 == target && ($3 != "rear-display" || rear)) allowed[$3]=1; next}
          allowed[$4] {n++; input[n]=$1; output[n]=$2; legacy[n]=$3; group[n]=$4;
              if ($4 == feature) reachable[$2]=1}
          END {for (depth=0; depth<8; depth++) {
@@ -167,7 +190,7 @@ native_prepare() {
     # Return a content-addressed local copy. Published payload inodes are never
     # truncated, even when an older copy remains mapped by a running process.
     local target=$1 feature=$2 initial=$3 current=$3 selected before after legacy selected_feature profile chain=0
-    local working="$MODDIR/cache/candidate.next.$$" mode context key result
+    local working="$MODDIR/cache/candidate.next.$$" mode owner uid gid extra context cached_context key result
     [ ! -e "$working" ] && [ ! -L "$working" ] || return 1
     (set -C; native_ns 1 "$BB" cat "$target" > "$working") || return 1
     [ "$(native_hash "$working")" = "$initial" ] || { rm -f "$working"; return 1; }
@@ -188,14 +211,25 @@ EOF
     [ "$chain" -gt 0 ] || { rm -f "$working"; return 2; }
     mode=$(native_ns 1 "$BB" stat -c %a "$target") || { rm -f "$working"; return 1; }
     case "$mode" in ''|*[!0-7]*) rm -f "$working"; return 1 ;; esac
+    owner=$(native_ns 1 "$BB" stat -c %u:%g "$target") || { rm -f "$working"; return 1; }
+    IFS=':' read -r uid gid extra <<EOF
+$owner
+EOF
+    case "$uid:$gid" in *[!0-9:]*) rm -f "$working"; return 1 ;; esac
+    [ -n "$uid" ] && [ -n "$gid" ] && [ -z "$extra" ] || { rm -f "$working"; return 1; }
     context=$(native_ns 1 /system/bin/ls -Zd "$target" 2>/dev/null |
         "$BB" awk '{for(i=1;i<=NF;i++) if($i ~ /^u:object_r:[A-Za-z0-9_]+:s0$/) {print $i; exit}}')
     [ -n "$context" ] || { rm -f "$working"; return 1; }
     key=$(printf '%s' "$context" | "$BB" tr ':' '_')
-    result="$MODDIR/cache/$current-$mode-$key.so"
-    chmod "$mode" "$working" && chcon "$context" "$working" || { rm -f "$working"; return 1; }
+    result="$MODDIR/cache/$current-$mode-$uid-$gid-$key.so"
+    chown "$owner" "$working" && chmod "$mode" "$working" && chcon "$context" "$working" || { rm -f "$working"; return 1; }
     if [ -e "$result" ] || [ -L "$result" ]; then
         [ -f "$result" ] && [ ! -L "$result" ] && [ "$(native_hash "$result")" = "$current" ] || { rm -f "$working"; return 1; }
+        cached_context=$(native_ns 1 /system/bin/ls -Zd "$result" 2>/dev/null |
+            "$BB" awk '{for(i=1;i<=NF;i++) if($i ~ /^u:object_r:[A-Za-z0-9_]+:s0$/) {print $i; exit}}')
+        [ "$(native_ns 1 "$BB" stat -c %a "$result")" = "$mode" ] &&
+            [ "$(native_ns 1 "$BB" stat -c %u:%g "$result")" = "$owner" ] &&
+            [ "$cached_context" = "$context" ] || { rm -f "$working"; return 1; }
         rm -f "$working"
     else
         mv "$working" "$result" || return 1
@@ -215,8 +249,52 @@ native_mount_rollback() {
     done
 }
 
+native_mount_options() {
+    local target=$1 payload=$2 final=$3 executable=0 feature mode owner context file expected_owner
+    case "$target" in /vendor/bin/hw/*)
+        case "${target##*/}" in *.so) ;; *) executable=1 ;; esac ;;
+    esac
+    if [ "$executable" = 0 ]; then
+        printf '%s\n' remount,bind,ro,nosuid,nodev
+        return 0
+    fi
+    # Only a catalog-verified HWC executable may clear the /data bind's nosuid
+    # flag. The unchanged 0755 inode has no set-ID bits; the exception permits
+    # the existing init -> HAL SELinux transition, not a new policy allowance.
+    feature=$("$BB" awk -F '|' -v target="$target" \
+        '$1 == "early" && $2 == "system" && $4 == target &&
+            ($3 == "composer" || $3 == "rear-display") {print $3}' "$MODDIR/targets.tsv")
+    [ -n "$feature" ] && native_hex "$final" && [ "$(native_hash "$payload")" = "$final" ] || return 1
+    native_is_output composer "$final" ||
+        { native_eligible rear-display && native_is_output rear-display "$final"; } || return 1
+    expected_owner=$(native_ns 1 "$BB" stat -c %u:%g "$target") || return 1
+    case "$expected_owner" in 0:0|0:2000) ;; *) return 1 ;; esac
+    for file in "$target" "$payload"; do
+        mode=$(native_ns 1 "$BB" stat -c %a "$file") || return 1
+        owner=$(native_ns 1 "$BB" stat -c %u:%g "$file") || return 1
+        context=$(native_ns 1 /system/bin/ls -Zd "$file" 2>/dev/null |
+            "$BB" awk '{for(i=1;i<=NF;i++) if($i ~ /^u:object_r:[A-Za-z0-9_]+:s0$/) {print $i; exit}}')
+        [ "$mode" = 755 ] && [ "$owner" = "$expected_owner" ] &&
+            [ "$context" = u:object_r:hal_graphics_composer_default_exec:s0 ] || return 1
+    done
+    printf '%s\n' remount,bind,ro,suid,nodev,exec
+}
+
+native_mount_flags() {
+    local pid=$1 target=$2 options=$3 executable=0
+    case ",$options," in *,suid,*) executable=1 ;; esac
+    [ -r "$PROC/$pid/mountinfo" ] && native_owns_mount "$pid" "$target" || return 1
+    "$BB" awk -v target="$target" -v executable="$executable" '
+        $5 == target {options=$6; found=1}
+        END {if (!found) exit 1; n=split(options, parts, ","); for(i=1; i<=n; i++) flags[parts[i]]=1;
+             if (!flags["ro"]) exit 1;
+             if (executable) exit flags["nosuid"] || flags["noexec"];
+             exit !flags["nosuid"]}' "$PROC/$pid/mountinfo"
+}
+
 native_mount() {
-    local target=$1 payload=$2 package=$3 initial=$4 final=$5 pid actual pids created=
+    local target=$1 payload=$2 package=$3 initial=$4 final=$5 pid actual pids created= options
+    options=$(native_mount_options "$target" "$payload" "$final") || return 1
     pids=$(native_pids "$package")
     # Complete namespace preflight before creating the first bind.
     for pid in $pids; do
@@ -232,8 +310,9 @@ native_mount() {
             native_mount_rollback "$target" "$created"; return 1
         fi
         created="$pid $created"
-        if ! native_ns "$pid" "$BB" mount -o remount,bind,ro "$target" ||
-                [ "$(native_ns_hash "$pid" "$target")" != "$final" ]; then
+        if ! native_ns "$pid" "$BB" mount -o "$options" "$target" ||
+                [ "$(native_ns_hash "$pid" "$target")" != "$final" ] ||
+                ! native_mount_flags "$pid" "$target" "$options"; then
             native_mount_rollback "$target" "$created"; return 1
         fi
     done
@@ -416,6 +495,10 @@ native_apply_target() {
         native_status "$feature" "${target:-$package/$library}" disabled user-choice
         return
     fi
+    if ! native_eligible "$feature"; then
+        native_status "$feature" "${target:-$package/$library}" skipped device-capability-unavailable
+        return
+    fi
     if [ "$kind" = app ]; then
         native_word "$package" || { native_status "$feature" "$package/$library" skipped invalid-package; return; }
         native_app_unchanged "$feature" "$package" "$library" && return
@@ -530,6 +613,10 @@ native_reconcile() {
                     native_status "$feature" "$resolved" disabled restart-for-loaded-code
                     continue
                 fi
+                if ! native_eligible "$feature"; then
+                    native_status "$feature" "$resolved" skipped device-capability-unavailable
+                    continue
+                fi
                 initial=$(native_ns_hash 1 "$resolved")
                 if [ -n "$(native_profile "$feature" "$initial")" ] || native_loaded_stale "$resolved"; then native_status "$feature" "$resolved" pending reboot-required; fi
             fi
@@ -572,6 +659,7 @@ native_start() {
     native_guard || return 1
     native_blocked && return 0
     native_assets || { native_log 'Module asset verification failed; preserving all native targets.'; return 1; }
+    "$BB" sh "$MODDIR/dex2oat-cpu-policy.sh" apply || native_log 'ART CPU policy could not be applied.'
     native_reconcile "$1"
 }
 
@@ -658,6 +746,9 @@ native_service() {
         count=$((count + 1)); [ "$count" -lt 300 ] || return 1
         sleep 1
     done
+    native_blocked && return 0
+    native_assets || { native_log 'Module assets changed while waiting for boot; preserving targets.'; return 1; }
+    "$BB" sh "$MODDIR/dex2oat-cpu-policy.sh" apply || native_log 'ART CPU policy could not be applied.'
     native_reconcile late
     previous=$(native_package_token)
     while :; do
