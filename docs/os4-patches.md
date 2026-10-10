@@ -117,4 +117,34 @@ for workspace in cache_roots:
 
 此前连续 Android 软重启曾触发 SDK macOS OpenGL/gfxstream 路径的宿主崩溃，正常冷启动恢复且用户数据保留；根因尚未确认，不把 guest 核验扩大为宿主稳定性保证。历史反馈中未在最终抽样日志复现的 MoltenVK、HTMLViewer、Gallery 问题同样不直接声明已修复。
 
+## 反馈终检与性能
+
+2026-10-10，复核用户反馈目录的两份分析及五份日志包中的 74 份原始文本；范围为 Phone OS4.0.18.0 与 Pad OS4.0.15.0 的当前保留用户数据。以下把已验证修复、场景复测和未闭环问题分开，不宣称所有历史问题均已解决。
+
+| 反馈 | Phone | Pad |
+| --- | --- | --- |
+| dex2oat CPU 越界 | 本轮实际安装编译通过，使用真实四核集合；测试包已移除。 | 本轮同样实际安装通过，ART 为 `reason=install`、四核集合、三个 worker。六核、稀疏拓扑由单元测试覆盖，未作本轮实机证明。 |
+| QTI 显示脚本执行失败 | ranchu 能力门控通过，未执行不支持的路径。 | 无对应原始反馈。 |
+| iorapd / Millet 循环、Core 冷启动失败 | 共用能力探测与正常冷启动通过。 | 正常冷启动通过；180 秒观察未见循环。 |
+| 更新 FindDevice 阻断初始化 | 未知或不满足来源/Provider 合约的内容局部跳过，其他初始化继续。 | 相同处理；反馈中的 20.15.70 APK 未提供，不能代替该更新版本的直接验收。 |
+| 更新桌面引擎 / deadline 警告 | 未知可选原生内容不再中断全部初始化；原警告未证明卡顿因果。 | 当前预装 5490；反馈的 6325 / `0266…` 引擎尚无内容规则，渲染仍待适配。 |
+| MoltenVK shader / pipeline 失败 | 无对应原始反馈。 | 当前冷启动及有界操作未复现；首次 OOBE 的原场景未重放，未认定根因修复。 |
+| HTMLViewer 协议详情 ANR | 无对应原始反馈。 | 本轮正确打开 LicenseActivity：正文实际显示、可滚动，无 ANR。 |
+| Gallery widgetProvider 数据库路径崩溃 | 无对应原始反馈。 | Provider 存活；相册停在首次同意页，未代答，具体小部件业务尚未验收。 |
+| FindDevice CoreWorkJobService ANR | 无对应原始反馈。 | 旧日志有 onStartJob 超时；本轮未触发对应 Job，仍待验证。 |
+| nits mapping / XQos / mapper / AVC 等日志 | 未证明这些诊断导致功能故障。 | XQos 仍重复探测缺失节点，mapper 扩展仍不支持；保持真实失败与 SELinux 拒绝，未伪造成功或全局静音。 |
+| 正常关机后宿主占用 CPU | 本轮复现并完成下述窄修复验证。 | 本轮正常关机可自行退出；历史一次宿主崩溃/不退出的全部路径尚未闭环。 |
+
+两端连续 180 秒桌面待机时，guest 四核总 CPU 中位约 4.0% / 4.6%，可用内存最低约 2.77 / 1.51 GiB，无 OOM、swap-out 或新增 ANR。12 次设置页滚动测得 HWUI jank 为 0.11% / 0.18%；该结果仅覆盖设置页，不等于所有 Flutter 动画或宿主窗口的帧率验收。宿主为 16 GiB Mac，已有约 13.5 GiB swap 用量，不能把 QEMU RSS 当作完整内存占用；未修改用户 RAM、CPU 或存储配置。
+
+Phone 宿主待机 CPU 中位原为 117%（单核满载记为 100%）。三秒线程采样与实际 SDK 反汇编定位到 Vulkan decoder 的命令序号忙等；该机制也见于 [gfxstream 的 decoder 源码](https://chromium.googlesource.com/external/gitlab.freedesktop.org/mesa/mesa/+/74b5819d5ff2d5a9435c9ff4bad44a70f18b6780/src/gfxstream/codegen/scripts/cereal/decoder.py#974)。因此仅在原有完整 Phone Vulkan 身份/HWUI 校验通过的分支关闭 `VulkanQueueSubmitWithCommands`，保留 Vulkan、descriptor workaround、`-GLAsyncSwap` 与背屏。
+
+关闭后，实际解锁桌面 60 秒 CPU 中位为 26.7%，采样中原忙等位置消失；相机虚拟场景预览正常，三轮明确指定主屏的 Camera → Settings 焦点切换无 ANR，正常 Android 关机后宿主约 8.2 秒自行退出。此前另发现 CameraFocus 10 秒图形等待 ANR，此对照场景已通过，但不扩大为完整拍照、录像算法或所有相机焦点路径保证。首次冷启动仍处锁屏、或输入被背屏接收的样本不计作桌面/主屏相机验收。
+
+Pad 关闭同一传输优化的试验未证明性能收益（桌面 CPU 中位 25.55%，原为 18.65%），故保持原默认参数。其 XQos 缺节点在 60 秒观察中仍出现 93 组失败，可考虑已认证可选 QoS 初始化的缺失能力缓存；尚无 CPU 收益证据，本次没有新增二进制补丁或扩大 SELinux 权限。
+
+最终两端均由正式启动器恢复运行；Phone 使用上述修复，Pad 恢复原传输参数。再次冷启动后的稳定标识、全部包版本、七项抽查设置与 Apps 选择摘要一致，当前用户 CPU/RAM/存储配置保持。Pad 试验关机约 9.3 秒自然退出，未强杀。
+
+本轮宿主启动参数与受影响初始化回归共 28 项，26 项执行通过，2 项因未分发专有原始库跳过。实际安装探针无权限或交互组件，两端测试包、远端 APK 和一次性宿主构建/签名资料均已移除；没有下载旧发行版、创建额外 AVD、清除用户数据或修改 SDK 二进制。
+
 详细适配背景见 [手机](hyperos4.md)、[Pad](hyperos4-pad.md)；具体发布证据见 `docs/releases/`。私有诊断与回滚资料不作为 release 附件。
