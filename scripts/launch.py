@@ -12,6 +12,8 @@ import time
 from common import ROOT, adb, fetch_ksu, host_check, port_free, runtime
 from setup import configure
 
+VULKAN_BASE_FEATURES = 'VulkanBatchedDescriptorSetUpdate'
+
 
 def is_os4():
     build = ROOT / 'local/build.json'
@@ -20,9 +22,9 @@ def is_os4():
 
 
 def vulkan_features(build):
-    """Select image-specific descriptor and presentation workarounds."""
+    """Select audited descriptor, submission and presentation workarounds."""
     if build.get('source') == 'official-yingtian-ota':
-        return ['-feature', 'VulkanBatchedDescriptorSetUpdate']
+        return ['-feature', VULKAN_BASE_FEATURES]
     if (build.get('source') == 'official-hongkong-ota'
             and build.get('hyperos') == '4.0.18.0.XFRCNXM'):
         from phone_profile import profile_from_build
@@ -31,9 +33,10 @@ def vulkan_features(build):
         expected = {'before': PHONE_BEFORE, 'after': PHONE_AFTER, 'profile': PHONE_PROFILE}
         if (profile['pins']['hwui'] == PHONE_BEFORE and build.get('hwui') == expected
                 and build.get('hwui_renderer') == 'skiavk'):
-            # Keep the verified presentation workaround. The separately baked
-            # sync driver bounds command bursts when both panels are active.
-            return ['-feature', 'VulkanBatchedDescriptorSetUpdate,-GLAsyncSwap']
+            # Keep presentation behavior and avoid the observed gfxstream
+            # queue-sequence stall in this verified dual-display workload.
+            return ['-feature', VULKAN_BASE_FEATURES +
+                    ',-GLAsyncSwap,-VulkanQueueSubmitWithCommands']
     return []
 
 

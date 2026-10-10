@@ -77,8 +77,9 @@ class PhoneVulkanNativeTests(unittest.TestCase):
 
 
 class PhoneVulkanRuntimeTests(unittest.TestCase):
-    def test_presentation_workaround_requires_verified_r3_marker_and_keeps_pad(self):
-        expected = ['-feature', 'VulkanBatchedDescriptorSetUpdate,-GLAsyncSwap']
+    def test_submission_workaround_requires_verified_r3_marker_and_keeps_pad(self):
+        expected = ['-feature', 'VulkanBatchedDescriptorSetUpdate,-GLAsyncSwap,'
+                               '-VulkanQueueSubmitWithCommands']
         current = build_info()
         self.assertEqual(vulkan_features(current), expected)
         self.assertEqual(vulkan_features({'source': 'official-yingtian-ota'}),
@@ -88,6 +89,7 @@ class PhoneVulkanRuntimeTests(unittest.TestCase):
                       {**current, 'source': 'gsi'},
                       {**current, 'hyperos': '3.0.2.0.WMCCNXM'},
                       {**current, 'hyperos': '4.0.17.0.XFRCNXM'},
+                      {**current, 'hyperos': '4.0.19.0.XFRCNXM'},
                       {**current, 'hwui_renderer': 'skiagl'},
                       {**current, 'hwui': None}, {**current, 'hwui': {'after': PHONE_AFTER}},
                       {**current, 'hwui': {**current['hwui'], 'before': 'unverified'}},
@@ -106,9 +108,24 @@ class PhoneVulkanRuntimeTests(unittest.TestCase):
                      'HyperOS_3_API_36'):
             with self.subTest(name=name):
                 self.assertEqual(vulkan_features({**current, 'name': name}),
-                                 ['-feature', 'VulkanBatchedDescriptorSetUpdate,-GLAsyncSwap'])
+                                 ['-feature', 'VulkanBatchedDescriptorSetUpdate,-GLAsyncSwap,'
+                                              '-VulkanQueueSubmitWithCommands'])
                 self.assertEqual(vulkan_features({**current, 'name': name,
                                                   'hyperos': '4.0.17.0.XFRCNXM'}), [])
+
+    def test_queue_disable_remains_phone_only_and_tracks_the_image_not_runtime_name(self):
+        current = build_info()
+        renamed = {**current, 'name': 'Any_Pad_Name', 'port': 5600,
+                   'avd_path': '/custom/renamed.avd'}
+        phone = vulkan_features(renamed)
+        flags = phone[1].split(',')
+        self.assertEqual(flags.count('-VulkanQueueSubmitWithCommands'), 1)
+        self.assertIn('-GLAsyncSwap', flags)
+        self.assertNotIn('VulkanQueueSubmitWithCommands', flags)
+        self.assertEqual(vulkan_features({**renamed, 'source': 'official-yingtian-ota'}),
+                         ['-feature', 'VulkanBatchedDescriptorSetUpdate'])
+        self.assertEqual(vulkan_features({**renamed, 'source': 'unknown-ota'}), [])
+        self.assertEqual(vulkan_features({**renamed, 'hwui_renderer': 'skiagl'}), [])
 
     def test_gradient_override_accepts_patched_r3_but_rejects_it_for_legacy_r2(self):
         config = {'name': 'Any_Renamed_Phone_AVD', 'port': 5584}
