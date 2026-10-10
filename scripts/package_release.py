@@ -510,10 +510,24 @@ def release_metadata(root, variant):
                 module_upgrade_preflight=MODULE_UPGRADE_PREFLIGHT)
             if build.get('boot_service_fix') is not None:
                 from manage import FORWARD_UPGRADE_POLICY
-                metadata['compatibility']['minimum_installer'] = '1.2.1'
                 metadata['compatibility'].pop('upgrade_from')
                 metadata['compatibility']['upgrade_policy'] = FORWARD_UPGRADE_POLICY
+    if metadata['format'] == 3:
+        from manage import VERSION
+        # New bundles require the verified encrypted-growth and TLS paths.
+        # Frozen published manifests retain their original installer minimum.
+        metadata['compatibility']['minimum_installer'] = VERSION
     return metadata
+
+
+def default_release_version(variant, metadata):
+    if variant == 'os4-official':
+        if metadata.get('build', {}).get('boot_service_fix') is not None:
+            return 'v0.2.4-a17-hyperos4-hongkong-r5'
+        if metadata['hyperos'] == '4.0.18.0.XFRCNXM':
+            return 'v0.2.2-a17-hyperos4-hongkong-r3'
+        return 'v0.2.1-a17-hyperos4-hongkong-r2'
+    return {'os3': 'v0.1.0', 'os4-pad': 'pad-v0.1.1-a17-hyperos4-yingtian-r2'}[variant]
 
 
 def runtime_files():
@@ -615,14 +629,7 @@ def main():
     elif args.variant == 'os4-pad':
         from release_pad import verify_image
         verify_image(root, metadata)
-    phone_version = ('v0.2.3-a17-hyperos4-hongkong-r4'
-                     if metadata.get('build', {}).get('boot_service_fix') is not None
-                     else 'v0.2.2-a17-hyperos4-hongkong-r3'
-                     if metadata['hyperos'] == '4.0.18.0.XFRCNXM'
-                     else 'v0.2.1-a17-hyperos4-hongkong-r2')
-    version = args.version or {'os3': 'v0.1.0',
-        'os4-official': phone_version,
-        'os4-pad': 'pad-v0.1.0-a17-hyperos4-yingtian-r1'}[args.variant]
+    version = args.version or default_release_version(args.variant, metadata)
     fetch_ksu(KSU_FILES)
     paths = {'images/' + name: root / 'images' / name for name in IMAGE_FILES}
     for relative in ('data/misc/modem_simulator', 'data/misc/emulator'):

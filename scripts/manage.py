@@ -24,7 +24,7 @@ import setup
 from https_transport import secure_urlopen
 from common import REPO_ROOT, avd_home, host_check, port_free, sdk_path, sha256
 
-VERSION = '1.2.1'
+VERSION = '1.2.2'
 MODULE_UPGRADE_PREFLIGHT = 'phone-owned-module-guards-v1'
 FORWARD_UPGRADE_POLICY = 'same-family-forward-v1'
 REPOSITORY = 'NEORUAA/HyperOS-AVD'

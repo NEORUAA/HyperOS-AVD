@@ -22,6 +22,7 @@ import test_manager
 R2 = 'v0.2.1-a17-hyperos4-hongkong-r2'
 R3 = 'v0.2.2-a17-hyperos4-hongkong-r3'
 R4 = 'v0.2.3-a17-hyperos4-hongkong-r4'
+R5 = 'v0.2.4-a17-hyperos4-hongkong-r5'
 OLD = 'OS4.0.17.0.XFRCNXM'
 NEW = '4.0.18.0.XFRCNXM'
 
@@ -43,10 +44,10 @@ class PhoneUpgradeTests(unittest.TestCase):
             path, original = helper.bundle(Path(directory) / 'bundle')
             old = r3_manifest(original)
             new = copy.deepcopy(old)
-            new['version'] = R4
+            new['version'] = R5
             new['build']['boot_service_fix'] = receipt()
             new['compatibility'].pop('upgrade_from')
-            new['compatibility'].update(minimum_installer='1.2.1', upgrade_policy=manage.FORWARD_UPGRADE_POLICY)
+            new['compatibility'].update(minimum_installer='1.2.2', upgrade_policy=manage.FORWARD_UPGRADE_POLICY)
             path.write_text(json.dumps(new))
             parsed, _ = setup.read_manifest(str(path))
             manage.compatible(old, parsed)
@@ -64,18 +65,22 @@ class PhoneUpgradeTests(unittest.TestCase):
                 path.write_text(json.dumps(bad))
                 with self.subTest(mutate=mutate), self.assertRaisesRegex(RuntimeError, 'r4|upgrade policy'):
                     setup.read_manifest(str(path))
-            for version in ('v0.2.0-a17-hyperos4-hongkong-r1', R2, R3):
-                source = copy.deepcopy(original if version != R3 else old)
+            for version in ('v0.2.0-a17-hyperos4-hongkong-r1', R2, R3, R4):
+                source = copy.deepcopy(original if version in (
+                    'v0.2.0-a17-hyperos4-hongkong-r1', R2) else old if version == R3 else new)
                 source['version'] = version
+                if version == R4:
+                    source['compatibility']['minimum_installer'] = '1.2.1'
                 with self.subTest(source=version):
                     manage.compatible(source, new)
-                    self.assertEqual(manage.firmware_change(source, new), version != R3)
+                    self.assertEqual(manage.firmware_change(source, new), version in (
+                        'v0.2.0-a17-hyperos4-hongkong-r1', R2))
             future = copy.deepcopy(new)
             future['version'] = 'v0.9.9-a17-hyperos4-hongkong-r999'
             path.write_text(json.dumps(future))
             setup.read_manifest(str(path))
             manage.compatible(new, future)
-            future['version'] = 'v0.2.3-a17-hyperos4-hongkong-r999'
+            future['version'] = 'v0.2.4-a17-hyperos4-hongkong-r999'
             path.write_text(json.dumps(future))
             setup.read_manifest(str(path))
             manage.compatible(new, future)
@@ -88,7 +93,7 @@ class PhoneUpgradeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'downgrades'):
                 manage.compatible(new, old)
 
-    def test_r4_metadata_requires_new_installer_and_retains_pinned_receipt(self):
+    def test_current_phone_metadata_requires_new_installer_and_retains_pinned_receipt(self):
         from apply_boot_service_fix import receipt
         build = {'source': common.OS4_SOURCE, 'hyperos': NEW, 'android_api': 37,
                  'archive_sha256': ARCHIVES[NEW], 'adb_authentication': True,
@@ -101,9 +106,10 @@ class PhoneUpgradeTests(unittest.TestCase):
             (root / 'local/build.json').write_text(json.dumps(build))
             metadata = package_release.release_metadata(root, 'os4-official')
             self.assertEqual(metadata['build']['boot_service_fix'], receipt())
-            self.assertEqual(metadata['compatibility']['minimum_installer'], '1.2.1')
+            self.assertEqual(metadata['compatibility']['minimum_installer'], '1.2.2')
             self.assertNotIn('upgrade_from', metadata['compatibility'])
             self.assertEqual(metadata['compatibility']['upgrade_policy'], manage.FORWARD_UPGRADE_POLICY)
+            self.assertEqual(package_release.default_release_version('os4-official', metadata), R5)
 
     def staging_fixture(self, folder):
         root = folder / 'instance'
@@ -197,7 +203,7 @@ class PhoneUpgradeTests(unittest.TestCase):
             metadata = package_release.release_metadata(root, 'os4-official')
             self.assertEqual(metadata['hyperos'], NEW)
             self.assertEqual(metadata['compatibility'], {
-                'minimum_installer': '1.2.0', 'userdata_family': 'os4-hongkong-api37-ranchu-4k',
+                'minimum_installer': '1.2.2', 'userdata_family': 'os4-hongkong-api37-ranchu-4k',
                 'upgrade_from': [R2], 'runtime_in_bundle': True,
                 'module_upgrade_preflight': manage.MODULE_UPGRADE_PREFLIGHT})
             source.write_text(json.dumps({**build, 'archive_sha256': 'f' * 64}))

@@ -107,6 +107,15 @@ class ManagerTests(unittest.TestCase):
         manage.compatible(old, new)
         with self.assertRaisesRegex(RuntimeError, 'downgrade'):
             manage.compatible(new, old)
+        for version in ('pad-v0.1.1-a17-hyperos4-yingtian-r999',
+                        'pad-v0.9.9-a17-hyperos4-yingtian-r999'):
+            future = {**new, 'version': version}
+            with self.subTest(version=version):
+                self.assertEqual(manage.release_variant({'tag_name': version}), 'os4-pad')
+                manage.compatible(old, future)
+                manage.compatible(new, future)
+                with self.assertRaisesRegex(RuntimeError, 'downgrade'):
+                    manage.compatible(future, new)
 
     def test_general_invalid_ram_is_rejected_before_owner_download_or_writes(self):
         with tempfile.TemporaryDirectory() as d:
@@ -420,6 +429,30 @@ class ManagerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'newer installer'):
                 self.invoke(root, path, directory / 'registry')
             self.assertFalse(root.exists())
+
+    def test_next_os4_bundles_refuse_installer_121_before_downloads_or_existing_data_mutation(self):
+        for variant in ('os4-official', 'os4-pad'):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as d:
+                directory = Path(d)
+                path, manifest = self.bundle(directory / 'bundle', variant=variant)
+                manifest['compatibility']['minimum_installer'] = '1.2.2'
+                path.write_text(json.dumps(manifest))
+                root = directory / 'instance'
+                before = self.legacy(root, manifest)
+                with patch.object(manage, 'VERSION', '1.2.1'), \
+                        patch.object(manage, 'owner') as owner, patch.object(manage, 'idle') as idle, \
+                        patch.object(setup, 'install_bundle') as extract, \
+                        patch.object(manage, 'backup') as backup:
+                    with self.assertRaisesRegex(RuntimeError, 'newer installer'):
+                        manage.install(root, path, 'Test_temp', 5580, Path('/sdk'),
+                                       manage.hardware(6, 32, 4))
+                for name, value in before.items():
+                    self.assertEqual((root / 'avd/Test_temp.avd' / name).read_bytes(), value)
+                self.assertEqual((root / 'images/system.img').read_bytes(), b'old firmware')
+                owner.assert_not_called()
+                idle.assert_not_called()
+                extract.assert_not_called()
+                backup.assert_not_called()
 
     def test_foreign_name_and_changed_port_refused(self):
         with tempfile.TemporaryDirectory() as d:

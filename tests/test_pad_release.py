@@ -67,7 +67,7 @@ class PadReleaseTests(unittest.TestCase):
             (root / 'local/build.json').write_text(json.dumps(build_info()))
             value = package_release.release_metadata(root, 'os4-pad')
             self.assertEqual(value['source_device'], 'yingtian')
-            self.assertEqual(value['compatibility'], {'minimum_installer': '1.1.0',
+            self.assertEqual(value['compatibility'], {'minimum_installer': '1.2.2',
                 'userdata_family': 'os4-yingtian-api37-ranchu-4k', 'upgrade_from': [], 'runtime_in_bundle': True})
             for key in ('hwui', 'flutter_engine', 'display', 'identity_source_sha256'):
                 self.assertEqual(value['build'][key], build_info()[key])
@@ -128,9 +128,11 @@ class PadReleaseTests(unittest.TestCase):
             root = Path(temporary)
             payload = root / 'system.img'
             payload.write_bytes(b'fixture')
-            result = package_release.write_bundle(root / 'bundle', 'pad-v0.1.0-a17-hyperos4-yingtian-r1',
+            version = package_release.default_release_version('os4-pad', {'hyperos': PROFILE['hyperos']})
+            self.assertEqual(version, 'pad-v0.1.1-a17-hyperos4-yingtian-r2')
+            result = package_release.write_bundle(root / 'bundle', version,
                 {'format': 3, 'variant': 'os4-pad', 'build': {}}, {'images/system.img': payload}, 1)
-            self.assertEqual(result['version'], 'pad-v0.1.0-a17-hyperos4-yingtian-r1')
+            self.assertEqual(result['version'], version)
 
     def test_signed_factory_apk_keeps_original_native_inputs(self):
         data = io.BytesIO()
