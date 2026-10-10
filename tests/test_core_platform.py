@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import copy
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'scripts'))
@@ -17,6 +18,154 @@ import core_platform as platform
 import core_legacy as legacy
 import package_native_module
 import test_native_module_runtime as fixture
+
+
+class LegacyFlutterReceiptTests(unittest.TestCase):
+    """Authenticate the frozen public r4 contract without proprietary binaries."""
+    def setUp(self):
+        import apply_flutter_fix as flutter
+        from phone_profile import profile
+        from patch_flutter import PROFILES
+        from patch_weather import APK_SHA256
+        selected = profile('4.0.18.0.XFRCNXM')
+        self.before = selected['pins']['flutter']
+        self.after = PROFILES[self.before]['legacy'][0]
+        self.hook = '416cb8720a6b7b9e075d0fa607cf7bf42f5c2113bbb31aeb0ce61ca86f878cc0'
+        weather = 'com.miui.weather2'
+        paths = {'com.miui.home': '/product/priv-app/MiuiHome/MiuiHome.apk',
+                 weather: '/product/app/MIUIWeather/MIUIWeather.apk'}
+        hashes = {'com.miui.home': selected['pins']['home_apk'], weather: APK_SHA256}
+        engine = 'd67e5c634800a97cd853fd425ded4752c43c2c879fe7269c8b9ffab6c5104836'
+        self.manifest = {'revision': 7,
+            'firmware': {'source': 'official-hongkong-ota', 'incremental': selected['incremental'],
+                         'shared_input_sha256': self.before},
+            'system': {'target': flutter.SYSTEM_LIB, 'before': self.before, 'after': self.after},
+            'apks': [{'package': weather, 'apk_target': paths[weather], 'payload': weather + '.so',
+                      'target': '/product/app/MIUIWeather/lib/arm64/libhyper_os_flutter.so',
+                      'before': engine, 'after': PROFILES[engine]['output'], 'apk_sha256': APK_SHA256}],
+            'packages': paths, 'apk_hashes': hashes, 'startup_script_sha256': self.hook}
+
+    def assets(self, manifest=None):
+        value = self.manifest if manifest is None else manifest
+        return legacy.reviewed_assets('hyperos_avd_flutter_render', value, json.dumps(value))
+
+    def inventory(self):
+        # The frozen producer writes these canonical files. Hash pins for the
+        # proprietary ELF and old hooks are checked without executing either.
+        item = self.manifest['apks'][0]
+        return {'manifest.json': platform.digest(json.dumps(self.manifest)),
+                'flutter.so': self.after, item['payload']: item['after'],
+                'post-fs-data.sh': self.hook, 'service.sh': self.hook,
+                'module.prop': 'd738bf4d476f7fd6deaf77a286848b86fcff7c77e977472e7cca69acded3ee98',
+                'targets.conf': platform.digest(f'SYSTEM_BEFORE={self.before}\nSYSTEM_AFTER={self.after}\n'),
+                'apks.conf': platform.digest('|'.join(item[key] for key in
+                    ('package', 'payload', 'apk_target', 'target', 'before', 'after', 'apk_sha256')) + '\n')}
+
+    def inspect(self, inventory=None, lifecycle='present'):
+        supplied = self.inventory() if inventory is None else inventory
+        commands = []
+        directory = '/data/adb/modules/hyperos_avd_flutter_render'
+        def guest(config, command):
+            commands.append(command)
+            if 'elif [ -e ' in command:
+                return lifecycle if directory + ' ]' in command else 'absent'
+            if '__HYPEROS_RECORD_END__' in command:
+                return 'present\n' + json.dumps(self.manifest) + '\n__HYPEROS_RECORD_END__'
+            if '-mindepth 1 -type d' in command:
+                return '\n'.join(checksum + '|' + name for name, checksum in sorted(supplied.items()))
+            raise AssertionError('Unexpected command: ' + command)
+        return legacy.inspect_legacy(guest, {}), commands
+
+    def test_public_r4_revision_seven_authenticates_old_output_and_frozen_hooks(self):
+        values = self.assets()
+        self.assertEqual(values['flutter.so'], {self.after})
+        self.assertEqual(values['post-fs-data.sh'], {self.hook})
+        self.assertEqual(values['service.sh'], {self.hook})
+        # Bind the property file to the reviewed historical revision, not Core's current producer.
+        self.assertEqual(values['module.prop'],
+                         {'d738bf4d476f7fd6deaf77a286848b86fcff7c77e977472e7cca69acded3ee98'})
+
+    def test_complete_public_r4_inventory_is_eligible_for_retirement(self):
+        items, commands = self.inspect()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['status'], 'audited')
+        self.assertEqual(items[0]['reason'], 'exact-reviewed-owner')
+        self.assertIn('snapshot', items[0])
+        self.assertTrue(any('-mindepth 1 -type d' in command for command in commands))
+        self.assertFalse(any('uninstall.sh' in command or 'sh /data/adb/modules/' in command for command in commands))
+
+    def test_tampered_or_extra_payload_keeps_legacy_owner_and_conflicting_role(self):
+        for changed in ('service.sh', 'flutter.so', 'module.prop', 'unreviewed.so'):
+            inventory = self.inventory(); inventory[changed] = '0' * 64
+            with self.subTest(changed=changed):
+                items, commands = self.inspect(inventory)
+                self.assertEqual(items[0]['status'], 'preserved')
+                self.assertEqual(items[0]['features'], ['flutter'])
+                self.assertNotIn('snapshot', items[0])
+                self.assertFalse(any('\nmv ' in command for command in commands))
+
+    def test_legacy_lifecycle_choices_are_not_bypassed_by_a_known_revision(self):
+        for lifecycle in ('pending', 'disable\npresent', 'remove\npresent'):
+            with self.subTest(lifecycle=lifecycle):
+                items, commands = self.inspect(lifecycle=lifecycle)
+                self.assertEqual(items[0]['status'], 'preserved')
+                self.assertEqual(items[0]['reason'], 'legacy-lifecycle-choice')
+                self.assertFalse(any('-mindepth 1 -type d' in command for command in commands))
+
+    def test_current_receipt_remains_separate_from_the_frozen_contract(self):
+        import apply_flutter_fix as flutter
+        from patch_flutter import PROFILES
+        value = copy.deepcopy(self.manifest)
+        value.update(revision=flutter.REVISION, skipped_apks={})
+        value['system']['after'] = PROFILES[self.before]['output']
+        value['startup_script_sha256'] = platform.digest(flutter.boot_script(
+            value['firmware']['source'], value['firmware']))
+        self.assertIn(value['startup_script_sha256'], self.assets(value)['service.sh'])
+        self.assertNotIn(self.hook, self.assets(value)['service.sh'])
+
+    def test_unknown_revision_and_changed_historical_schema_are_rejected(self):
+        for change in ({'revision': 6}, {'revision': 9}, {'revision': '7'}, {'revision': 7.0},
+                       {'skipped_apks': {}}, {'unreviewed': True}):
+            value = {**self.manifest, **change}
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'schema'):
+                self.assets(value)
+        value = copy.deepcopy(self.manifest); del value['apk_hashes']
+        with self.assertRaisesRegex(ValueError, 'schema'):
+            self.assets(value)
+
+    def test_firmware_pin_and_hook_tampering_cannot_authorize_retirement(self):
+        for field, changed in (('shared_input_sha256', '0' * 64),
+                               ('incremental', 'OS4.0.17.0.XFRCNXM'), ('unreviewed', True)):
+            value = copy.deepcopy(self.manifest); value['firmware'][field] = changed
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'provenance'):
+                self.assets(value)
+        value = copy.deepcopy(self.manifest); value['startup_script_sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'startup receipt'):
+            self.assets(value)
+
+    def test_native_hashes_must_belong_to_the_same_audited_edge(self):
+        from patch_flutter import PROFILES
+        for field, changed in (('before', '0' * 64), ('after', '0' * 64),
+                               ('after', PROFILES['d67e5c634800a97cd853fd425ded4752c43c2c879fe7269c8b9ffab6c5104836']['output']),
+                               ('after', PROFILES[self.before]['output'])):
+            value = copy.deepcopy(self.manifest); value['system'][field] = changed
+            with self.subTest(field=field, changed=changed), self.assertRaisesRegex(ValueError, 'system payload'):
+                self.assets(value)
+
+    def test_changed_package_inventory_or_payload_contract_is_rejected(self):
+        for field, changed in (('payload', 'foreign.so'), ('before', '0' * 64),
+                               ('after', '0' * 64), ('apk_sha256', '0' * 64),
+                               ('unreviewed', True), ('external', False)):
+            value = copy.deepcopy(self.manifest); value['apks'][0][field] = changed
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.assets(value)
+        for field in ('packages', 'apk_hashes'):
+            value = copy.deepcopy(self.manifest); value[field]['foreign'] = 'unknown'
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'package inventory'):
+                self.assets(value)
+        value = copy.deepcopy(self.manifest); value['apks'] *= 2
+        with self.assertRaisesRegex(ValueError, 'APK receipt'):
+            self.assets(value)
 
 
 class CorePlatformShellTests(unittest.TestCase):

@@ -16,6 +16,17 @@ LOGS = {'flutter-fix.log', 'render-fix.log', 'navigation-fix.log', 'navigation.l
         'wake.log', 'daemon.pid', 'startup.guard', 'startup.lock/pid', 'startup.lock/boot'}
 
 
+# Frozen public r4 producer: apply_flutter_fix.py SHA-256
+# c4df0c95d91a46aa0be7be9593ca7af4fe84c71eef56d9e154da05dde9c1235c.
+# These old hooks are authenticated for retirement only, never executed.
+FLUTTER_V7_RECORDS = {
+    ('official-hongkong-ota', 'OS4.0.18.0.XFRCNXM',
+     '7f88d7f4d9a464fdd56fb255642c9d300f28f50272ccf5fd31f082c1a52e17f4'):
+        {'hook_sha256': '416cb8720a6b7b9e075d0fa607cf7bf42f5c2113bbb31aeb0ce61ca86f878cc0',
+         'system_after_sha256': '439bb47881f64431ba43dc4de5788e7f0a3a0c4e78102b47cc8f0daa6229b91b'},
+}
+
+
 def _body(values, name, content):
     values[name] = {digest(content)}
 
@@ -74,8 +85,15 @@ def reviewed_assets(module_id, manifest, text):
     elif module_id == 'hyperos_avd_flutter_render':
         import apply_flutter_fix as flutter
         from native_patch_catalog import catalog
-        if (manifest.get('revision') != flutter.REVISION or set(manifest) !=
-                {'revision', 'firmware', 'system', 'apks', 'packages', 'apk_hashes', 'startup_script_sha256', 'skipped_apks'}):
+        revision = manifest.get('revision')
+        keys = {'revision', 'firmware', 'system', 'apks', 'packages', 'apk_hashes', 'startup_script_sha256'}
+        if type(revision) is not int:
+            raise ValueError('Unreviewed Flutter receipt schema.')
+        if revision == flutter.REVISION:
+            keys.add('skipped_apks')
+        elif revision != 7:
+            raise ValueError('Unreviewed Flutter receipt schema.')
+        if set(manifest) != keys:
             raise ValueError('Unreviewed Flutter receipt schema.')
         firmware = manifest['firmware']
         if not isinstance(firmware, dict):
@@ -86,15 +104,43 @@ def reviewed_assets(module_id, manifest, text):
             raise ValueError('Unreviewed Flutter source.')
         if source == 'official-yingtian-ota' and firmware.get('incremental') != 'OS4.0.15.0.XBMCNXM':
             raise ValueError('Unreviewed Flutter tablet profile.')
-        edges = {(item['before'], item['after']) for item in catalog()['profiles'] if item['feature'] == 'flutter'}
+        historical_hook = None
+        if revision == 7:
+            historical = FLUTTER_V7_RECORDS.get((source, firmware.get('incremental'),
+                                                 firmware.get('shared_input_sha256')))
+            if historical is None or set(firmware) != {'source', 'incremental', 'shared_input_sha256'}:
+                raise ValueError('Unreviewed historical Flutter firmware provenance.')
+            historical_hook = historical['hook_sha256']
+            if (not isinstance(manifest['packages'], dict) or not isinstance(manifest['apk_hashes'], dict)
+                    or set(manifest['packages']) != set(flutter.PACKAGES)
+                    or set(manifest['apk_hashes']) != set(flutter.PACKAGES)
+                    or not isinstance(manifest['apks'], list)):
+                raise ValueError('Unreviewed historical Flutter package inventory.')
+        edges = {(item['before'], output) for item in catalog()['profiles'] if item['feature'] == 'flutter'
+                 for output in (item['after'], *item['legacy'])}
         system = manifest['system']
         if (not isinstance(system, dict) or set(system) != {'target', 'before', 'after'}
                 or system['target'] != flutter.SYSTEM_LIB or (system['before'], system['after']) not in edges):
             raise ValueError('Unreviewed Flutter system payload.')
+        if historical_hook is not None and (system['before'] != firmware['shared_input_sha256']
+                                           or system['after'] != historical['system_after_sha256']):
+            raise ValueError('Historical Flutter system payload differs from its firmware provenance.')
         values['flutter.so'] = {system['after']}
         _body(values, 'targets.conf', ''.join(key + '=' + shlex.quote(value) + '\n' for key, value in
                                              {'SYSTEM_BEFORE': system['before'], 'SYSTEM_AFTER': system['after']}.items()))
+        seen = set()
         for item in manifest['apks']:
+            if historical_hook is not None:
+                required = {'package', 'payload', 'apk_target', 'target', 'before', 'after', 'apk_sha256'}
+                if (not isinstance(item, dict) or set(item) not in (required, required | {'external'})
+                        or 'external' in item and item['external'] is not True
+                        or item.get('package') in seen
+                        or item.get('apk_target') != manifest['packages'].get(item.get('package'))
+                        or item.get('apk_sha256') != manifest['apk_hashes'].get(item.get('package'))
+                        or not isinstance(item.get('apk_sha256'), str)
+                        or not re.fullmatch('[0-9a-f]{64}', item['apk_sha256'])):
+                    raise ValueError('Unreviewed historical Flutter APK receipt.')
+                seen.add(item['package'])
             if (not isinstance(item, dict) or item.get('package') not in flutter.PACKAGES
                     or item.get('payload') != item['package'] + '.so'
                     or (item.get('before'), item.get('after')) not in edges
@@ -106,10 +152,13 @@ def reviewed_assets(module_id, manifest, text):
                 values[item['payload'] + '.original'] = {item['before']}
         _body(values, 'apks.conf', ''.join('|'.join(item[key] for key in
               ('package', 'payload', 'apk_target', 'target', 'before', 'after', 'apk_sha256')) + '\n' for item in manifest['apks']))
-        _hooks(values, flutter.hook_versions(source, firmware))
+        if historical_hook is None:
+            _hooks(values, flutter.hook_versions(source, firmware))
+        else:
+            values['post-fs-data.sh'] = values['service.sh'] = {historical_hook}
         if manifest['startup_script_sha256'] not in values['service.sh']:
             raise ValueError('Unreviewed Flutter startup receipt.')
-        _body(values, 'module.prop', f'id={module_id}\nname=HyperOS AVD Flutter render fix\nversion={flutter.REVISION}\nversionCode={flutter.REVISION}\nauthor=HyperOS-AVD\ndescription=Native depth, Float16, storage alignment and dispersion shadow fix for the official ARM64 AVD\n')
+        _body(values, 'module.prop', f'id={module_id}\nname=HyperOS AVD Flutter render fix\nversion={revision}\nversionCode={revision}\nauthor=HyperOS-AVD\ndescription=Native depth, Float16, storage alignment and dispersion shadow fix for the official ARM64 AVD\n')
     elif module_id == 'hyperos_avd_assistant_mgl':
         import apply_assistant_fix as assistant
         import patch_assistant as patch
