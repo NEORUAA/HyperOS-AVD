@@ -268,25 +268,17 @@ class ReleasePreparationTests(unittest.TestCase):
         self.assertEqual(info['boot_policy'], self.boot_receipt)
 
     def test_pad_preparation_keeps_shared_boot_policy_and_extra_logical_partitions(self):
-        import apply_pad_camera_native_fix as camera
-        import patch_weather as weather
+        import apply_app_compat
         self.use_pad_profile()
         self.entries['/system/build.prop'] = b'ro.adb.secure=0\nro.debuggable=0\nro.product.device=yingtian\n'
-        (self.source / 'work/weather-angle-fix').mkdir(parents=True)
-        (self.source / 'work/weather-angle-fix/libhgl.so').write_bytes(b'verified bridge fixture')
-        (self.source / 'tools/weather-angle').mkdir()
-        angle = {'libEGL_angle.so': b'verified EGL fixture', 'libGLESv2_angle.so': b'verified GLES fixture'}
-        for name, data in angle.items():
-            (self.source / 'tools/weather-angle' / name).write_bytes(data)
+        self.assertFalse((self.source / 'work').exists())
         original = self.source_files()
         self.mocked_pipeline(boot_kind='pad')
-        with patch.dict(weather.ANGLE, {name: digest(data) for name, data in angle.items()}, clear=True), \
-                patch.object(weather, 'verify_bridge_prebuilt', return_value={'verified': True}) as bridge, \
-                patch.object(camera, 'build', return_value=None) as camera_build:
+        with patch.object(apply_app_compat, 'prepare_prebuilt') as apps:
             prepare.prepare(self.source, self.output, 'os4-pad')
-        bridge.assert_called_once_with(self.output / 'tools/weather-angle')
-        camera_build.assert_called_once_with(None, self.output / 'work/verified-camera')
+        apps.assert_called_once_with(self.output, cache_roots=[self.output, self.source])
         self.assertEqual(self.source_files(), original)
+        self.assertFalse((self.source / 'work').exists())
         self.assertFalse((self.output / 'avd').exists())
         packed = dict(self.packs[0])
         for name, data in self.partitions.items():

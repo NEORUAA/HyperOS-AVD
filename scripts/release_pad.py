@@ -86,7 +86,7 @@ def verify_image(root, metadata):
     from build_image import erofs
     from os4_defaults import COMPONENT_XML, LOG_SCRIPT, LOG_TAGS, GRADIENT_BLUR_INIT, REFRESH_INIT, REFRESH_SCRIPT
     from os4_pad import refresh_script
-    from patch_weather import PAD_APK, PAD_APK_SHA256, PAD_LIBRARIES, verify_bridge_prebuilt
+    from patch_weather import PAD_APK, PAD_APK_SHA256, PAD_LIBRARIES
     from patch_assistant import profile as manifest
     from patch_composer import MANIFEST as COMPOSER
     from patch_audio import MANIFEST as AUDIO
@@ -149,11 +149,7 @@ def verify_image(root, metadata):
                        'disk.dataPartition.size': '32G'}.items():
         if template.get(key) != value:
             raise RuntimeError('Pad release hardware profile differs: ' + key)
-    verify_bridge_prebuilt(root / 'tools/weather-angle')
-    previous = camera.ROOT
-    try:
-        camera.ROOT = root
-        camera.build(None, root / 'work/release-camera-preflight')
-    finally:
-        camera.ROOT = previous
+    from app_compat_catalog import verify_prebuilt
+    from app_compat_producers import recipes
+    verify_prebuilt(root / 'tools/os4-app-compat', recipes())
     print(f'Pad preflight passed: three packed partitions, official identity/XML, defaults, {len(expected) + len(natives) + boot_policy_files} signed/native files and prebuilt bridges.', flush=True)

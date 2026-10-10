@@ -201,8 +201,7 @@ def prepare_boot_services(source, output):
 
 def prepare_pad(source, output, info):
     from os4_pad import PROFILE, SOURCE
-    from patch_weather import ANGLE, bridge_prebuilt_receipt, verify_bridge_prebuilt
-    from apply_pad_camera_native_fix import build as camera_build
+    from apply_app_compat import prepare_prebuilt
     validate_pad_source(info)
     # The running candidate may have been replaced after the builder's raw image.
     # Derive every partition from the actual packed image, never its stale cache.
@@ -224,21 +223,9 @@ def prepare_pad(source, output, info):
     partitions.extend((path.stem, path) for path in sorted((work / 'accepted').glob('*.img'))
                       if path.stem != 'system')
     pack(source / 'images/system.img', output / 'images/system.img', partitions)
-    cache = output / 'tools/weather-angle'
-    for name, checksum in ANGLE.items():
-        if sha256(cache / name) != checksum:
-            raise RuntimeError('Unverified Weather ANGLE release input: ' + name)
-    clone(source / 'work/weather-angle-fix/libhgl.so', cache / 'libhgl.so')
-    (cache / 'receipt.json').write_text(json.dumps(bridge_prebuilt_receipt(), indent=2) + '\n')
-    verify_bridge_prebuilt(cache)
-    # Its own source/hash receipt checks that end users will not need an NDK.
-    import apply_pad_camera_native_fix
-    previous = apply_pad_camera_native_fix.ROOT
-    try:
-        apply_pad_camera_native_fix.ROOT = output
-        camera_build(None, work / 'verified-camera')
-    finally:
-        apply_pad_camera_native_fix.ROOT = previous
+    # The authenticated universal archive owns Weather and Camera payloads.
+    # A release must remain buildable after disposable producer caches vanish.
+    prepare_prebuilt(output, cache_roots=[output, source])
     template = output / 'config/avd.ini'
     text = template.read_text().replace('disk.dataPartition.size=6G', 'disk.dataPartition.size=32G')
     template.write_text(text)
