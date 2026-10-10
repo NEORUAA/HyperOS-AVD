@@ -387,11 +387,14 @@ def validate_userdata(sdk, avd):
             raise RuntimeError('Unexpected userdata/key backing chain; preserved without booting: ' + str(overlay))
 
 
-def resize(sdk, avd, gib, *, allow_guest=False):
+def resize(sdk, avd, gib, *, allow_guest=False, backup=None):
     """Grow and verify the effective ext4, even when its virtual disk is already larger."""
     from userdata_resize import resize_userdata
     if allow_guest:
-        return resize_userdata(sdk, avd, gib * 1024**3, allow_guest=True)
+        options = {'allow_guest': True}
+        if backup is not None:
+            options['backup'] = backup
+        return resize_userdata(sdk, avd, gib * 1024**3, **options)
     return resize_userdata(sdk, avd, gib * 1024**3)
 
 
@@ -428,7 +431,7 @@ def prepare_storage(root, name, port, sdk, gib, folder):
     owner(root, name)
     idle(root, name, port)
     avd = root / 'avd' / (name + '.avd')
-    result = resize(sdk, avd, gib, allow_guest=True)
+    result = resize(sdk, avd, gib, allow_guest=True, backup=folder)
     if not result.get('guest_required'):
         return result
     manifest = storage_boot_metadata(root, folder)

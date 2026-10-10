@@ -682,6 +682,15 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(manage.resize(Path('/sdk'), Path('/private/instance.avd'), 32), {'changed': True})
         grow.assert_called_once_with(Path('/sdk'), Path('/private/instance.avd'), 32 * 1024**3)
 
+    def test_encrypted_resize_forwards_only_explicit_complete_backup(self):
+        folder = Path('/private/backup')
+        with patch('userdata_resize.resize_userdata', return_value={'guest_required': True}) as grow:
+            result = manage.resize(Path('/sdk'), Path('/private/instance.avd'), 32,
+                                   allow_guest=True, backup=folder)
+        self.assertTrue(result['guest_required'])
+        grow.assert_called_once_with(Path('/sdk'), Path('/private/instance.avd'), 32 * 1024**3,
+                                     allow_guest=True, backup=folder)
+
     def test_new_instance_does_not_touch_other_workspace(self):
         with tempfile.TemporaryDirectory() as d:
             folder = Path(d)

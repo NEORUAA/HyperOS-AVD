@@ -53,6 +53,10 @@ class OpaqueFilesystemError(RuntimeError):
     """The effective device cannot be decoded by host ext4 tools."""
 
 
+class OfflineBackupRequiredError(OpaqueFilesystemError):
+    """An otherwise eligible encrypted growth needs its complete offline backup."""
+
+
 def check_dependencies(sdk):
     """Let installation entrypoints report missing offline tools before writes."""
     qemu = Path(sdk) / 'emulator/qemu-img'
@@ -70,6 +74,19 @@ def digest(path):
     with path.open('rb') as stream:
         for block in iter(lambda: stream.read(8 * 1024**2), b''):
             value.update(block)
+    return value.hexdigest()
+
+
+def _prefix_digest(path, size):
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        remaining = size
+        while remaining:
+            block = stream.read(min(remaining, 8 * 1024**2))
+            if not block:
+                raise RuntimeError('Staged userdata lost original bytes; activation refused.')
+            value.update(block)
+            remaining -= len(block)
     return value.hexdigest()
 
 
@@ -322,6 +339,138 @@ def _defer_guest(qemu, avd, layers, wanted):
             'guest_required': True, 'userdata_capacity_token': token}
 
 
+def _verified_offline_backup(avd, folder, hashes):
+    """Require the complete manager backup to match this stopped original chain."""
+    refusal = 'Encrypted disk growth requires a matching complete offline userdata/key backup.'
+    if folder is None:
+        raise OfflineBackupRequiredError(refusal)
+    folder = Path(folder).expanduser()
+    receipt, data = folder / 'backup.json', folder / 'avd'
+    if (folder.is_symlink() or not folder.is_dir() or data.is_symlink() or not data.is_dir()
+            or receipt.is_symlink() or not receipt.is_file() or receipt.stat().st_nlink != 1
+            or folder.resolve() == avd or avd in folder.resolve().parents):
+        raise OpaqueFilesystemError(refusal)
+    try:
+        saved = json.loads(receipt.read_text())
+        if (not isinstance(saved, dict) or saved.get('name') != avd.name.removesuffix('.avd')
+                or not isinstance(saved.get('files'), dict) or set(hashes) != set(LAYER_NAMES)):
+            raise ValueError('foreign backup')
+        for name, checksum in hashes.items():
+            path = data / name
+            if (saved['files'].get('avd/' + name) != checksum or path.is_symlink()
+                    or not path.is_file() or path.stat().st_nlink != 1 or digest(path) != checksum):
+                raise ValueError('incomplete or mismatched backup')
+        marker = data / 'qemu-version.txt'
+        if (marker.is_symlink() or not marker.is_file() or marker.stat().st_nlink != 1
+                or marker.read_bytes() != (avd / 'qemu-version.txt').read_bytes()):
+            raise ValueError('missing backing version')
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise OpaqueFilesystemError(refusal) from error
+    return str(folder.resolve())
+
+
+def _grow_opaque_capacity(qemu, avd, layers, wanted, folder):
+    """Extend only disk capacity; leave ciphertext and ext4 growth to the guest."""
+    current = layers[DATA]['virtual-size']
+    # This requires equal original raw/overlay capacities before any write.
+    # A mismatched chain is not an authenticated encrypted-growth source.
+    context = _opaque_context(qemu, avd, layers, current)
+    if wanted <= current or wanted % context['base_filesystem']['block_size']:
+        raise OpaqueFilesystemError('Encrypted disk growth requires a larger aligned capacity.')
+    _capacity_marker(avd)
+    _guest_capacity_marker(avd)
+    marker = avd / 'qemu-version.txt'
+    marker_bytes, marker_before = marker.read_bytes(), marker.stat()
+    before = {name: (avd / name).stat() for name in layers}
+    if marker_before.st_nlink != 1 or any(before[name].st_nlink != 1 for name in layers):
+        raise OpaqueFilesystemError('Refused aliased userdata/key files before encrypted disk growth.')
+    hashes = {name: digest(avd / name) for name in layers}
+    external_backup = _verified_offline_backup(avd, folder, hashes)
+    _chain_unchanged(qemu, avd, layers, before)
+    names = (DATA, DATA + '.qcow2')
+    allocated = sum(before[name].st_blocks * 512 for name in layers)
+    if shutil.disk_usage(avd).free < allocated + wanted // 50 + 64 * 1024**2:
+        raise RuntimeError('Insufficient free host storage for staged encrypted disk growth; originals were preserved.')
+    pending = avd / PENDING
+    pending.mkdir(mode=0o700)
+    receipt = {'schema': SCHEMA, 'avd': str(avd), 'original_sha256': hashes,
+               'requested_bytes': wanted, 'before': context['base_filesystem'],
+               'mode': 'opaque-disk-capacity', 'previous_disk_bytes': current,
+               'offline_backup': external_backup}
+    try:
+        (pending / 'original').mkdir()
+        (pending / 'staged').mkdir()
+        _json(pending / 'transaction.json', receipt)
+    except BaseException:
+        shutil.rmtree(pending)
+        raise
+    log = pending / 'commands.log'
+    try:
+        staged = pending / 'staged'
+        # Copy the raw base alone, never flatten/decrypt the effective top.
+        _run([qemu, 'convert', '-O', 'raw', avd / DATA, staged / DATA], log=log)
+        shutil.copystat(avd / DATA, staged / DATA)
+        shutil.copy2(avd / names[1], staged / names[1])
+        _run([qemu, 'check', staged / names[1]], log=log)
+        # Sparse conversion may change allocation without changing any byte.
+        if _info(qemu, staged / DATA)['virtual-size'] != current or digest(staged / DATA) != hashes[DATA]:
+            raise RuntimeError('Staged encrypted base differs from the complete original bytes.')
+        _run([qemu, 'compare', avd / DATA, staged / DATA], log=log)
+        # Identical QCOW2 bytes can inherit a different allocation map from
+        # the sparsified raw base. Pin the overlay itself and compare sectors.
+        if (_info(qemu, staged / names[1])['virtual-size'] != current
+                or digest(staged / names[1]) != hashes[names[1]]):
+            raise RuntimeError('Staged encrypted overlay differs from the complete original bytes.')
+        _run([qemu, 'compare', avd / names[1], staged / names[1]], log=log)
+        _run([qemu, 'resize', staged / DATA, wanted], log=log)
+        _run([qemu, 'resize', staged / names[1], wanted], log=log)
+        staged_layers = _layers(qemu, staged)
+        if any(staged_layers[name]['virtual-size'] != wanted for name in names):
+            raise RuntimeError('Staged encrypted disk capacity did not match the request.')
+        if _prefix_digest(staged / DATA, current) != hashes[DATA]:
+            raise RuntimeError('Staged encrypted disk changed original base bytes.')
+        # Non-strict compare permits a larger device only when the extra
+        # sectors read as zero; all sectors in the original range must match.
+        _run([qemu, 'compare', avd / DATA, staged / DATA], log=log)
+        _run([qemu, 'compare', avd / names[1], staged / names[1]], log=log)
+        _run([qemu, 'check', staged / names[1]], log=log)
+        for name in names:
+            with (staged / name).open('rb') as stream:
+                os.fsync(stream.fileno())
+        for name in layers:
+            if name.startswith('encryptionkey'):
+                saved = pending / 'original' / name
+                shutil.copy2(avd / name, saved)
+                with saved.open('rb') as stream:
+                    os.fsync(stream.fileno())
+        _sync_directory(staged)
+        _sync_directory(pending / 'original')
+        _chain_unchanged(qemu, avd, layers, before)
+        if (marker.is_symlink() or not marker.is_file() or marker.read_bytes() != marker_bytes or any(
+                getattr(marker_before, field) != getattr(marker.stat(), field)
+                for field in ('st_dev', 'st_ino', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns'))):
+            raise RuntimeError('Original backing version changed during staging; activation refused.')
+        if any(digest(avd / name) != checksum for name, checksum in hashes.items()):
+            raise RuntimeError('Original userdata/key bytes changed during staging; activation refused.')
+        prepared = {name: digest(staged / name) for name in names}
+        _json(pending / 'transaction.json', {**receipt, 'staged_sha256': prepared})
+        _activate(avd, pending, names)
+        final_layers = _layers(qemu, avd)
+        result = _defer_guest(qemu, avd, final_layers, wanted)
+        if (any(digest(avd / name) != prepared[name] for name in names)
+                or any(digest(avd / name) != hashes[name] for name in layers if name.startswith('encryptionkey'))):
+            raise RuntimeError('Activated encrypted disk or key bytes failed verification.')
+        retained = avd / ('.userdata-resize-backup-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
+        pending.rename(retained)
+        _sync_directory(avd)
+    except BaseException:
+        _recover(avd)
+        raise
+    return {**result, 'changed': True, 'disk_capacity_bytes': wanted,
+            'previous_disk_capacity_bytes': current, 'backup': external_backup,
+            'transaction_backup': str(retained)}
+
+
 def _remember_filesystem(qemu, avd, layers, geometry, *, base_sha256=None, publish=True):
     """Record measured plaintext capacity; never infer it from a virtual disk size."""
     current = _capacity_marker(avd)
@@ -500,7 +649,7 @@ def _activate(avd, pending, names):
         _sync_directory(avd)
 
 
-def _resize_userdata(sdk, avd, wanted, *, allow_guest=False):
+def _resize_userdata(sdk, avd, wanted, *, allow_guest=False, backup=None):
     """Grow the effective ext4 and rebuild its coherent raw/QCOW2 chain offline."""
     avd = Path(avd).resolve()
     if type(wanted) is not int or wanted <= 0 or type(allow_guest) is not bool:
@@ -523,6 +672,8 @@ def _resize_userdata(sdk, avd, wanted, *, allow_guest=False):
         except OpaqueFilesystemError:
             if DATA + '.qcow2' not in layers:
                 raise
+            if allow_guest and any(layers[name]['virtual-size'] < wanted for name in data_names):
+                return _grow_opaque_capacity(qemu, avd, layers, wanted, backup)
             try:
                 return _opaque_continuity(qemu, avd, layers, wanted)
             except OpaqueFilesystemError:
@@ -645,15 +796,15 @@ def _resize_lock(avd):
         yield avd
 
 
-def resize_userdata(sdk, avd, wanted, *, allow_guest=False):
-    """Grow offline, or explicitly defer an opaque same-size chain to the guest.
+def resize_userdata(sdk, avd, wanted, *, allow_guest=False, backup=None):
+    """Grow offline, or explicitly prepare/defer an opaque chain for the guest.
 
-    A deferred result contains no filesystem-capacity claim and changes no
-    userdata/key image or proof. Pass its in-memory token directly to the
-    owned guest helper; never accept an external JSON attestation as input.
+    A same-size deferral changes no images. Disk-only encrypted growth requires
+    explicit allow_guest and a matching complete offline backup. Neither path
+    claims filesystem capacity: pass its token to the owned guest helper.
     """
     with _resize_lock(avd) as folder:
-        return _resize_userdata(sdk, folder, wanted, allow_guest=allow_guest)
+        return _resize_userdata(sdk, folder, wanted, allow_guest=allow_guest, backup=backup)
 
 
 def publish_guest_capacity(sdk, avd, wanted, verified_guest_record):
@@ -662,7 +813,8 @@ def publish_guest_capacity(sdk, avd, wanted, verified_guest_record):
     This API is a trust boundary for the caller, not a JSON import interface.
     The caller must pass the record returned by userdata_guest unchanged.
     Raw bases and the original four layer identities must survive that boot;
-    writable overlay bytes may legitimately change. No ciphertext is resized.
+    writable overlay bytes may legitimately change. Disk-container growth
+    preserves original ciphertext; only the guest grows the decrypted ext4.
     """
     with _resize_lock(avd) as folder:
         return _publish_guest_capacity(sdk, folder, wanted, verified_guest_record)

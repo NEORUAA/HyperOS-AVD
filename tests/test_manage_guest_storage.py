@@ -130,7 +130,8 @@ class ManageGuestStorageTests(unittest.TestCase):
         self.mocks['resize'].return_value = proof
         (self.root / 'local/installed-release.json').unlink()
         self.assertEqual(self.prepare(), proof)
-        self.mocks['resize'].assert_called_once_with(self.sdk, self.avd, 32, allow_guest=True)
+        self.mocks['resize'].assert_called_once_with(self.sdk, self.avd, 32,
+                                                   allow_guest=True, backup=self.folder)
         self.mocks['popen'].assert_not_called()
         self.mocks['adb'].assert_not_called()
         self.guest.verify_and_grow.assert_not_called()
@@ -232,7 +233,8 @@ class ManageGuestStorageTests(unittest.TestCase):
         self.mocks['resize'].side_effect = None
         self.mocks['resize'].return_value = {'changed': False, 'filesystem_bytes': 32 * GIB}
         self.prepare()
-        self.mocks['resize'].assert_called_once_with(self.sdk, self.avd, 32, allow_guest=True)
+        self.mocks['resize'].assert_called_once_with(self.sdk, self.avd, 32,
+                                                   allow_guest=True, backup=self.folder)
         self.mocks['popen'].assert_not_called()
 
     def test_invalid_avd_name_refuses_before_scope_or_capacity_probe(self):

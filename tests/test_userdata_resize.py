@@ -143,14 +143,294 @@ class OfflineFilesystemTests(unittest.TestCase):
         self.run_tool([self.qemu, 'resize', self.base, 256 * MIB])
         self.opaque_overlay()
 
+    def offline_backup(self):
+        folder = self.avd.parent / 'complete-offline-backup'
+        data = folder / 'avd'
+        data.mkdir(parents=True)
+        for name in (*storage.LAYER_NAMES, 'qemu-version.txt'):
+            shutil.copy2(self.avd / name, data / name)
+        (folder / 'backup.json').write_text(json.dumps({
+            'name': self.avd.name.removesuffix('.avd'),
+            'files': {'avd/' + name: storage.digest(data / name) for name in storage.LAYER_NAMES}}))
+        return folder
+
+    def grow_opaque(self, folder):
+        return storage.resize_userdata(SDK, self.avd, 512 * MIB,
+                                       allow_guest=True, backup=folder)
+
+    def test_backed_up_opaque_growth_preserves_every_old_sector_and_keys(self):
+        self.legacy_opaque()
+        before = self.hashes()
+        folder = self.offline_backup()
+        with self.assertRaises(storage.OfflineBackupRequiredError):
+            self.grow_opaque(None)
+        with patch.object(storage, 'check_dependencies', side_effect=AssertionError('No host fs tools')):
+            result = self.grow_opaque(folder)
+        self.assertTrue(result['changed'])
+        self.assertTrue(result['guest_required'])
+        self.assertIsNone(result['filesystem_bytes'])
+        self.assertNotIn('prepared_filesystem_bytes', result)
+        self.assertEqual(result['disk_capacity_bytes'], 512 * MIB)
+        self.assertEqual(result['previous_disk_capacity_bytes'], 256 * MIB)
+        self.assertEqual(result['backup'], str(folder))
+        self.assertEqual(self.geometry()['bytes'], 64 * MIB)
+        self.assertEqual(storage._prefix_digest(self.base, 256 * MIB), before[storage.DATA])
+        self.probe_is_retained()
+        layers = storage._layers(self.qemu, self.avd)
+        self.assertEqual([layers[name]['virtual-size'] for name in storage.LAYER_NAMES[:2]], [512 * MIB] * 2)
+        for name in ('encryptionkey.img', 'encryptionkey.img.qcow2', 'qemu-version.txt'):
+            self.assertEqual(storage.digest(self.avd / name), before[name])
+        self.run_tool([self.qemu, 'compare', folder / 'avd' / (storage.DATA + '.qcow2'),
+                       self.avd / (storage.DATA + '.qcow2')])
+        retained = Path(result['transaction_backup'])
+        for name in storage.LAYER_NAMES:
+            self.assertEqual(storage.digest(retained / 'original' / name), before[name])
+        receipt = json.loads((retained / 'transaction.json').read_text())
+        self.assertEqual(receipt['mode'], 'opaque-disk-capacity')
+        self.assertNotIn('after', receipt)
+        for name in (storage.PENDING, storage.VERIFIED, storage.GUEST_VERIFIED):
+            self.assertFalse((self.avd / name).exists())
+        commands = (retained / 'commands.log').read_text()
+        self.assertNotIn('e2fsck', commands)
+        self.assertNotIn('resize2fs', commands)
+        self.assertNotIn('"convert", "-O", "raw", "' + str(self.avd / (storage.DATA + '.qcow2')), commands)
+        self.assertEqual(result['userdata_capacity_token']['requested_bytes'], 512 * MIB)
+        self.assertEqual(result['userdata_capacity_token']['base_filesystem']['bytes'], 64 * MIB)
+
+    def test_opaque_growth_needs_explicit_opt_in_and_matching_complete_backup(self):
+        self.legacy_opaque()
+        before = self.hashes()
+        folder = self.offline_backup()
+        with self.assertRaises(storage.OpaqueFilesystemError):
+            storage.resize_userdata(SDK, self.avd, 512 * MIB, backup=folder)
+        with self.assertRaisesRegex(RuntimeError, 'reduced'):
+            storage.resize_userdata(SDK, self.avd, 128 * MIB, allow_guest=True, backup=folder)
+        receipt = folder / 'backup.json'
+        saved = receipt.read_bytes()
+        for kind in ('absent', 'wrong-name', 'missing-key', 'wrong-hash', 'changed-file', 'aliased-file', 'marker'):
+            with self.subTest(kind=kind):
+                if kind == 'absent':
+                    candidate = None
+                else:
+                    candidate = folder
+                    value = json.loads(saved)
+                    if kind == 'wrong-name':
+                        value['name'] = 'Different'
+                    elif kind == 'missing-key':
+                        value['files'].pop('avd/encryptionkey.img.qcow2')
+                    elif kind == 'wrong-hash':
+                        value['files']['avd/' + storage.DATA] = '0' * 64
+                    elif kind == 'changed-file':
+                        with (folder / 'avd/encryptionkey.img').open('r+b') as stream:
+                            stream.write(b'changed')
+                    elif kind == 'aliased-file':
+                        os.link(folder / 'avd/encryptionkey.img', folder / 'alias')
+                    elif kind == 'marker':
+                        (folder / 'avd/qemu-version.txt').write_text('1')
+                    receipt.write_text(json.dumps(value))
+                with self.assertRaisesRegex(storage.OpaqueFilesystemError, 'matching complete offline'):
+                    self.grow_opaque(candidate)
+                self.assertEqual(self.hashes(), before)
+                self.assertFalse((self.avd / storage.PENDING).exists())
+                receipt.write_bytes(saved)
+                (folder / 'alias').unlink(missing_ok=True)
+                shutil.copy2(self.avd / 'encryptionkey.img', folder / 'avd/encryptionkey.img')
+                shutil.copy2(self.avd / 'qemu-version.txt', folder / 'avd/qemu-version.txt')
+
+    def test_opaque_growth_accepts_identical_overlay_with_sparsified_backing_allocation(self):
+        self.legacy_opaque()
+        # Force a physically allocated zero range in the raw backing.
+        with self.base.open('r+b') as stream:
+            stream.seek(100 * MIB)
+            stream.write(b'\0' * MIB)
+        top = self.avd / (storage.DATA + '.qcow2')
+        # The converter emits explicit zero clusters. Replace only offsetless
+        # zero entries with unallocated entries so those sectors inherit raw.
+        # qemu-img check below verifies this genuine QCOW2 regression fixture.
+        with top.open('r+b') as stream:
+            header = stream.read(72)
+            self.assertEqual(struct.unpack_from('>I', header, 4)[0], 3)
+            cluster_size = 1 << struct.unpack_from('>I', header, 20)[0]
+            l1_size = struct.unpack_from('>I', header, 36)[0]
+            stream.seek(struct.unpack_from('>Q', header, 40)[0])
+            l1 = stream.read(l1_size * 8)
+            cleared = 0
+            for index in range(l1_size):
+                l2_offset = struct.unpack_from('>Q', l1, index * 8)[0] & 0x00fffffffffffe00
+                if not l2_offset:
+                    continue
+                stream.seek(l2_offset)
+                entries = bytearray(stream.read(cluster_size))
+                for offset in range(0, len(entries), 8):
+                    entry = struct.unpack_from('>Q', entries, offset)[0]
+                    if entry & 1 and not entry & 0x00fffffffffffe00:
+                        struct.pack_into('>Q', entries, offset, 0)
+                        cleared += 1
+                stream.seek(l2_offset)
+                stream.write(entries)
+        self.assertGreater(cleared, 0)
+        self.run_tool([self.qemu, 'check', top])
+        before = self.hashes()
+        with tempfile.TemporaryDirectory(dir=self.avd) as temporary:
+            sparse = Path(temporary)
+            self.run_tool([self.qemu, 'convert', '-O', 'raw', self.base, sparse / storage.DATA])
+            shutil.copy2(top, sparse / top.name)
+            self.assertEqual(storage.digest(sparse / top.name), before[top.name])
+            self.assertEqual(storage.digest(sparse / storage.DATA), before[storage.DATA])
+            strict = subprocess.run([str(self.qemu), 'compare', '-s', str(top), str(sparse / top.name)],
+                                    capture_output=True, text=True)
+            self.assertEqual(strict.returncode, 1)
+            self.assertIn('block status mismatch', strict.stdout + strict.stderr)
+            self.run_tool([self.qemu, 'compare', top, sparse / top.name])
+        folder = self.offline_backup()
+        with patch.object(storage, 'check_dependencies', side_effect=AssertionError('No host fs tools')):
+            result = self.grow_opaque(folder)
+        self.assertTrue(result['guest_required'])
+        self.assertNotIn('prepared_filesystem_bytes', result)
+        self.assertEqual(result['disk_capacity_bytes'], 512 * MIB)
+        self.assertEqual(storage._prefix_digest(self.base, 256 * MIB), before[storage.DATA])
+        self.run_tool([self.qemu, 'compare', folder / 'avd' / top.name, top])
+        for name in ('encryptionkey.img', 'encryptionkey.img.qcow2', 'qemu-version.txt'):
+            self.assertEqual(storage.digest(self.avd / name), before[name])
+        self.assertEqual(self.geometry()['bytes'], 64 * MIB)
+        self.probe_is_retained()
+
+    def test_opaque_growth_refuses_nonmatching_layer_capacity_or_alias_before_staging(self):
+        self.legacy_opaque()
+        folder = self.offline_backup()
+        self.run_tool([self.qemu, 'resize', self.avd / (storage.DATA + '.qcow2'), 512 * MIB])
+        before = self.hashes()
+        with self.assertRaisesRegex(storage.OpaqueFilesystemError, 'guest-scoped'):
+            storage.resize_userdata(SDK, self.avd, 1024 * MIB, allow_guest=True, backup=folder)
+        with self.assertRaises(storage.OpaqueFilesystemError) as refused:
+            storage.resize_userdata(SDK, self.avd, 1024 * MIB, allow_guest=True)
+        self.assertNotIsInstance(refused.exception, storage.OfflineBackupRequiredError)
+        self.assertEqual(self.hashes(), before)
+        self.assertFalse((self.avd / storage.PENDING).exists())
+        shutil.copy2(folder / 'avd' / (storage.DATA + '.qcow2'), self.avd / (storage.DATA + '.qcow2'))
+        os.link(self.avd / 'encryptionkey.img', self.avd / 'key-alias')
+        before = self.hashes()
+        with self.assertRaisesRegex(storage.OpaqueFilesystemError, 'aliased'):
+            self.grow_opaque(folder)
+        self.assertEqual(self.hashes(), before)
+        self.assertFalse((self.avd / storage.PENDING).exists())
+
+    def test_opaque_growth_refuses_insufficient_storage_before_mutating_layers(self):
+        self.legacy_opaque()
+        folder, before = self.offline_backup(), self.hashes()
+        with patch.object(storage.shutil, 'disk_usage', return_value=shutil._ntuple_diskusage(1, 1, 0)), \
+                self.assertRaisesRegex(RuntimeError, 'Insufficient free host storage'):
+            self.grow_opaque(folder)
+        self.assertEqual(self.hashes(), before)
+        self.assertFalse((self.avd / storage.PENDING).exists())
+
+    def test_opaque_growth_rejects_nonzero_new_sectors_without_activation(self):
+        self.legacy_opaque()
+        folder, before = self.offline_backup(), self.hashes()
+        run = storage._run
+        def corrupt_tail(arguments, **kwargs):
+            value = run(arguments, **kwargs)
+            if arguments[1] == 'resize' and Path(arguments[2]).name == storage.DATA + '.qcow2':
+                with (self.avd / storage.PENDING / 'staged' / storage.DATA).open('r+b') as stream:
+                    stream.seek(300 * MIB)
+                    stream.write(b'unexpected new sectors')
+            return value
+        with patch.object(storage, '_run', side_effect=corrupt_tail), \
+                self.assertRaisesRegex(RuntimeError, 'qemu-img, exit 1'):
+            self.grow_opaque(folder)
+        self.assertEqual(self.hashes(), before)
+        self.assertFalse((self.avd / storage.PENDING).exists())
+
+    def test_opaque_growth_partial_and_completed_activation_failures_restore_exact_chain(self):
+        self.legacy_opaque()
+        folder, before = self.offline_backup(), self.hashes()
+        activate = storage._activate
+        for completed in (False, True):
+            def interrupt(avd, pending, names):
+                if completed:
+                    activate(avd, pending, names)
+                else:
+                    for name in names:
+                        (avd / name).replace(pending / 'original' / name)
+                    (pending / 'staged' / storage.DATA).replace(avd / storage.DATA)
+                raise RuntimeError('injected interrupted encrypted activation')
+            with self.subTest(completed=completed), patch.object(storage, '_activate', side_effect=interrupt), \
+                    self.assertRaisesRegex(RuntimeError, 'interrupted encrypted'):
+                self.grow_opaque(folder)
+            self.assertEqual(self.hashes(), before)
+            self.assertFalse((self.avd / storage.PENDING).exists())
+
+    def test_opaque_growth_durable_pending_recovers_on_next_attempt(self):
+        self.legacy_opaque()
+        folder, before = self.offline_backup(), self.hashes()
+        activate, recover = storage._activate, storage._recover
+        def interrupt(avd, pending, names):
+            activate(avd, pending, names)
+            raise RuntimeError('injected completed interrupted activation')
+        def crash(avd):
+            if (avd / storage.PENDING).exists():
+                raise RuntimeError('simulated abrupt process exit')
+            return recover(avd)
+        with patch.object(storage, '_activate', side_effect=interrupt), \
+                patch.object(storage, '_recover', side_effect=crash), \
+                self.assertRaisesRegex(RuntimeError, 'abrupt process exit'):
+            self.grow_opaque(folder)
+        self.assertTrue((self.avd / storage.PENDING).is_dir())
+        self.assertEqual(storage._info(self.qemu, self.base)['virtual-size'], 512 * MIB)
+        # The public path recovers before rechecking requested size.
+        result = storage.resize_userdata(SDK, self.avd, 256 * MIB, allow_guest=True)
+        self.assertTrue(result['guest_required'])
+        self.assertEqual(self.hashes(), before)
+        self.assertFalse((self.avd / storage.PENDING).exists())
+
+    def test_opaque_growth_recovery_preserves_later_overlay_writes(self):
+        self.legacy_opaque()
+        folder, before = self.offline_backup(), self.hashes()
+        activate = storage._activate
+        def later_write(avd, pending, names):
+            activate(avd, pending, names)
+            self.run_tool([self.qemu, 'amend', '-f', 'qcow2', '-o', 'lazy_refcounts=on',
+                           avd / (storage.DATA + '.qcow2')])
+            raise RuntimeError('injected later guest write')
+        with patch.object(storage, '_activate', side_effect=later_write), \
+                self.assertRaisesRegex(RuntimeError, 'needs inspection'):
+            self.grow_opaque(folder)
+        pending = self.avd / storage.PENDING
+        current = self.hashes()
+        self.assertTrue(pending.is_dir())
+        self.assertNotEqual(current[storage.DATA + '.qcow2'], before[storage.DATA + '.qcow2'])
+        with self.assertRaisesRegex(RuntimeError, 'needs inspection'):
+            storage.resize_userdata(SDK, self.avd, 512 * MIB, allow_guest=True, backup=folder)
+        self.assertEqual(self.hashes(), current)
+        for name in storage.LAYER_NAMES:
+            self.assertEqual(storage.digest(pending / 'original' / name), before[name])
+
+    def test_opaque_disk_growth_capacity_remains_unproven_until_verified_guest_record(self):
+        self.legacy_opaque()
+        result = self.grow_opaque(self.offline_backup())
+        before = self.hashes()
+        with patch.object(storage, 'check_dependencies', side_effect=AssertionError('No host fs tools')):
+            with self.assertRaisesRegex(storage.OpaqueFilesystemError, 'guest-scoped'):
+                storage.resize_userdata(SDK, self.avd, 512 * MIB)
+            deferred = storage.resize_userdata(SDK, self.avd, 512 * MIB, allow_guest=True)
+            self.assertTrue(deferred['guest_required'])
+            proof = storage.publish_guest_capacity(SDK, self.avd, 512 * MIB,
+                                                   self.guest_record(result, changed=True))
+            historical = storage.resize_userdata(SDK, self.avd, 512 * MIB)
+        self.assertEqual(proof['capacity_proof'], 'verified-in-guest')
+        self.assertEqual(historical['prepared_filesystem_bytes'], 512 * MIB)
+        self.assertEqual(self.hashes(), before)
+        self.assertEqual(self.geometry()['bytes'], 64 * MIB)
+
     def guest_record(self, result, *, changed=False):
         """Model the trusted guest helper's return, not a measured live guest."""
-        return {'schema': storage.GUEST_RECORD_SCHEMA, 'requested_bytes': 256 * MIB,
+        wanted = result['userdata_capacity_token']['requested_bytes']
+        return {'schema': storage.GUEST_RECORD_SCHEMA, 'requested_bytes': wanted,
                 'name': self.avd.name.removesuffix('.avd'), 'serial': 'emulator-5584',
                 'boot_id': '01234567-89ab-cdef-0123-456789abcdef', 'hardware': 'ranchu',
                 'product_device': 'test_device', 'incremental': 'test_build', 'root_uid': 0,
                 'selinux': 'Enforcing', 'mounted_type': 'ext4', 'mapped_device': '/dev/block/dm-0',
-                'mapped_device_bytes': 256 * MIB, 'filesystem': {**self.geometry(), 'bytes': 256 * MIB},
+                'mapped_device_bytes': wanted, 'filesystem': {**self.geometry(), 'bytes': wanted},
                 'verified': True, 'changed': changed, 'capacity_proof': 'verified-in-guest',
                 'host_token': result['userdata_capacity_token'], 'probe_verified': True if changed else None,
                 'backup': str(self.avd.parent / 'offline-backup') if changed else None}

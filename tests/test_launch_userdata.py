@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import launch
+from userdata_resize import OfflineBackupRequiredError, OpaqueFilesystemError
 
 
 class LaunchUserdataTests(unittest.TestCase):
@@ -168,6 +169,47 @@ class LaunchUserdataTests(unittest.TestCase):
                 patch('manage.backup', side_effect=OSError('backup failed')), patch('manage.prepare_storage') as repair:
             with self.assertRaisesRegex(OSError, 'backup failed'):
                 launch.prepare_userdata(self.config)
+        repair.assert_not_called()
+        self.assertEqual(userdata.read_bytes(), b'retained userdata')
+
+    def test_encrypted_disk_growth_creates_backup_before_managed_resize_and_guest(self):
+        userdata = self.existing()
+        self.config['port'] = 5596
+        folder = self.root / 'backups' / 'before-encrypted-growth'
+        order = Mock()
+        with patch('manage.validate_userdata') as validate, \
+                patch('manage.resize', side_effect=OfflineBackupRequiredError('matching complete offline backup')) as resize, \
+                patch('manage.backup', return_value=folder) as backup, \
+                patch('manage.prepare_storage', return_value={'prepared_filesystem_bytes': 32 * 1024**3}) as repair:
+            for name, function in (('validate', validate), ('resize', resize), ('backup', backup), ('repair', repair)):
+                order.attach_mock(function, name)
+            result = launch.prepare_userdata(self.config)
+        self.assertEqual([call[0] for call in order.mock_calls], ['validate', 'resize', 'backup', 'repair'])
+        backup.assert_called_once_with(self.root, self.name)
+        repair.assert_called_once_with(self.root, self.name, 5596, self.sdk, 32, folder)
+        self.assertEqual(result['prepared_filesystem_bytes'], 32 * 1024**3)
+        self.assertEqual(userdata.read_bytes(), b'retained userdata')
+
+    def test_encrypted_disk_growth_backup_failure_preserves_data_without_boot(self):
+        userdata = self.existing()
+        with patch('manage.validate_userdata'), \
+                patch('manage.resize', side_effect=OfflineBackupRequiredError('offline backup')), \
+                patch('manage.backup', side_effect=OSError('encrypted backup failed')), \
+                patch('manage.prepare_storage') as repair, patch.object(launch.shutil, 'copyfile') as copy:
+            with self.assertRaisesRegex(OSError, 'encrypted backup failed'):
+                launch.prepare_userdata(self.config)
+        repair.assert_not_called()
+        copy.assert_not_called()
+        self.assertEqual(userdata.read_bytes(), b'retained userdata')
+
+    def test_other_opaque_refusals_cannot_create_backup_or_boot(self):
+        userdata = self.existing()
+        with patch('manage.validate_userdata'), \
+                patch('manage.resize', side_effect=OpaqueFilesystemError('mismatched or unknown chain')), \
+                patch('manage.backup') as backup, patch('manage.prepare_storage') as repair:
+            with self.assertRaisesRegex(OpaqueFilesystemError, 'mismatched'):
+                launch.prepare_userdata(self.config)
+        backup.assert_not_called()
         repair.assert_not_called()
         self.assertEqual(userdata.read_bytes(), b'retained userdata')
 

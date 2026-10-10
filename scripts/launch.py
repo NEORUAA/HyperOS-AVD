@@ -51,13 +51,20 @@ def prepare_userdata(config):
             or not 6 <= int(storage[:-1]) <= 1024):
         raise RuntimeError('Missing or invalid userdata capacity in this AVD configuration.')
     from manage import resize, validate_userdata
-    from userdata_resize import PENDING
+    from userdata_resize import OfflineBackupRequiredError, PENDING
+    def offline_resize():
+        try:
+            return resize(Path(config['sdk']), avd, int(storage[:-1]), allow_guest=True)
+        except OfflineBackupRequiredError:
+            # Only a validated encrypted-growth source can request a backup;
+            # unknown layouts and mismatched chains keep their refusal.
+            return {'guest_required': True}
     pending = avd / PENDING
     recovered = None
     if pending.exists() or pending.is_symlink():
         # An interrupted activation can temporarily have no active base. Its
         # original chain must be recovered before considering a fresh template.
-        recovered = resize(Path(config['sdk']), avd, int(storage[:-1]), allow_guest=True)
+        recovered = offline_resize()
     userdata = avd / 'userdata-qemu.img'
     if not userdata.exists():
         from userdata_resize import check_dependencies
@@ -65,8 +72,7 @@ def prepare_userdata(config):
         print('Creating fresh userdata from the clean release template.', flush=True)
         shutil.copyfile(ROOT / 'images/userdata.img', userdata)
     validate_userdata(Path(config['sdk']), avd)
-    result = recovered if recovered is not None else resize(
-        Path(config['sdk']), avd, int(storage[:-1]), allow_guest=True)
+    result = recovered if recovered is not None else offline_resize()
     if isinstance(result, dict) and result.get('guest_required'):
         from manage import backup, prepare_storage
         folder = backup(ROOT, config['name'])
