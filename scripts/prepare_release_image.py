@@ -124,6 +124,15 @@ def clone(source, target):
     subprocess.run(['cp', '-c', str(source), str(target)], check=True)
 
 
+def copy_release_inputs(source, output):
+    """Carry portable inputs, deriving new platform provenance after repacking."""
+    for directory in ('images', 'tools', 'config'):
+        # Core context is bound to the old packed image, unlike universal Apps.
+        ignore = shutil.ignore_patterns('os4-core') if directory == 'tools' else None
+        shutil.copytree(source / directory, output / directory,
+                        copy_function=clone, ignore=ignore)
+
+
 def authenticated_properties(data):
     """Restore ADB authorization without changing the accepted device defaults."""
     lines = data.splitlines()
@@ -160,8 +169,7 @@ def prepare_boot_services(source, output):
     if info.get('system_sha256') != sha256(source / 'images/system.img'):
         raise RuntimeError('Source packed image differs from its accepted release receipt.')
     output.mkdir(parents=True)
-    for directory in ('images', 'tools', 'config'):
-        shutil.copytree(source / directory, output / directory, copy_function=clone)
+    copy_release_inputs(source, output)
     work = output / 'work'
     unpack(source / 'images/system.img', work / 'accepted')
     raw = work / 'accepted/system.img'
@@ -200,7 +208,6 @@ def prepare_boot_services(source, output):
 
 
 def prepare_pad(source, output, info):
-    from os4_pad import PROFILE, SOURCE
     from apply_app_compat import prepare_prebuilt
     validate_pad_source(info)
     # The running candidate may have been replaced after the builder's raw image.
@@ -254,8 +261,7 @@ def prepare(source, output, variant='os4-official'):
         if info.get('system_sha256') and info['system_sha256'] != sha256(source / 'images/system.img'):
             raise RuntimeError('Source packed image differs from its build receipt.')
     output.mkdir(parents=True)
-    for directory in ('images', 'tools', 'config'):
-        shutil.copytree(source / directory, output / directory, copy_function=clone)
+    copy_release_inputs(source, output)
     (output / 'local').mkdir()
     work = output / 'work'
     work.mkdir()

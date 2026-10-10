@@ -153,6 +153,10 @@ class ReleasePreparationTests(unittest.TestCase):
         return stack
 
     def test_canonical_input_without_work_cache_preserves_source_ota_and_partitions(self):
+        context = self.source / 'tools/os4-core'
+        context.mkdir()
+        (context / 'receipt.json').write_bytes(b'old packed image receipt')
+        (context / 'context.json').write_bytes(b'old platform context')
         original = self.source_files()
         self.assertFalse((self.source / 'work').exists())
         self.mocked_pipeline()
@@ -161,6 +165,7 @@ class ReleasePreparationTests(unittest.TestCase):
         self.assertFalse((self.source / 'work').exists())
         self.assertEqual((self.output / 'images/vendor-qemu.img').read_bytes(), b'unrelated hardware image')
         self.assertFalse((self.output / 'avd').exists())
+        self.assertFalse((self.output / 'tools/os4-core').exists())
         inputs = dict(self.packs[0])
         self.assertEqual(inputs['system'], b'updated accepted raw system')
         self.assertEqual({name: inputs[name] for name in self.partitions if name != 'system'},
@@ -272,6 +277,9 @@ class ReleasePreparationTests(unittest.TestCase):
         self.use_pad_profile()
         self.entries['/system/build.prop'] = b'ro.adb.secure=0\nro.debuggable=0\nro.product.device=yingtian\n'
         self.assertFalse((self.source / 'work').exists())
+        context = self.source / 'tools/os4-core'
+        context.mkdir()
+        (context / 'receipt.json').write_bytes(b'old Pad image receipt')
         original = self.source_files()
         self.mocked_pipeline(boot_kind='pad')
         with patch.object(apply_app_compat, 'prepare_prebuilt') as apps:
@@ -280,6 +288,7 @@ class ReleasePreparationTests(unittest.TestCase):
         self.assertEqual(self.source_files(), original)
         self.assertFalse((self.source / 'work').exists())
         self.assertFalse((self.output / 'avd').exists())
+        self.assertFalse((self.output / 'tools/os4-core').exists())
         packed = dict(self.packs[0])
         for name, data in self.partitions.items():
             if name != 'system':
