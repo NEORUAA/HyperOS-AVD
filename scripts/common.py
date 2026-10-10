@@ -8,6 +8,7 @@ import shutil
 import socket
 import subprocess
 import urllib.request
+from https_transport import secure_urlretrieve
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ROOT = Path(os.environ.get('HYPEROS_AVD_WORKSPACE', REPO_ROOT)).expanduser().resolve()
@@ -98,7 +99,7 @@ def fetch_ksu(names):
             url = f'https://github.com/tiann/KernelSU/releases/download/{KSU_VERSION}/{name}'
             temporary = path.with_suffix(path.suffix + '.part')
             print('Downloading official KernelSU asset:', name, flush=True)
-            urllib.request.urlretrieve(url, temporary)
+            secure_urlretrieve(url, temporary)
             if sha256(temporary) != KSU_ASSETS[name]:
                 temporary.unlink()
                 raise RuntimeError('KernelSU download checksum mismatch: ' + name)

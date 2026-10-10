@@ -21,6 +21,7 @@ import urllib.request
 
 import common
 import setup
+from https_transport import secure_urlopen
 from common import REPO_ROOT, avd_home, host_check, port_free, sdk_path, sha256
 
 VERSION = '1.2.1'
@@ -122,7 +123,7 @@ def request(url):
 
 
 def remote_json(url):
-    with urllib.request.urlopen(request(url), timeout=30) as response:
+    with secure_urlopen(request(url), timeout=30) as response:
         data = response.read(2 * 1024**2 + 1)
     if len(data) > 2 * 1024**2:
         raise RuntimeError('Oversized remote metadata.')
@@ -184,7 +185,7 @@ def download(url, target, size, checksum):
             req.add_header('Range', f'bytes={offset}-')
         try:
             print(tr('下载：', 'Downloading: ') + target.name, flush=True)
-            with urllib.request.urlopen(req, timeout=60) as response:
+            with secure_urlopen(req, timeout=60) as response:
                 status = response.getcode()
                 if offset and status != 206:
                     offset = 0  # Some release CDNs ignore Range; restart safely.
@@ -227,7 +228,7 @@ def fetch_release(release, cache):
         sums = assets.get('SHA256SUMS')
         if not sums:
             raise RuntimeError('Release is missing manifest integrity metadata.')
-        with urllib.request.urlopen(request(sums['browser_download_url']), timeout=30) as response:
+        with secure_urlopen(request(sums['browser_download_url']), timeout=30) as response:
             lines = response.read(65536).decode().splitlines()
         matches = [line.split()[0] for line in lines if line.split()[-1:] == ['manifest.json']]
         if len(matches) != 1:

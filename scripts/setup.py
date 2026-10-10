@@ -11,6 +11,7 @@ import tarfile
 import tempfile
 import urllib.parse
 import urllib.request
+from https_transport import secure_urlopen, secure_urlretrieve
 import common
 
 from common import (ROOT, REPO_ROOT, DEFAULT_NAME, DEFAULT_PORT, OS4_NAME, OS4_PORT, OS4_SOURCE, avd_home, fetch_ksu, firmware_idle,
@@ -45,8 +46,11 @@ def validate_memory(properties=None):
 
 def read_manifest(value):
     if value.startswith('https://'):
-        with urllib.request.urlopen(value, timeout=30) as response:
-            manifest = json.load(response)
+        with secure_urlopen(value, timeout=30) as response:
+            data = response.read(2 * 1024**2 + 1)
+        if len(data) > 2 * 1024**2:
+            raise RuntimeError('Oversized remote release manifest.')
+        manifest = json.loads(data)
         base = value.rsplit('/', 1)[0] + '/'
     else:
         path = Path(value).expanduser().resolve()
@@ -261,7 +265,7 @@ def install_bundle(value):
             if not path.exists():
                 print('Downloading:', name, flush=True)
                 partial = path.with_suffix(path.suffix + '.part')
-                urllib.request.urlretrieve(urllib.parse.urljoin(base, name), partial)
+                secure_urlretrieve(urllib.parse.urljoin(base, name), partial)
                 partial.replace(path)
         if path.stat().st_size != entry['size'] or sha256(path) != entry['sha256']:
             raise RuntimeError('Release checksum mismatch: ' + str(path))

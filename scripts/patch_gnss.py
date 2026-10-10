@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import urllib.request
+from https_transport import secure_urlretrieve
 import zipfile
 
 from common import ROOT
@@ -53,7 +54,7 @@ def patch(source, destination):
     for name, (coordinate, expected) in ARTIFACTS.items():
         path = cache / (name + '.jar')
         if not path.exists():
-            urllib.request.urlretrieve('https://repo.maven.apache.org/maven2/' + coordinate, path)
+            secure_urlretrieve('https://repo.maven.apache.org/maven2/' + coordinate, path)
         if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
             raise RuntimeError('Invalid Maven artifact: ' + str(path))
     work = ROOT / 'work/gnss-patch'

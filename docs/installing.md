@@ -25,6 +25,8 @@ chmod +x Install.command
 
 **手机 OS4 r4 需要 Installer 1.2.1 或以上；r3 需要 1.2.0 或以上；Pad OS4 需要 1.1.0 或以上。** 安装器使用独立的 `installer-v*` 正式版本，镜像含 Pre-release，均可在菜单中发现。
 
+**证书错误：** 源码安装器已修复 Python CA 环境导致的 `CERTIFICATE_VERIFY_FAILED`：仅在证书校验失败时，改用 macOS 系统 HTTPS 校验，保留证书、域名、文件大小与 SHA 校验；显式 CA 配置仍受尊重。已发布的 Installer 1.2.1 尚不包含此修复。
+
 ```text
 +------------------------------------------------------------------+
 | H Y P E R O S - A V D   /   INSTALLER 1.2.0                        |
